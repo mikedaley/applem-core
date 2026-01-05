@@ -1,0 +1,101 @@
+#pragma once
+
+#include "../types.hpp"
+#include <array>
+#include <cstdint>
+#include <functional>
+
+namespace a2e {
+
+// Forward declarations
+class Disk2Controller;
+
+class MMU {
+public:
+  using KeyboardCallback = std::function<uint8_t()>;
+  using KeyStrobeCallback = std::function<void()>;
+  using SpeakerCallback = std::function<void()>;
+
+  MMU();
+
+  // Memory access
+  uint8_t read(uint16_t address);
+  void write(uint16_t address, uint8_t value);
+
+  // Direct memory access (bypasses soft switches)
+  uint8_t readRAM(uint16_t address, bool aux = false) const;
+  void writeRAM(uint16_t address, uint8_t value, bool aux = false);
+
+  // ROM loading - combined 16KB system ROM ($C000-$FFFF)
+  void loadROM(const uint8_t *systemRom, size_t systemSize,
+               const uint8_t *charRom, size_t charSize, const uint8_t *diskRom,
+               size_t diskSize);
+
+  // Character ROM access (for video)
+  uint8_t readCharROM(uint16_t address) const;
+
+  // Soft switch state
+  const SoftSwitches &getSoftSwitches() const { return switches_; }
+
+  // Callbacks
+  void setKeyboardCallback(KeyboardCallback cb) {
+    keyboardCallback_ = std::move(cb);
+  }
+  void setKeyStrobeCallback(KeyStrobeCallback cb) {
+    keyStrobeCallback_ = std::move(cb);
+  }
+  void setSpeakerCallback(SpeakerCallback cb) {
+    speakerCallback_ = std::move(cb);
+  }
+
+  // Peripheral connections
+  void setDiskController(Disk2Controller *disk) { diskController_ = disk; }
+
+  // Reset
+  void reset();
+
+private:
+  // Soft switch handling
+  uint8_t readSoftSwitch(uint16_t address);
+  void writeSoftSwitch(uint16_t address, uint8_t value);
+
+  // Language card logic
+  uint8_t readLanguageCard(uint16_t address);
+  void writeLanguageCard(uint16_t address, uint8_t value);
+  uint8_t handleLanguageCardSwitch(uint8_t reg);
+
+  // Memory banks
+  std::array<uint8_t, MAIN_RAM_SIZE> mainRAM_{};
+  std::array<uint8_t, AUX_RAM_SIZE> auxRAM_{};
+
+  // Language card RAM banks
+  std::array<uint8_t, 0x1000> lcBank1_{};   // $D000-$DFFF bank 1
+  std::array<uint8_t, 0x1000> lcBank2_{};   // $D000-$DFFF bank 2
+  std::array<uint8_t, 0x2000> lcHighRAM_{}; // $E000-$FFFF
+
+  // Auxiliary language card banks
+  std::array<uint8_t, 0x1000> auxLcBank1_{};
+  std::array<uint8_t, 0x1000> auxLcBank2_{};
+  std::array<uint8_t, 0x2000> auxLcHighRAM_{};
+
+  // ROM - combined 16KB system ROM ($C000-$FFFF)
+  std::array<uint8_t, 0x4000> systemROM_{}; // $C000-$FFFF (16KB)
+  std::array<uint8_t, CHAR_ROM_SIZE> charROM_{};
+  std::array<uint8_t, DISK_ROM_SIZE> diskROM_{};
+
+  // Soft switches
+  SoftSwitches switches_;
+
+  // Keyboard state
+  uint8_t keyboardLatch_ = 0;
+
+  // Callbacks
+  KeyboardCallback keyboardCallback_;
+  KeyStrobeCallback keyStrobeCallback_;
+  SpeakerCallback speakerCallback_;
+
+  // Peripherals
+  Disk2Controller *diskController_ = nullptr;
+};
+
+} // namespace a2e
