@@ -1,174 +1,227 @@
 #pragma once
 
-#include "../types.hpp"
+#include "disk_image.hpp"
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <vector>
 
 namespace a2e {
 
-// Nibblized track data
-struct NibbleTrack {
-  std::vector<uint8_t> nibbles;
-  bool valid = false;
-  bool dirty = false;
-};
-
-// Disk image
-struct DiskImage {
-  // Raw sector data (143360 bytes for DSK/PO)
-  std::vector<uint8_t> sectorData;
-
-  // Nibblized tracks (generated on demand)
-  std::array<NibbleTrack, 35> nibbleTracks;
-
-  bool writeProtected = false;
-  bool modified = false;
-  bool loaded = false;
-  std::string filename;
-
-  // Format info
-  enum class Format {
-    NONE,
-    DSK, // DOS order
-    PO,  // ProDOS order
-    WOZ  // WOZ format
-  };
-  Format format = Format::NONE;
-
-  // Volume number for nibblization
-  uint8_t volumeNumber = 254;
-
-  // Head position state (managed per-disk like reference)
-  int quarterTrack = 0;      // 0-139 for 35 tracks
-  uint8_t phaseStates = 0;   // Bitmask of active phases
-  int lastPhase = 0;         // Last activated phase
-  size_t nibblePosition = 0; // Position within current track
-
-  // For WOZ format
-  std::vector<std::vector<uint8_t>> wozTracks; // Raw WOZ track data
-  std::vector<uint32_t> wozBitCounts;          // Bit count per track
-  size_t bitPosition = 0;                      // Bit position for WOZ
-};
-
+/**
+ * Disk2Controller - Disk II Controller Card for Slot 6
+ *
+ * The Disk II controller handles floppy disk I/O for the Apple IIe.
+ * It occupies:
+ * - I/O space: $C0E0-$C0EF (16 soft switches)
+ * - Slot ROM: $C600-$C6FF (256 bytes, P5 ROM 341-0027)
+ *
+ * Soft switch addresses (offset from slot 6 base $C0E0):
+ * $C0E0 - Phase 0 off     $C0E1 - Phase 0 on
+ * $C0E2 - Phase 1 off     $C0E3 - Phase 1 on
+ * $C0E4 - Phase 2 off     $C0E5 - Phase 2 on
+ * $C0E6 - Phase 3 off     $C0E7 - Phase 3 on
+ * $C0E8 - Motor off       $C0E9 - Motor on
+ * $C0EA - Drive 1 select  $C0EB - Drive 2 select
+ * $C0EC - Q6L (read)      $C0ED - Q6H (WP sense/write load)
+ * $C0EE - Q7L (read mode) $C0EF - Q7H (write mode)
+ */
 class Disk2Controller {
 public:
-  static constexpr int NUM_DRIVES = 2;
-  static constexpr int NUM_TRACKS = 35;
-  static constexpr int TRACK_SIZE_NIBBLES = 6656;
-  static constexpr int SECTORS_PER_TRACK = 16;
-  static constexpr int BYTES_PER_SECTOR = 256;
-  static constexpr int DISK_SIZE =
-      NUM_TRACKS * SECTORS_PER_TRACK * BYTES_PER_SECTOR;
-
-  // Timing constants
-  static constexpr uint64_t CYCLES_PER_NIBBLE = 32;
-  static constexpr uint64_t MOTOR_OFF_DELAY_CYCLES = 1023000;
-
   Disk2Controller();
+  ~Disk2Controller() = default;
 
-  // I/O access (addresses 0-15 correspond to $C0E0-$C0EF)
-  uint8_t read(uint8_t reg);
-  void write(uint8_t reg, uint8_t value);
+  // Delete copy constructor and assignment (non-copyable)
+  Disk2Controller(const Disk2Controller &) = delete;
+  Disk2Controller &operator=(const Disk2Controller &) = delete;
 
-  // Disk management
-  bool insertDisk(int drive, const uint8_t *data, size_t size,
-                  const std::string &filename);
-  void ejectDisk(int drive);
-  bool isDiskInserted(int drive) const;
-  bool isDiskModified(int drive) const;
-  const uint8_t *getDiskData(int drive, size_t *size) const;
+  // Allow move
+  Disk2Controller(Disk2Controller &&) = default;
+  Disk2Controller &operator=(Disk2Controller &&) = default;
 
-  // State access - returns synchronized state
-  DriveState getDriveState(int drive) const;
-  int getSelectedDrive() const { return selectedDrive_; }
-  uint8_t getDataLatch() const { return dataLatch_; }
-  uint8_t getPhaseStates() const { return phaseStates_; }
-
-  // Cycle-accurate update
-  void update(int cycles);
-
-  // Set cycle count callback (like reference)
-  void setCycleCount(uint64_t cycles) { currentCycle_ = cycles; }
-  uint64_t getCycles() const { return currentCycle_; }
-
-  // Reset
+  /**
+   * Reset the controller to power-on state
+   */
   void reset();
 
-private:
-  // Phase control - forwarded to disk image
-  void setPhase(int drive, int phase, bool on);
-  void updateHeadPosition(DiskImage &disk, int phase);
+  /**
+   * Read a byte from the controller I/O space ($C0E0-$C0EF)
+   * @param reg Register offset (0-15)
+   * @return byte value
+   */
+  uint8_t read(uint8_t reg);
 
-  // Ensure track is nibblized (lazy nibblization like reference)
-  void ensureTrackNibblized(int drive, int track);
+  /**
+   * Write a byte to the controller I/O space ($C0E0-$C0EF)
+   * @param reg Register offset (0-15)
+   * @param value byte value
+   */
+  void write(uint8_t reg, uint8_t value);
 
-  // Nibblization
-  void nibblizeTrack(DiskImage &disk, int track);
+  /**
+   * Update the controller state (call once per CPU cycle)
+   * @param cycles Number of cycles elapsed
+   */
+  void update(int cycles);
 
-  // Data access
-  uint8_t readDiskData();
-  void writeDiskData(uint8_t value);
-  uint8_t readNibble(int drive);
-  void writeNibble(int drive, uint8_t value);
+  // ===== Disk operations =====
 
-  // Disk format loading
-  bool loadDSK(int drive, const uint8_t *data, size_t size, bool proDosOrder);
-  bool loadWOZ(int drive, const uint8_t *data, size_t size);
+  /**
+   * Insert a disk image into a drive
+   * @param drive Drive number (0 or 1)
+   * @param data Pointer to disk image data
+   * @param size Size of the data
+   * @param filename Original filename (for format detection)
+   * @return true on success
+   */
+  bool insertDisk(int drive, const uint8_t *data, size_t size,
+                  const std::string &filename);
 
-  // Format detection
-  static bool detectProDOS(const uint8_t *data, size_t size);
-  static bool detectDOS33(const uint8_t *data, size_t size);
+  /**
+   * Eject disk from a drive
+   * @param drive Drive number (0 or 1)
+   */
+  void ejectDisk(int drive);
 
-  // 6-and-2 encoding
-  void encode62(const uint8_t *data, uint8_t *encoded);
+  /**
+   * Check if a drive has a disk inserted
+   * @param drive Drive number (0 or 1)
+   * @return true if disk is inserted
+   */
+  bool hasDisk(int drive) const;
 
-  // Drive state (minimal - just motor and write mode)
-  std::array<DriveState, NUM_DRIVES> drives_{};
+  /**
+   * Get the disk data for saving (DSK format)
+   * @param drive Drive number (0 or 1)
+   * @param size Output: size of the data
+   * @return Pointer to disk data, or nullptr if no disk
+   */
+  const uint8_t *getDiskData(int drive, size_t *size) const;
 
-  // Disk images (contain their own head position state)
-  std::array<DiskImage, NUM_DRIVES> disks_{};
+  /**
+   * Get the disk image for a drive (for UI display)
+   * @param drive Drive number (0 or 1)
+   * @return Pointer to disk image, or nullptr if no disk
+   */
+  const DiskImage *getDiskImage(int drive) const;
 
-  // Controller state
-  int selectedDrive_ = 0;
-  uint8_t phaseStates_ = 0; // Controller's view of phase states
-
-  // Q6/Q7 latches
-  bool q6_ = false;
-  bool q7_ = false;
-
-  // Data latch
-  uint8_t dataLatch_ = 0;
-  bool latchValid_ = false;
-
-  // Motor timing
-  bool motorOn_ = false;
-  uint64_t motorOffCycle_ = 0;
-
-  // Cycle timing
-  uint64_t currentCycle_ = 0;
-  std::array<uint64_t, NUM_DRIVES> lastReadCycle_{};
-
-  // Check if motor is actually on (accounts for delay)
+  /**
+   * Check if motor is currently on
+   * @return true if motor is running
+   */
   bool isMotorOn() const;
 
-  // GCR translation table
-  static constexpr std::array<uint8_t, 64> GCR_ENCODE_TABLE = {
-      {0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC,
-       0xAD, 0xAE, 0xAF, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB9, 0xBA,
-       0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xCB, 0xCD, 0xCE, 0xCF, 0xD3, 0xD6,
-       0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE5, 0xE6, 0xE7,
-       0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF2, 0xF3, 0xF4, 0xF5,
-       0xF6, 0xF7, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF}};
+  /**
+   * Get currently selected drive (0 or 1)
+   * @return Selected drive number
+   */
+  int getSelectedDrive() const { return selected_drive_; }
 
-  // DOS 3.3 sector interleave: physical sector -> logical sector
-  static constexpr std::array<int, 16> DOS_PHYSICAL_TO_LOGICAL = {
-      {0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15}};
+  /**
+   * Get the current phase magnet states
+   * @return Bit field where bit 0-3 represent phases 0-3 (1 = on, 0 = off)
+   */
+  uint8_t getPhaseStates() const { return phase_states_; }
 
-  // ProDOS sector interleave: physical sector -> logical sector
-  static constexpr std::array<int, 16> PRODOS_PHYSICAL_TO_LOGICAL = {
-      {0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15}};
+  /**
+   * Get the current track position from the selected drive's disk image
+   * @return Track number (0-34), or -1 if no disk
+   */
+  int getCurrentTrack() const;
+
+  /**
+   * Get the current quarter-track position from the selected drive's disk image
+   * @return Quarter-track number (0-139), or -1 if no disk
+   */
+  int getQuarterTrack() const;
+
+  /**
+   * Get Q6 latch state
+   * @return true if Q6 is high, false if low
+   */
+  bool getQ6() const { return q6_; }
+
+  /**
+   * Get Q7 latch state
+   * @return true if Q7 is high (write mode), false if low (read mode)
+   */
+  bool getQ7() const { return q7_; }
+
+  /**
+   * Get the data latch value (last nibble read/written)
+   * @return Current data latch value
+   */
+  uint8_t getDataLatch() const { return data_latch_; }
+
+private:
+  // Soft switch offsets
+  static constexpr uint8_t PHASE0_OFF = 0x00;
+  static constexpr uint8_t PHASE0_ON = 0x01;
+  static constexpr uint8_t PHASE1_OFF = 0x02;
+  static constexpr uint8_t PHASE1_ON = 0x03;
+  static constexpr uint8_t PHASE2_OFF = 0x04;
+  static constexpr uint8_t PHASE2_ON = 0x05;
+  static constexpr uint8_t PHASE3_OFF = 0x06;
+  static constexpr uint8_t PHASE3_ON = 0x07;
+  static constexpr uint8_t MOTOR_OFF = 0x08;
+  static constexpr uint8_t MOTOR_ON = 0x09;
+  static constexpr uint8_t DRIVE1_SELECT = 0x0A;
+  static constexpr uint8_t DRIVE2_SELECT = 0x0B;
+  static constexpr uint8_t Q6L = 0x0C; // Read data / shift
+  static constexpr uint8_t Q6H = 0x0D; // Write protect sense / write load
+  static constexpr uint8_t Q7L = 0x0E; // Read mode
+  static constexpr uint8_t Q7H = 0x0F; // Write mode
+
+  // Controller state
+  mutable bool motor_on_ = false;      // mutable for lazy timeout evaluation
+  mutable uint64_t motor_off_cycle_ = 0; // Cycle when motor-off was requested
+  int selected_drive_ = 0;             // 0 or 1
+  bool q6_ = false;                    // Q6 latch state
+  bool q7_ = false;                    // Q7 latch state (false=read, true=write)
+  uint8_t phase_states_ = 0;           // Bit field for phase magnet states
+
+  // Motor timeout: ~1 second at 1.023 MHz
+  static constexpr uint64_t MOTOR_OFF_DELAY_CYCLES = 1023000;
+
+  // Nibble timing: ~32 cycles per nibble
+  static constexpr uint64_t CYCLES_PER_NIBBLE = 32;
+
+  // Total cycle count for timing
+  uint64_t total_cycles_ = 0;
+
+  // Disk images for each drive (polymorphic - can be DSK or WOZ)
+  std::unique_ptr<DiskImage> disk_images_[2];
+
+  // Per-drive timing state
+  uint64_t last_read_cycle_[2] = {0, 0};
+
+  // Data latch (shift register)
+  uint8_t data_latch_ = 0;
+  bool latch_valid_ = false; // True until first read of current nibble
+
+  // Write state
+  uint8_t write_latch_ = 0;
+
+  /**
+   * Read a byte from the current disk
+   * Updates disk timing and returns the data latch value
+   * @return The data latch value
+   */
+  uint8_t readDiskData();
+
+  /**
+   * Write a byte to the current disk
+   * Handles write timing and commits the nibble to disk
+   */
+  void writeDiskData();
+
+  /**
+   * Handle soft switch access
+   * @param offset Offset (0x00-0x0F)
+   * @param is_write true if write access, false if read
+   * @return byte value for reads
+   */
+  uint8_t handleSoftSwitch(uint8_t offset, bool is_write);
 };
 
 } // namespace a2e

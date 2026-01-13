@@ -13,6 +13,9 @@ set(CORE_SOURCES
     src/core/video/video.cpp
     src/core/audio/audio.cpp
     src/core/disk/disk2.cpp
+    src/core/disk/dsk_disk_image.cpp
+    src/core/disk/woz_disk_image.cpp
+    src/core/disk/gcr_encoding.cpp
     src/bindings/wasm_interface.cpp
 )
 

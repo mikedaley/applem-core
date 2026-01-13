@@ -30,10 +30,9 @@ Emulator::Emulator() {
 Emulator::~Emulator() = default;
 
 void Emulator::init() {
-  // Load ROMs - using combined 16KB system ROM
-  // Disk ROM disabled for now
+  // Load ROMs - using combined 16KB system ROM and Disk II ROM
   mmu_->loadROM(roms::ROM_SYSTEM, roms::ROM_SYSTEM_SIZE, roms::ROM_CHAR,
-                roms::ROM_CHAR_SIZE, nullptr, 0);
+                roms::ROM_CHAR_SIZE, roms::ROM_DISK2, roms::ROM_DISK2_SIZE);
 
   reset();
 }
@@ -82,11 +81,15 @@ void Emulator::runCycles(int cycles) {
       }
     }
 
+    // Track cycles before instruction
+    uint64_t cyclesBefore = cpu_->getTotalCycles();
+
     // Execute one instruction
     cpu_->executeInstruction();
 
-    // Update disk controller
-    disk_->update(1);
+    // Update disk controller with actual instruction cycles
+    uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
+    disk_->update(static_cast<int>(cyclesUsed));
 
     // Check for frame boundary
     uint64_t currentCycle = cpu_->getTotalCycles();
@@ -163,8 +166,15 @@ void Emulator::enableBreakpoint(uint16_t address, bool enabled) {
 
 void Emulator::stepInstruction() {
   breakpointHit_ = false;
+
+  // Track cycles before instruction
+  uint64_t cyclesBefore = cpu_->getTotalCycles();
+
   cpu_->executeInstruction();
-  disk_->update(1);
+
+  // Update disk controller with actual instruction cycles
+  uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
+  disk_->update(static_cast<int>(cyclesUsed));
 
   // Check for frame boundary
   uint64_t currentCycle = cpu_->getTotalCycles();
