@@ -218,6 +218,11 @@ void Video::renderHiRes() {
   int maxRow = sw.mixed ? 160 : 192;
 
   for (int row = 0; row < maxRow; row++) {
+    // Build pixel and high-bit arrays for the entire scanline
+    // to properly handle artifact colors across byte boundaries
+    bool pixels[280];
+    bool highBits[280];
+
     for (int col = 0; col < 40; col++) {
       uint16_t addr = getHiResAddress(row, col);
 
@@ -228,40 +233,54 @@ void Video::renderHiRes() {
         dataByte = mmu_.readRAM(addr, false);
       }
 
-      // High bit determines color palette
       bool highBit = (dataByte & 0x80) != 0;
 
-      // Each byte represents 7 pixels
-      int screenX = col * 14; // 7 pixels * 2 for double width
-      int screenY = row * 2;  // 2x vertical scaling
-
       for (int bit = 0; bit < 7; bit++) {
-        bool pixelOn = (dataByte & (1 << bit)) != 0;
-        uint32_t color;
-
-        if (monochrome_) {
-          color = getMonochromeColor(pixelOn);
-        } else if (pixelOn) {
-          // Simplified NTSC artifact colors
-          // Even columns: green/purple, Odd columns: orange/blue
-          int pixelX = col * 7 + bit;
-          if (highBit) {
-            color =
-                (pixelX & 1) ? HIRES_COLORS[4] : HIRES_COLORS[5]; // Blue/Orange
-          } else {
-            color = (pixelX & 1) ? HIRES_COLORS[1]
-                                 : HIRES_COLORS[2]; // Green/Purple
-          }
-        } else {
-          color = HIRES_COLORS[0]; // Black
-        }
-
-        // Draw 2x2 block for each pixel
-        setPixel(screenX + bit * 2, screenY, color);
-        setPixel(screenX + bit * 2 + 1, screenY, color);
-        setPixel(screenX + bit * 2, screenY + 1, color);
-        setPixel(screenX + bit * 2 + 1, screenY + 1, color);
+        int pixelX = col * 7 + bit;
+        pixels[pixelX] = (dataByte & (1 << bit)) != 0;
+        highBits[pixelX] = highBit;
       }
+    }
+
+    // Render each pixel with proper artifact color handling
+    int screenY = row * 2;
+
+    for (int pixelX = 0; pixelX < 280; pixelX++) {
+      uint32_t color;
+
+      if (monochrome_) {
+        color = getMonochromeColor(pixels[pixelX]);
+      } else if (!pixels[pixelX]) {
+        color = HIRES_COLORS[0]; // Black for off pixels
+      } else {
+        // Check adjacent pixels for white detection
+        bool prevOn = (pixelX > 0) && pixels[pixelX - 1];
+        bool nextOn = (pixelX < 279) && pixels[pixelX + 1];
+
+        if (prevOn || nextOn) {
+          // Adjacent pixels both on = white
+          color = HIRES_COLORS[3]; // White
+        } else {
+          // Single isolated pixel shows artifact color
+          bool highBit = highBits[pixelX];
+          // Even pixels (0,2,4...): purple/blue
+          // Odd pixels (1,3,5...): green/orange
+          if (pixelX & 1) {
+            // Odd pixel
+            color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
+          } else {
+            // Even pixel
+            color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Purple
+          }
+        }
+      }
+
+      // Draw 2x2 block for each pixel
+      int screenX = pixelX * 2;
+      setPixel(screenX, screenY, color);
+      setPixel(screenX + 1, screenY, color);
+      setPixel(screenX, screenY + 1, color);
+      setPixel(screenX + 1, screenY + 1, color);
     }
   }
 }
