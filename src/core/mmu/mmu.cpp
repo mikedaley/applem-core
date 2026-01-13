@@ -437,30 +437,44 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
 
 uint8_t MMU::handleLanguageCardSwitch(uint8_t reg) {
   // Language card switches at $C080-$C08F
-  // Bits: xxxx BWRE
-  // B = bank select (0 = bank 2, 1 = bank 1)
-  // W = write enable (after two reads)
-  // R = RAM select for read (1 = RAM, 0 = ROM)
-  // E = even/odd access for write enable
+  // Bit 3: bank select (0 = bank 2, 1 = bank 1)
+  // Bits 0-1 determine read source and write enable:
+  //   0: Read RAM, write disabled
+  //   1: Read ROM, write enabled (after 2 reads)
+  //   2: Read ROM, write disabled
+  //   3: Read RAM, write enabled (after 2 reads)
 
   bool bank2 = !(reg & 0x08);
-  bool readRAM = (reg & 0x01) != 0;
-  bool writeEnable = (reg & 0x02) != 0;
+  uint8_t op = reg & 0x03;
 
-  // Handle write enable - requires two consecutive reads
-  if ((reg & 0x01) == 0) {
-    // Even address - first read
-    switches_.lcprewrite = true;
-  } else {
-    // Odd address - second read enables write
+  // RAM vs ROM read selection
+  // Pattern: 0=RAM, 1=ROM, 2=ROM, 3=RAM
+  bool readRAM = (op == 0 || op == 3);
+
+  switch (op) {
+  case 0: // $C080, $C088: Read RAM, write disabled
+    switches_.lcwrite = false;
+    switches_.lcprewrite = false;
+    break;
+
+  case 1: // $C081, $C089: Read ROM, write enable on second read
     if (switches_.lcprewrite) {
       switches_.lcwrite = true;
     }
-    switches_.lcprewrite = false;
-  }
+    switches_.lcprewrite = true;
+    break;
 
-  if (writeEnable) {
-    switches_.lcwrite = true;
+  case 2: // $C082, $C08A: Read ROM, write disabled
+    switches_.lcwrite = false;
+    switches_.lcprewrite = false;
+    break;
+
+  case 3: // $C083, $C08B: Read RAM, write enable on second read
+    if (switches_.lcprewrite) {
+      switches_.lcwrite = true;
+    }
+    switches_.lcprewrite = true;
+    break;
   }
 
   switches_.lcram = readRAM;
@@ -614,7 +628,7 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
     }
     break;
 
-  // Language card
+  // Language card - writes do NOT enable write, and reset prewrite state
   case 0x80:
   case 0x81:
   case 0x82:
@@ -631,12 +645,52 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
   case 0x8D:
   case 0x8E:
   case 0x8F:
-    handleLanguageCardSwitch(reg);
+    handleLanguageCardSwitchWrite(reg);
     break;
 
   default:
     break;
   }
+}
+
+void MMU::handleLanguageCardSwitchWrite(uint8_t reg) {
+  // Language card soft switches on WRITE access
+  // Writes have the same effect as reads EXCEPT:
+  // - Writes do NOT count toward the "double access" requirement for write-enable
+  // - Writes reset the pre-write state (clearing any pending write-enable)
+  //
+  // Reference: "Any in-between write will reset the counter and require two more READS"
+
+  bool bank2 = !(reg & 0x08);
+  uint8_t op = reg & 0x03;
+
+  // RAM vs ROM read selection (same as reads)
+  bool readRAM = (op == 0 || op == 3);
+
+  switch (op) {
+  case 0: // $C080, $C088: Read RAM, write disabled
+    switches_.lcwrite = false;
+    switches_.lcprewrite = false;
+    break;
+
+  case 1: // $C081, $C089: Read ROM
+    // Write does NOT enable lcwrite, and resets prewrite
+    switches_.lcprewrite = false;
+    break;
+
+  case 2: // $C082, $C08A: Read ROM, write disabled
+    switches_.lcwrite = false;
+    switches_.lcprewrite = false;
+    break;
+
+  case 3: // $C083, $C08B: Read RAM
+    // Write does NOT enable lcwrite, and resets prewrite
+    switches_.lcprewrite = false;
+    break;
+  }
+
+  switches_.lcram = readRAM;
+  switches_.lcram2 = bank2;
 }
 
 uint8_t MMU::readLanguageCard(uint16_t address) {

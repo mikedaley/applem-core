@@ -500,4 +500,18 @@ const uint8_t *WozDiskImage::getSectorData(size_t *size) const {
   return nullptr;
 }
 
+uint8_t WozDiskImage::getNibbleAt(int track, int position) const {
+  // WOZ stores bit-level data, not nibbles directly
+  // This would require significant work to implement
+  (void)track;
+  (void)position;
+  return 0;
+}
+
+int WozDiskImage::getTrackNibbleCount(int track) const {
+  // WOZ stores bit-level data
+  (void)track;
+  return 0;
+}
+
 } // namespace a2e

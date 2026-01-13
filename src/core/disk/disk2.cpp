@@ -257,7 +257,7 @@ uint8_t Disk2Controller::readDiskData() {
   // If we return the same nibble with bit 7 still set, the ROM will process
   // it twice! We must clear bit 7 after the first read until the next nibble.
 
-  uint64_t current_cycle = total_cycles_;
+  uint64_t current_cycle = getCycles();
   uint64_t &last_cycle = last_read_cycle_[selected_drive_];
 
   // Check if enough time has passed for a new nibble

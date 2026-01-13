@@ -25,6 +25,10 @@ Emulator::Emulator() {
 
   // Connect disk controller to MMU
   mmu_->setDiskController(disk_.get());
+
+  // Set up disk timing callback - allows disk reads to get accurate cycle count
+  // during instruction execution (before disk_->update() is called)
+  disk_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
 }
 
 Emulator::~Emulator() = default;

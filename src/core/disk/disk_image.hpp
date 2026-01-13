@@ -171,6 +171,29 @@ public:
    */
   virtual const uint8_t *getSectorData(size_t *size) const = 0;
 
+  // ===== Debug Methods =====
+
+  /**
+   * Get a nibble at a specific track and position (debug only)
+   * @param track Track number (0-34)
+   * @param position Position in nibble stream
+   * @return Nibble value at that position
+   */
+  virtual uint8_t getNibbleAt(int track, int position) const = 0;
+
+  /**
+   * Get the number of nibbles in a track (debug only)
+   * @param track Track number (0-34)
+   * @return Number of nibbles in the track
+   */
+  virtual int getTrackNibbleCount(int track) const = 0;
+
+  /**
+   * Get the current nibble position within the track (debug only)
+   * @return Current nibble position
+   */
+  virtual size_t getCurrentNibblePosition() const = 0;
+
 protected:
   DiskImage() = default;
 };

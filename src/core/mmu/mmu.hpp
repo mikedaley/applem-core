@@ -63,6 +63,7 @@ private:
   uint8_t readLanguageCard(uint16_t address);
   void writeLanguageCard(uint16_t address, uint8_t value);
   uint8_t handleLanguageCardSwitch(uint8_t reg);
+  void handleLanguageCardSwitchWrite(uint8_t reg);
 
   // Memory banks
   std::array<uint8_t, MAIN_RAM_SIZE> mainRAM_{};

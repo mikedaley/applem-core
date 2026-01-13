@@ -3,10 +3,14 @@
 #include "disk_image.hpp"
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
 namespace a2e {
+
+// Callback type for getting current CPU cycle count
+using CycleCallback = std::function<uint64_t()>;
 
 /**
  * Disk2Controller - Disk II Controller Card for Slot 6
@@ -63,6 +67,13 @@ public:
    * @param cycles Number of cycles elapsed
    */
   void update(int cycles);
+
+  /**
+   * Set the callback for getting current CPU cycle count
+   * This is used for accurate disk timing during reads
+   * @param callback Function that returns current CPU cycle count
+   */
+  void setCycleCallback(CycleCallback callback) { cycle_callback_ = callback; }
 
   // ===== Disk operations =====
 
@@ -186,8 +197,21 @@ private:
   // Nibble timing: ~32 cycles per nibble
   static constexpr uint64_t CYCLES_PER_NIBBLE = 32;
 
-  // Total cycle count for timing
+  // Total cycle count for timing (fallback if no callback)
   uint64_t total_cycles_ = 0;
+
+  // Callback for getting current CPU cycle count
+  CycleCallback cycle_callback_;
+
+  /**
+   * Get current cycle count, using callback if available
+   */
+  uint64_t getCycles() const {
+    if (cycle_callback_) {
+      return cycle_callback_();
+    }
+    return total_cycles_;
+  }
 
   // Disk images for each drive (polymorphic - can be DSK or WOZ)
   std::unique_ptr<DiskImage> disk_images_[2];

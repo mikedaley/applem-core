@@ -61,6 +61,11 @@ public:
   std::string getFormatName() const override;
   const uint8_t *getSectorData(size_t *size) const override;
 
+  // ===== Debug Methods =====
+  uint8_t getNibbleAt(int track, int position) const override;
+  int getTrackNibbleCount(int track) const override;
+  size_t getCurrentNibblePosition() const override { return bit_position_ / 8; }
+
   // ===== WOZ-specific methods =====
 
   /**

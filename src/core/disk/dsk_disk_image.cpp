@@ -567,4 +567,36 @@ const uint8_t *DskDiskImage::getSectorData(size_t *size) const {
   return sector_data_.data();
 }
 
+uint8_t DskDiskImage::getNibbleAt(int track, int position) const {
+  if (track < 0 || track >= TRACKS) {
+    return 0;
+  }
+
+  // Ensure track is nibblized
+  if (!nibble_tracks_[track].valid) {
+    const_cast<DskDiskImage *>(this)->nibblizeTrack(track);
+  }
+
+  const auto &nt = nibble_tracks_[track];
+  if (nt.nibbles.empty() || position < 0 ||
+      position >= static_cast<int>(nt.nibbles.size())) {
+    return 0;
+  }
+
+  return nt.nibbles[position];
+}
+
+int DskDiskImage::getTrackNibbleCount(int track) const {
+  if (track < 0 || track >= TRACKS) {
+    return 0;
+  }
+
+  // Ensure track is nibblized
+  if (!nibble_tracks_[track].valid) {
+    const_cast<DskDiskImage *>(this)->nibblizeTrack(track);
+  }
+
+  return static_cast<int>(nibble_tracks_[track].nibbles.size());
+}
+
 } // namespace a2e
