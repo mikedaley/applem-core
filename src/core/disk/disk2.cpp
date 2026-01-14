@@ -48,10 +48,10 @@ uint8_t Disk2Controller::read(uint8_t reg) {
 void Disk2Controller::write(uint8_t reg, uint8_t value) {
   uint8_t offset = reg & 0x0F;
 
-  // In write mode, writing to Q6H loads data into the shift register
-  if (q7_ && (offset == Q6H || offset == Q6L)) {
+  // In write mode, any write loads data into the shift register
+  // The actual disk write happens when Q6L is accessed (see handleSoftSwitch)
+  if (q7_) {
     write_latch_ = value;
-    writeDiskData();
   }
 
   handleSoftSwitch(offset, true);
@@ -125,6 +125,9 @@ uint8_t Disk2Controller::handleSoftSwitch(uint8_t offset, bool is_write) {
     if (!q7_) {
       // Read mode (Q7=0, Q6=0): return data from disk
       return readDiskData();
+    } else {
+      // Write mode (Q7=1, Q6=0): shift out data to disk
+      writeDiskData();
     }
     break;
 

@@ -22,6 +22,7 @@ Emulator::Emulator() {
   mmu_->setKeyboardCallback([this]() { return getKeyboardData(); });
   mmu_->setKeyStrobeCallback([this]() { clearKeyboardStrobe(); });
   mmu_->setSpeakerCallback([this]() { toggleSpeaker(); });
+  mmu_->setButtonCallback([this](int btn) { return getButtonState(btn); });
 
   // Connect disk controller to MMU
   mmu_->setDiskController(disk_.get());
@@ -139,6 +140,19 @@ void Emulator::keyDown(int keycode) {
 }
 
 void Emulator::keyUp(int keycode) { keyDown_ = false; }
+
+void Emulator::setButton(int button, bool pressed) {
+  if (button >= 0 && button < 3) {
+    buttonState_[button] = pressed;
+  }
+}
+
+uint8_t Emulator::getButtonState(int button) {
+  if (button >= 0 && button < 3 && buttonState_[button]) {
+    return 0x80; // Bit 7 set = button pressed
+  }
+  return 0x00; // Button not pressed
+}
 
 bool Emulator::insertDisk(int drive, const uint8_t *data, size_t size,
                           const char *filename) {

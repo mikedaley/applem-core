@@ -26,23 +26,31 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
 
   reset();
 
+  printf("WOZ load: size=%zu\n", size);
+
   if (size < sizeof(WozHeader)) {
+    printf("WOZ load failed: size too small\n");
     return false;
   }
 
   // Validate header
   const auto *header = reinterpret_cast<const WozHeader *>(data);
+  printf("WOZ signature: 0x%08X (expected WOZ2: 0x%08X)\n", header->signature, WOZ2_SIGNATURE);
   if (header->signature == WOZ1_SIGNATURE) {
     format_ = Format::WOZ1;
   } else if (header->signature == WOZ2_SIGNATURE) {
     format_ = Format::WOZ2;
   } else {
+    printf("WOZ load failed: invalid signature\n");
     return false;
   }
 
   // Validate magic bytes
+  printf("WOZ magic: high_bits=0x%02X, lfcrlf=[0x%02X, 0x%02X, 0x%02X]\n",
+         header->high_bits, header->lfcrlf[0], header->lfcrlf[1], header->lfcrlf[2]);
   if (header->high_bits != 0xFF || header->lfcrlf[0] != 0x0A ||
       header->lfcrlf[1] != 0x0D || header->lfcrlf[2] != 0x0A) {
+    printf("WOZ load failed: invalid magic bytes\n");
     return false;
   }
 
@@ -96,7 +104,9 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
   }
 
   // Validate required chunks
+  printf("WOZ chunks: has_info=%d, has_tmap=%d, has_trks=%d\n", has_info, has_tmap, has_trks);
   if (!has_info || !has_tmap || !has_trks) {
+    printf("WOZ load failed: missing required chunks\n");
     return false;
   }
 
@@ -108,17 +118,22 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
     trks_ok = parseTrksChunkWoz2(data, size, trks_data, trks_size);
   }
 
+  printf("WOZ TRKS parse result: %d\n", trks_ok);
   if (!trks_ok) {
+    printf("WOZ load failed: TRKS parse failed\n");
     return false;
   }
 
   loaded_ = true;
+  printf("WOZ load successful!\n");
   return true;
 }
 
 bool WozDiskImage::parseInfoChunk(const uint8_t *data, uint32_t size) {
+  printf("parseInfoChunk: size=%u\n", size);
   // Minimum size is 60 bytes for WOZ2, but accept smaller for WOZ1
   if (size < 37) {
+    printf("parseInfoChunk failed: size too small\n");
     return false;
   }
 
@@ -127,8 +142,10 @@ bool WozDiskImage::parseInfoChunk(const uint8_t *data, uint32_t size) {
   std::memcpy(&info_, data,
               std::min(size, static_cast<uint32_t>(sizeof(info_))));
 
+  printf("parseInfoChunk: disk_type=%d\n", info_.disk_type);
   // Validate disk type
   if (info_.disk_type != 1 && info_.disk_type != 2) {
+    printf("parseInfoChunk failed: invalid disk_type\n");
     return false;
   }
 
@@ -136,11 +153,14 @@ bool WozDiskImage::parseInfoChunk(const uint8_t *data, uint32_t size) {
 }
 
 bool WozDiskImage::parseTmapChunk(const uint8_t *data, uint32_t size) {
+  printf("parseTmapChunk: size=%u (need %d)\n", size, QUARTER_TRACK_COUNT);
   if (size < QUARTER_TRACK_COUNT) {
+    printf("parseTmapChunk failed: size too small\n");
     return false;
   }
 
   std::memcpy(tmap_.data(), data, QUARTER_TRACK_COUNT);
+  printf("parseTmapChunk: tmap[0]=%d, tmap[4]=%d\n", tmap_[0], tmap_[4]);
   return true;
 }
 
@@ -180,7 +200,11 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
   // Track data follows at block offsets specified in entries
   static constexpr size_t WOZ2_TRK_TABLE_SIZE = 160 * sizeof(Woz2TrackEntry);
 
+  printf("parseTrksChunkWoz2: trks_size=%u, need=%zu, file_size=%zu\n",
+         trks_size, WOZ2_TRK_TABLE_SIZE, file_size);
+
   if (trks_size < WOZ2_TRK_TABLE_SIZE) {
+    printf("parseTrksChunkWoz2 failed: trks_size too small\n");
     return false;
   }
 
@@ -194,7 +218,10 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
     }
   }
 
+  printf("parseTrksChunkWoz2: max_track_index=%d\n", max_track_index);
+
   if (max_track_index < 0) {
+    printf("parseTrksChunkWoz2: no tracks in TMAP\n");
     return true; // No tracks - empty disk
   }
 

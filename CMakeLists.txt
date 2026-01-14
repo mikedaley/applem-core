@@ -98,6 +98,7 @@ if(EMSCRIPTEN)
                 \"_getDiskHeadPosition\", \
                 \"_getSelectedDrive\", \
                 \"_isDiskInserted\", \
+                \"_isDiskModified\", \
                 \"_getLastDiskByte\", \
                 \"_malloc\", \
                 \"_free\" \

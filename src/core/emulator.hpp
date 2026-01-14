@@ -40,6 +40,7 @@ public:
   // Input
   void keyDown(int keycode);
   void keyUp(int keycode);
+  void setButton(int button, bool pressed);  // Set button state (0=Open Apple, 1=Closed Apple, 2=Button2)
 
   // Disk management
   bool insertDisk(int drive, const uint8_t *data, size_t size,
@@ -108,6 +109,10 @@ private:
   // Keyboard state
   uint8_t keyboardLatch_ = 0;
   bool keyDown_ = false;
+
+  // Button state (Open Apple, Closed Apple, Button 2)
+  bool buttonState_[3] = {false, false, false};
+  uint8_t getButtonState(int button);
 
   // Frame timing
   uint64_t lastFrameCycle_ = 0;

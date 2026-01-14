@@ -374,18 +374,40 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
   case 0x0B:
     switches_.slotc3rom = true;
     return 0x00; // SETSLOTC3ROM
-  case 0x0C:
-    switches_.col80 = false;
-    return 0x00; // CLR80COL
-  case 0x0D:
-    switches_.col80 = true;
-    return 0x00; // SET80COL
-  case 0x0E:
-    switches_.altCharSet = false;
-    return 0x00; // CLRALTCHAR
-  case 0x0F:
-    switches_.altCharSet = true;
-    return 0x00; // SETALTCHAR
+  // $C00C-$C00F are write-only on IIe - reads don't affect state
+  case 0x0C: // CLR80COL (write-only)
+  case 0x0D: // SET80COL (write-only)
+  case 0x0E: // CLRALTCHAR (write-only)
+  case 0x0F: // SETALTCHAR (write-only)
+    return 0x00;
+
+  // Buttons (Open Apple, Closed Apple, Button 2)
+  case 0x61: // PB0 / Open Apple
+    if (buttonCallback_) {
+      return buttonCallback_(0);
+    }
+    return 0x00;
+  case 0x62: // PB1 / Closed Apple
+    if (buttonCallback_) {
+      return buttonCallback_(1);
+    }
+    return 0x00;
+  case 0x63: // PB2 / Shift key modifier
+    if (buttonCallback_) {
+      return buttonCallback_(2);
+    }
+    return 0x00;
+
+  // Paddle inputs (return not triggered for now)
+  case 0x64: // PDL0
+  case 0x65: // PDL1
+  case 0x66: // PDL2
+  case 0x67: // PDL3
+    return 0x00; // Paddle not triggered (bit 7 = 0)
+
+  // Paddle trigger reset
+  case 0x70: // PTRIG - reset paddle timers
+    return 0x00;
 
   // Disk II controller (slot 6): $C0E0-$C0EF
   case 0xE0:

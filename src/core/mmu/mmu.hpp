@@ -15,6 +15,7 @@ public:
   using KeyboardCallback = std::function<uint8_t()>;
   using KeyStrobeCallback = std::function<void()>;
   using SpeakerCallback = std::function<void()>;
+  using ButtonCallback = std::function<uint8_t(int)>; // Returns button state for button 0-2
 
   MMU();
 
@@ -47,6 +48,7 @@ public:
   void setSpeakerCallback(SpeakerCallback cb) {
     speakerCallback_ = std::move(cb);
   }
+  void setButtonCallback(ButtonCallback cb) { buttonCallback_ = std::move(cb); }
 
   // Peripheral connections
   void setDiskController(Disk2Controller *disk) { diskController_ = disk; }
@@ -94,6 +96,7 @@ private:
   KeyboardCallback keyboardCallback_;
   KeyStrobeCallback keyStrobeCallback_;
   SpeakerCallback speakerCallback_;
+  ButtonCallback buttonCallback_;
 
   // Peripherals
   Disk2Controller *diskController_ = nullptr;
