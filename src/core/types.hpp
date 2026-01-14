@@ -104,14 +104,16 @@ constexpr std::array<uint32_t, 16> LORES_COLORS = {{
     0xFFFFFFFF  // 15: White
 }};
 
-// HiRes colors (simplified NTSC artifact colors)
+// HiRes artifact colors (NTSC-accurate values)
+// Group 1 (high bit = 0): Black, Green, Violet, White
+// Group 2 (high bit = 1): Black, Orange, Blue, White
 constexpr std::array<uint32_t, 6> HIRES_COLORS = {{
-    0xFF000000, // Black
-    0xFF00FF00, // Green
-    0xFFFF00FF, // Purple/Violet
-    0xFFFFFFFF, // White
-    0xFF0000FF, // Blue (for odd columns with high bit)
-    0xFFFF8000  // Orange (for odd columns with high bit)
+    0xFF000000, // 0: Black
+    0xFF2FBC1A, // 1: Green (odd pixels, high bit = 0)
+    0xFFD93CF0, // 2: Violet (even pixels, high bit = 0)
+    0xFFFFFFFF, // 3: White
+    0xFF0E5CE8, // 4: Blue (even pixels, high bit = 1)
+    0xFFF25006  // 5: Orange (odd pixels, high bit = 1)
 }};
 
 } // namespace a2e

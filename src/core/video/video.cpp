@@ -218,10 +218,9 @@ void Video::renderHiRes() {
   int maxRow = sw.mixed ? 160 : 192;
 
   for (int row = 0; row < maxRow; row++) {
-    // Build pixel and high-bit arrays for the entire scanline
-    // to properly handle artifact colors across byte boundaries
-    uint8_t pixels[280] = {0};
-    uint8_t highBits[280] = {0};
+    // Build scanline array: 280 dots across (40 bytes × 7 bits)
+    uint8_t dots[280] = {0};
+    uint8_t highBits[280] = {0}; // High bit expanded per dot for easy lookup
 
     for (int col = 0; col < 40; col++) {
       uint16_t addr = getHiResAddress(row, col);
@@ -236,51 +235,90 @@ void Video::renderHiRes() {
       bool highBit = (dataByte & 0x80) != 0;
 
       for (int bit = 0; bit < 7; bit++) {
-        int pixelX = col * 7 + bit;
-        pixels[pixelX] = (dataByte & (1 << bit)) != 0;
-        highBits[pixelX] = highBit;
+        int dotX = col * 7 + bit;
+        dots[dotX] = (dataByte & (1 << bit)) ? 1 : 0;
+        highBits[dotX] = highBit ? 1 : 0;
       }
     }
 
-    // Render each pixel with proper artifact color handling
     int screenY = row * 2;
 
-    for (int pixelX = 0; pixelX < 280; pixelX++) {
-      uint32_t color;
+    if (monochrome_) {
+      // Monochrome mode: render each dot individually
+      for (int dotX = 0; dotX < 280; dotX++) {
+        uint32_t color = getMonochromeColor(dots[dotX] != 0);
+        int screenX = dotX * 2;
+        setPixel(screenX, screenY, color);
+        setPixel(screenX + 1, screenY, color);
+        setPixel(screenX, screenY + 1, color);
+        setPixel(screenX + 1, screenY + 1, color);
+      }
+    } else {
+      // Color mode: process each byte separately for consistent colors
+      // This avoids byte-boundary color shifting issues
+      for (int byteIdx = 0; byteIdx < 40; byteIdx++) {
+        int baseX = byteIdx * 7;
+        bool highBit = highBits[baseX] != 0;
 
-      if (monochrome_) {
-        color = getMonochromeColor(pixels[pixelX]);
-      } else if (!pixels[pixelX]) {
-        color = HIRES_COLORS[0]; // Black for off pixels
-      } else {
-        // Check adjacent pixels for white detection
-        bool prevOn = (pixelX > 0) && (pixels[pixelX - 1] != 0);
-        bool nextOn = (pixelX < 279) && (pixels[pixelX + 1] != 0);
+        // Get the 7 dots for this byte
+        bool byteDots[7];
+        for (int i = 0; i < 7; i++) {
+          byteDots[i] = dots[baseX + i] != 0;
+        }
 
-        if (prevOn || nextOn) {
-          // Adjacent pixels both on = white
-          color = HIRES_COLORS[3]; // White
-        } else {
-          // Single isolated pixel shows artifact color
-          bool highBit = (highBits[pixelX] != 0);
-          // Even pixels (0,2,4...): purple/blue
-          // Odd pixels (1,3,5...): green/orange
-          if (pixelX & 1) {
-            // Odd pixel
-            color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
+        // Determine color for each dot based on local pattern
+        for (int i = 0; i < 7; i++) {
+          uint32_t color;
+          int x = baseX + i;
+
+          bool dotOn = byteDots[i];
+          bool prevOn = (i > 0) ? byteDots[i - 1] : ((byteIdx > 0) && dots[baseX - 1]);
+          bool nextOn = (i < 6) ? byteDots[i + 1] : ((byteIdx < 39) && dots[baseX + 7]);
+
+          if (!dotOn) {
+            // OFF dot - check if part of alternating color pattern
+            if (prevOn && !((i > 1) ? byteDots[i - 2] : ((byteIdx > 0) && dots[baseX - 2]))) {
+              // Previous is isolated ON, bleed its color
+              int prevBitPos = (i > 0) ? (i - 1) : 6; // Wrap to previous byte's last bit
+              if (prevBitPos & 1) {
+                color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Green/Orange
+              } else {
+                color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
+              }
+            } else if (nextOn && !((i < 5) ? byteDots[i + 2] : ((byteIdx < 39) && dots[baseX + 8]))) {
+              // Next is isolated ON, bleed its color
+              int nextBitPos = (i < 6) ? (i + 1) : 0;
+              if (nextBitPos & 1) {
+                color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1];
+              } else {
+                color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2];
+              }
+            } else {
+              color = HIRES_COLORS[0]; // Black
+            }
           } else {
-            // Even pixel
-            color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Purple
+            // ON dot
+            if (prevOn || nextOn) {
+              // Part of white run (2+ adjacent ON)
+              color = HIRES_COLORS[3]; // White
+            } else {
+              // Isolated ON dot - artifact color based on bit position
+              if (i & 1) {
+                color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Green/Orange
+              } else {
+                color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
+              }
+            }
           }
+
+          // Draw 2x2 block
+          int screenX = x * 2;
+          setPixel(screenX, screenY, color);
+          setPixel(screenX + 1, screenY, color);
+          setPixel(screenX, screenY + 1, color);
+          setPixel(screenX + 1, screenY + 1, color);
         }
       }
-
-      // Draw 2x2 block for each pixel
-      int screenX = pixelX * 2;
-      setPixel(screenX, screenY, color);
-      setPixel(screenX + 1, screenY, color);
-      setPixel(screenX, screenY + 1, color);
-      setPixel(screenX + 1, screenY + 1, color);
     }
   }
 }
@@ -338,38 +376,74 @@ void Video::renderDoubleLoRes() {
 
 void Video::renderDoubleHiRes() {
   // Double hi-res: 560x192 monochrome or 140x192 with 16 colors
+  // Memory layout: aux and main bytes interleave to form 560 dots per line
+  // For color: every 4 dots = 1 color pixel (140 color pixels per line)
   const auto &sw = mmu_.getSoftSwitches();
 
   int maxRow = sw.mixed ? 160 : 192;
 
   for (int row = 0; row < maxRow; row++) {
+    // Build the 560-dot scanline by interleaving aux and main memory
+    // Pattern: aux0, main0, aux1, main1, ... aux39, main39
+    // Each byte contributes 7 dots (bits 0-6, bit 7 is unused in DHGR)
+    uint8_t dots[560];
+    int dotIdx = 0;
+
     for (int col = 0; col < 40; col++) {
       uint16_t addr = getHiResAddress(row, col);
 
-      // Aux memory byte
       uint8_t auxByte = mmu_.readRAM(addr, true);
-      // Main memory byte
       uint8_t mainByte = mmu_.readRAM(addr, false);
 
-      int screenX = col * 14;
-      int screenY = row * 2;
+      // Interleave: aux bits first, then main bits
+      // But the actual interleaving for DHGR color is more complex:
+      // The 560 dots come from 80 bytes (40 aux + 40 main)
+      // Byte order: aux0, main0, aux1, main1...
+      // So for column col: aux contributes dots, then main contributes dots
 
-      // Aux byte: 7 pixels (bits 0-6)
+      // Actually, DHGR interleaves at the byte level:
+      // dots 0-6 from aux[0], dots 7-13 from main[0],
+      // dots 14-20 from aux[1], dots 21-27 from main[1], etc.
+
+      // For this column pair:
       for (int bit = 0; bit < 7; bit++) {
-        bool pixelOn = (auxByte & (1 << bit)) != 0;
-        uint32_t color = getMonochromeColor(pixelOn);
-
-        setPixel(screenX + bit, screenY, color);
-        setPixel(screenX + bit, screenY + 1, color);
+        dots[col * 14 + bit] = (auxByte >> bit) & 1;
       }
-
-      // Main byte: 7 pixels (bits 0-6)
       for (int bit = 0; bit < 7; bit++) {
-        bool pixelOn = (mainByte & (1 << bit)) != 0;
-        uint32_t color = getMonochromeColor(pixelOn);
+        dots[col * 14 + 7 + bit] = (mainByte >> bit) & 1;
+      }
+    }
 
-        setPixel(screenX + 7 + bit, screenY, color);
-        setPixel(screenX + 7 + bit, screenY + 1, color);
+    int screenY = row * 2;
+
+    if (monochrome_) {
+      // Monochrome: render each dot
+      for (int x = 0; x < 560; x++) {
+        uint32_t color = getMonochromeColor(dots[x] != 0);
+        setPixel(x, screenY, color);
+        setPixel(x, screenY + 1, color);
+      }
+    } else {
+      // Color mode: 140 color pixels, each is 4 dots wide
+      // The 4 bits form a color index (0-15)
+      for (int colorPixel = 0; colorPixel < 140; colorPixel++) {
+        int dotBase = colorPixel * 4;
+
+        // Build 4-bit color value from 4 consecutive dots
+        // Bit order: dot0 is LSB, dot3 is MSB
+        uint8_t colorIdx = dots[dotBase] |
+                           (dots[dotBase + 1] << 1) |
+                           (dots[dotBase + 2] << 2) |
+                           (dots[dotBase + 3] << 3);
+
+        uint32_t color = LORES_COLORS[colorIdx];
+
+        // Draw 4 screen pixels wide (1:1 with dots) × 2 high
+        int screenX = dotBase;
+        for (int px = 0; px < 4; px++) {
+          setPixel(screenX + px, screenY, color);
+          setPixel(screenX + px, screenY + 1, color);
+        }
       }
     }
   }
