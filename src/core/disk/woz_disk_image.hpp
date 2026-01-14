@@ -180,6 +180,9 @@ private:
   // ===== Bit position =====
   uint32_t bit_position_ = 0; // Current bit position within track
 
+  // Cycle count for disk rotation timing
+  uint64_t last_cycle_count_ = 0;
+
   // ===== Internal methods =====
 
   /**

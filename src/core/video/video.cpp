@@ -220,8 +220,8 @@ void Video::renderHiRes() {
   for (int row = 0; row < maxRow; row++) {
     // Build pixel and high-bit arrays for the entire scanline
     // to properly handle artifact colors across byte boundaries
-    bool pixels[280];
-    bool highBits[280];
+    uint8_t pixels[280] = {0};
+    uint8_t highBits[280] = {0};
 
     for (int col = 0; col < 40; col++) {
       uint16_t addr = getHiResAddress(row, col);
@@ -254,15 +254,15 @@ void Video::renderHiRes() {
         color = HIRES_COLORS[0]; // Black for off pixels
       } else {
         // Check adjacent pixels for white detection
-        bool prevOn = (pixelX > 0) && pixels[pixelX - 1];
-        bool nextOn = (pixelX < 279) && pixels[pixelX + 1];
+        bool prevOn = (pixelX > 0) && (pixels[pixelX - 1] != 0);
+        bool nextOn = (pixelX < 279) && (pixels[pixelX + 1] != 0);
 
         if (prevOn || nextOn) {
           // Adjacent pixels both on = white
           color = HIRES_COLORS[3]; // White
         } else {
           // Single isolated pixel shows artifact color
-          bool highBit = highBits[pixelX];
+          bool highBit = (highBits[pixelX] != 0);
           // Even pixels (0,2,4...): purple/blue
           // Odd pixels (1,3,5...): green/orange
           if (pixelX & 1) {

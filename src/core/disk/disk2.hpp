@@ -194,8 +194,11 @@ private:
   // Motor timeout: ~1 second at 1.023 MHz
   static constexpr uint64_t MOTOR_OFF_DELAY_CYCLES = 1023000;
 
-  // Nibble timing: ~32 cycles per nibble
-  static constexpr uint64_t CYCLES_PER_NIBBLE = 32;
+  // Nibble timing: ~31 cycles per nibble
+  // Real hardware: 300 RPM = 204,600 cycles/revolution at 1.023 MHz
+  // With 6656 nibbles/track: 204,600 / 6656 = 30.74 cycles/nibble
+  // Using 31 gives ~297 RPM which is within spec tolerance
+  static constexpr uint64_t CYCLES_PER_NIBBLE = 31;
 
   // Total cycle count for timing (fallback if no callback)
   uint64_t total_cycles_ = 0;

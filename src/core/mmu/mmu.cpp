@@ -234,6 +234,93 @@ void MMU::write(uint16_t address, uint8_t value) {
   writeLanguageCard(address, value);
 }
 
+uint8_t MMU::getFloatingBusValue() {
+  // The floating bus returns whatever byte the video hardware is currently
+  // reading. This is determined by the current scanline and horizontal position
+  // within the frame.
+  //
+  // Apple IIe timing:
+  // - 65 cycles per scanline (40 visible + 25 horizontal blank)
+  // - 262 scanlines per frame (192 visible + 70 vertical blank)
+  // - During visible portion, video reads from screen memory
+
+  if (!cycleCallback_) {
+    return 0x00;
+  }
+
+  uint64_t cycles = cycleCallback_();
+  uint32_t frameCycle = cycles % CYCLES_PER_FRAME;
+  uint32_t scanline = frameCycle / CYCLES_PER_SCANLINE;
+  uint32_t hPos = frameCycle % CYCLES_PER_SCANLINE;
+
+  // During horizontal blank (cycles 40-64), video still reads but from
+  // unpredictable locations. Return 0 for simplicity during hblank.
+  if (hPos >= 40) {
+    return 0x00;
+  }
+
+  // During vertical blank (scanlines 192-261), return data from the
+  // last few lines' worth of addresses (video wraps during vblank)
+  if (scanline >= 192) {
+    scanline = scanline % 192;
+  }
+
+  // Calculate memory address based on current video mode
+  uint16_t address;
+
+  if (switches_.text || !switches_.hires) {
+    // Text mode or LoRes mode - reads from text page
+    // Each scanline covers 8 text rows due to character height
+    int textRow = scanline / 8;
+    if (textRow >= 24)
+      textRow = 23;
+
+    // Text/LoRes base address
+    uint16_t base = switches_.page2 ? 0x0800 : 0x0400;
+
+    // Apple II text memory is interleaved in groups of 8 rows
+    // Rows 0-7:   $000, $080, $100, $180, $200, $280, $300, $380
+    // Rows 8-15:  $028, $0A8, $128, $1A8, $228, $2A8, $328, $3A8
+    // Rows 16-23: $050, $0D0, $150, $1D0, $250, $2D0, $350, $3D0
+    static const uint16_t rowOffsets[24] = {
+        0x000, 0x080, 0x100, 0x180, 0x200, 0x280, 0x300, 0x380,
+        0x028, 0x0A8, 0x128, 0x1A8, 0x228, 0x2A8, 0x328, 0x3A8,
+        0x050, 0x0D0, 0x150, 0x1D0, 0x250, 0x2D0, 0x350, 0x3D0};
+
+    address = base + rowOffsets[textRow] + hPos;
+  } else {
+    // HiRes mode - reads from hi-res page
+    uint16_t base = switches_.page2 ? 0x4000 : 0x2000;
+
+    // Hi-res memory is also interleaved
+    // Each group of 64 lines shares a similar pattern
+    int group = scanline / 64;       // 0, 1, or 2
+    int lineInGroup = scanline % 64; // 0-63
+    int subGroup = lineInGroup / 8;  // 0-7
+    int lineInSubGroup = lineInGroup % 8;
+
+    // Calculate offset within page
+    // Lines 0,8,16,24,32,40,48,56 of each group start at group*$28
+    // Plus $80 for each subgroup, plus $400 for each line within subgroup
+    uint16_t offset = (group * 0x28) + (subGroup * 0x80) + (lineInSubGroup * 0x400);
+    address = base + offset + hPos;
+  }
+
+  // Read from the appropriate memory bank
+  if (switches_.store80 && switches_.page2) {
+    // When 80STORE is on and PAGE2, read from aux memory for display pages
+    if ((address >= 0x0400 && address < 0x0800) ||
+        (switches_.hires && address >= 0x2000 && address < 0x4000)) {
+      return auxRAM_[address];
+    }
+  }
+
+  if (switches_.ramrd) {
+    return auxRAM_[address];
+  }
+  return mainRAM_[address];
+}
+
 uint8_t MMU::readSoftSwitch(uint16_t address) {
   uint8_t reg = address & 0xFF;
 
@@ -252,162 +339,167 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     keyboardLatch_ &= 0x7F;
     return keyboardLatch_;
 
-  // Memory switches - reading returns switch state in bit 7
+  // Memory switches - reading returns switch state in bit 7, floating bus in bits 0-6
   case 0x11:
-    return switches_.lcram2 ? 0x80 : 0x00; // RDLCBNK2
+    return (switches_.lcram2 ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDLCBNK2
   case 0x12:
-    return switches_.lcram ? 0x80 : 0x00; // RDLCRAM
+    return (switches_.lcram ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDLCRAM
   case 0x13:
-    return switches_.ramrd ? 0x80 : 0x00; // RDRAMRD
+    return (switches_.ramrd ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDRAMRD
   case 0x14:
-    return switches_.ramwrt ? 0x80 : 0x00; // RDRAMWRT
+    return (switches_.ramwrt ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDRAMWRT
   case 0x15:
-    return switches_.intcxrom ? 0x80 : 0x00; // RDCXROM
+    return (switches_.intcxrom ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDCXROM
   case 0x16:
-    return switches_.altzp ? 0x80 : 0x00; // RDALTZP
+    return (switches_.altzp ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDALTZP
   case 0x17:
-    return switches_.slotc3rom ? 0x80 : 0x00; // RDC3ROM
+    return (switches_.slotc3rom ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDC3ROM
   case 0x18:
-    return switches_.store80 ? 0x80 : 0x00; // RD80STORE
-  case 0x19:
-    return 0x00; // RDVBLBAR (vertical blank) - TODO
+    return (switches_.store80 ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RD80STORE
+  case 0x19: { // RDVBLBAR - vertical blank status
+    // Bit 7 = 0 during vertical blank (scanlines 192-261), 1 during active display
+    uint64_t cycles = cycleCallback_ ? cycleCallback_() : 0;
+    uint32_t scanline = (cycles % CYCLES_PER_FRAME) / CYCLES_PER_SCANLINE;
+    bool inVBL = (scanline >= 192);
+    return (inVBL ? 0x00 : 0x80) | (getFloatingBusValue() & 0x7F);
+  }
   case 0x1A:
-    return switches_.text ? 0x80 : 0x00; // RDTEXT
+    return (switches_.text ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDTEXT
   case 0x1B:
-    return switches_.mixed ? 0x80 : 0x00; // RDMIXED
+    return (switches_.mixed ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDMIXED
   case 0x1C:
-    return switches_.page2 ? 0x80 : 0x00; // RDPAGE2
+    return (switches_.page2 ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDPAGE2
   case 0x1D:
-    return switches_.hires ? 0x80 : 0x00; // RDHIRES
+    return (switches_.hires ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDHIRES
   case 0x1E:
-    return switches_.altCharSet ? 0x80 : 0x00; // RDALTCHAR
+    return (switches_.altCharSet ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDALTCHAR
   case 0x1F:
-    return switches_.col80 ? 0x80 : 0x00; // RD80COL
+    return (switches_.col80 ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RD80COL
 
-  // Speaker
+  // Speaker - returns floating bus
   case 0x30: // SPKR
     if (speakerCallback_) {
       speakerCallback_();
     }
-    return 0x00;
+    return getFloatingBusValue();
 
-  // Annunciators
+  // Annunciators - return floating bus
   case 0x58:
     switches_.an0 = false;
-    return 0x00;
+    return getFloatingBusValue();
   case 0x59:
     switches_.an0 = true;
-    return 0x00;
+    return getFloatingBusValue();
   case 0x5A:
     switches_.an1 = false;
-    return 0x00;
+    return getFloatingBusValue();
   case 0x5B:
     switches_.an1 = true;
-    return 0x00;
+    return getFloatingBusValue();
   case 0x5C:
     switches_.an2 = false;
-    return 0x00;
+    return getFloatingBusValue();
   case 0x5D:
     switches_.an2 = true;
-    return 0x00;
+    return getFloatingBusValue();
   case 0x5E:
     switches_.an3 = false;
-    return 0x00; // Also DHIRES off
+    return getFloatingBusValue(); // Also DHIRES off
   case 0x5F:
     switches_.an3 = true;
-    return 0x00; // Also DHIRES on
+    return getFloatingBusValue(); // Also DHIRES on
 
-  // Display switches - reading also sets the switch
+  // Display switches - reading also sets the switch, returns floating bus
   case 0x50:
     switches_.text = false;
-    return 0x00; // TXTCLR (graphics)
+    return getFloatingBusValue(); // TXTCLR (graphics)
   case 0x51:
     switches_.text = true;
-    return 0x00; // TXTSET (text)
+    return getFloatingBusValue(); // TXTSET (text)
   case 0x52:
     switches_.mixed = false;
-    return 0x00; // MIXCLR
+    return getFloatingBusValue(); // MIXCLR
   case 0x53:
     switches_.mixed = true;
-    return 0x00; // MIXSET
+    return getFloatingBusValue(); // MIXSET
   case 0x54:
     switches_.page2 = false;
-    return 0x00; // LOWSCR (page 1)
+    return getFloatingBusValue(); // LOWSCR (page 1)
   case 0x55:
     switches_.page2 = true;
-    return 0x00; // HISCR (page 2)
+    return getFloatingBusValue(); // HISCR (page 2)
   case 0x56:
     switches_.hires = false;
-    return 0x00; // LORES
+    return getFloatingBusValue(); // LORES
   case 0x57:
     switches_.hires = true;
-    return 0x00; // HIRES
+    return getFloatingBusValue(); // HIRES
 
-  // 80-column / memory switches (IIe specific)
+  // 80-column / memory switches (IIe specific) - return floating bus
   case 0x02:
     switches_.ramrd = false;
-    return 0x00; // RDMAINRAM
+    return getFloatingBusValue(); // RDMAINRAM
   case 0x03:
     switches_.ramrd = true;
-    return 0x00; // RDCARDRAM
+    return getFloatingBusValue(); // RDCARDRAM
   case 0x04:
     switches_.ramwrt = false;
-    return 0x00; // WRMAINRAM
+    return getFloatingBusValue(); // WRMAINRAM
   case 0x05:
     switches_.ramwrt = true;
-    return 0x00; // WRCARDRAM
+    return getFloatingBusValue(); // WRCARDRAM
   case 0x06:
     switches_.intcxrom = false;
-    return 0x00; // SETINTCXROM
+    return getFloatingBusValue(); // SETINTCXROM
   case 0x07:
     switches_.intcxrom = true;
-    return 0x00; // SETSLOTCXROM
+    return getFloatingBusValue(); // SETSLOTCXROM
   case 0x08:
     switches_.altzp = false;
-    return 0x00; // SETSTDZP
+    return getFloatingBusValue(); // SETSTDZP
   case 0x09:
     switches_.altzp = true;
-    return 0x00; // SETALTZP
+    return getFloatingBusValue(); // SETALTZP
   case 0x0A:
     switches_.slotc3rom = false;
-    return 0x00; // SETINTC3ROM
+    return getFloatingBusValue(); // SETINTC3ROM
   case 0x0B:
     switches_.slotc3rom = true;
-    return 0x00; // SETSLOTC3ROM
-  // $C00C-$C00F are write-only on IIe - reads don't affect state
+    return getFloatingBusValue(); // SETSLOTC3ROM
+  // $C00C-$C00F are write-only on IIe - reads return floating bus
   case 0x0C: // CLR80COL (write-only)
   case 0x0D: // SET80COL (write-only)
   case 0x0E: // CLRALTCHAR (write-only)
   case 0x0F: // SETALTCHAR (write-only)
-    return 0x00;
+    return getFloatingBusValue();
 
-  // Buttons (Open Apple, Closed Apple, Button 2)
+  // Buttons (Open Apple, Closed Apple, Button 2) - bit 7 = state, bits 0-6 = floating bus
   case 0x61: // PB0 / Open Apple
     if (buttonCallback_) {
-      return buttonCallback_(0);
+      return (buttonCallback_(0) & 0x80) | (getFloatingBusValue() & 0x7F);
     }
-    return 0x00;
+    return getFloatingBusValue() & 0x7F;
   case 0x62: // PB1 / Closed Apple
     if (buttonCallback_) {
-      return buttonCallback_(1);
+      return (buttonCallback_(1) & 0x80) | (getFloatingBusValue() & 0x7F);
     }
-    return 0x00;
+    return getFloatingBusValue() & 0x7F;
   case 0x63: // PB2 / Shift key modifier
     if (buttonCallback_) {
-      return buttonCallback_(2);
+      return (buttonCallback_(2) & 0x80) | (getFloatingBusValue() & 0x7F);
     }
-    return 0x00;
+    return getFloatingBusValue() & 0x7F;
 
-  // Paddle inputs (return not triggered for now)
+  // Paddle inputs - bit 7 = timer status, bits 0-6 = floating bus
   case 0x64: // PDL0
   case 0x65: // PDL1
   case 0x66: // PDL2
   case 0x67: // PDL3
-    return 0x00; // Paddle not triggered (bit 7 = 0)
+    return getFloatingBusValue() & 0x7F; // Paddle not triggered (bit 7 = 0)
 
-  // Paddle trigger reset
+  // Paddle trigger reset - returns floating bus
   case 0x70: // PTRIG - reset paddle timers
-    return 0x00;
+    return getFloatingBusValue();
 
   // Disk II controller (slot 6): $C0E0-$C0EF
   case 0xE0:
@@ -451,7 +543,8 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     return handleLanguageCardSwitch(reg);
 
   default:
-    return 0x00;
+    // Unimplemented soft switches return floating bus value
+    return getFloatingBusValue();
   }
 
   return 0x00;
@@ -502,7 +595,7 @@ uint8_t MMU::handleLanguageCardSwitch(uint8_t reg) {
   switches_.lcram = readRAM;
   switches_.lcram2 = bank2;
 
-  return 0x00;
+  return getFloatingBusValue();
 }
 
 void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {

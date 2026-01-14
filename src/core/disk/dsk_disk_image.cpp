@@ -66,6 +66,7 @@ bool DskDiskImage::load(const uint8_t *data, size_t size,
   phase_states_ = 0;
   last_phase_ = 0; // Reset to phase 0 for correct stepper tracking
   nibble_position_ = 0;
+  last_cycle_count_ = 0;
 
   return true;
 }
@@ -482,8 +483,8 @@ void DskDiskImage::advanceBitPosition(uint64_t current_cycles) {
   // Disk spins at ~300 RPM = 5 revolutions/second
   // At 1.023 MHz, one revolution = ~204,600 cycles
   // With 6656 nibbles per track, each nibble = ~30.7 cycles
-  // We use ~32 cycles per nibble for simplicity
-  constexpr uint64_t CYCLES_PER_NIBBLE = 32;
+  // Using 31 gives ~297 RPM which is within spec tolerance
+  constexpr uint64_t CYCLES_PER_NIBBLE = 31;
 
   ensureTrackNibblized();
 

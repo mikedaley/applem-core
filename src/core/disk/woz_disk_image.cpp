@@ -18,6 +18,7 @@ void WozDiskImage::reset() {
   quarter_track_ = 0;
   last_phase_ = 0;
   bit_position_ = 0;
+  last_cycle_count_ = 0;
 }
 
 bool WozDiskImage::load(const uint8_t *data, size_t size,

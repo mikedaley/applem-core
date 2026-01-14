@@ -23,6 +23,7 @@ Emulator::Emulator() {
   mmu_->setKeyStrobeCallback([this]() { clearKeyboardStrobe(); });
   mmu_->setSpeakerCallback([this]() { toggleSpeaker(); });
   mmu_->setButtonCallback([this](int btn) { return getButtonState(btn); });
+  mmu_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
 
   // Connect disk controller to MMU
   mmu_->setDiskController(disk_.get());

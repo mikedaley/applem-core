@@ -16,6 +16,7 @@ public:
   using KeyStrobeCallback = std::function<void()>;
   using SpeakerCallback = std::function<void()>;
   using ButtonCallback = std::function<uint8_t(int)>; // Returns button state for button 0-2
+  using CycleCallback = std::function<uint64_t()>;    // Returns current CPU cycle count
 
   MMU();
 
@@ -49,6 +50,7 @@ public:
     speakerCallback_ = std::move(cb);
   }
   void setButtonCallback(ButtonCallback cb) { buttonCallback_ = std::move(cb); }
+  void setCycleCallback(CycleCallback cb) { cycleCallback_ = std::move(cb); }
 
   // Peripheral connections
   void setDiskController(Disk2Controller *disk) { diskController_ = disk; }
@@ -60,6 +62,9 @@ private:
   // Soft switch handling
   uint8_t readSoftSwitch(uint16_t address);
   void writeSoftSwitch(uint16_t address, uint8_t value);
+
+  // Floating bus - returns value video hardware is currently reading
+  uint8_t getFloatingBusValue();
 
   // Language card logic
   uint8_t readLanguageCard(uint16_t address);
@@ -97,6 +102,7 @@ private:
   KeyStrobeCallback keyStrobeCallback_;
   SpeakerCallback speakerCallback_;
   ButtonCallback buttonCallback_;
+  CycleCallback cycleCallback_;
 
   // Peripherals
   Disk2Controller *diskController_ = nullptr;

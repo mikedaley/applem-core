@@ -268,7 +268,26 @@ uint8_t Disk2Controller::readDiskData() {
       (last_cycle == 0) || (current_cycle >= last_cycle + CYCLES_PER_NIBBLE);
 
   if (new_nibble_ready) {
-    // Read new nibble from disk
+    // In real hardware, the disk spins continuously at ~300 RPM.
+    // If more than CYCLES_PER_NIBBLE elapsed since last read, the disk
+    // has rotated past multiple nibbles. We need to "catch up" the disk
+    // position for the extra elapsed time before reading.
+    if (last_cycle != 0) {
+      uint64_t elapsed = current_cycle - last_cycle;
+      // Calculate how many extra nibbles worth of time passed
+      // (subtract 1 because readNibble will advance by 1)
+      uint64_t extra_nibbles = (elapsed / CYCLES_PER_NIBBLE);
+      if (extra_nibbles > 1) {
+        // Advance disk position for elapsed time (readNibble will add 1 more)
+        // Use advanceBitPosition to handle the catch-up efficiently
+        // We simulate the disk having rotated during CPU processing time
+        for (uint64_t i = 1; i < extra_nibbles && i < 50; i++) {
+          disk->readNibble(); // Advance disk position
+        }
+      }
+    }
+
+    // Read new nibble from disk (this also advances by 1)
     data_latch_ = disk->readNibble();
     last_cycle = current_cycle;
     latch_valid_ = true; // This nibble hasn't been read yet
