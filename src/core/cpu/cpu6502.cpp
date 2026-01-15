@@ -789,106 +789,146 @@ void CPU6502::executeOpcode(uint8_t opcode) {
       opBIT(read(addrAbsoluteX()));
     break;
 
-  // ASL
+  // ASL - Read-modify-write: do dummy read for LC double-read requirement
   case 0x0A:
     opASL_A();
     break;
   case 0x06:
     addr = addrZeroPage();
-    write(addr, opASL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opASL(value));
     break;
   case 0x16:
     addr = addrZeroPageX();
-    write(addr, opASL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opASL(value));
     break;
   case 0x0E:
     addr = addrAbsolute();
-    write(addr, opASL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opASL(value));
     break;
   case 0x1E:
     addr = addrAbsoluteX(false);
-    write(addr, opASL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opASL(value));
     break;
 
-  // LSR
+  // LSR - Read-modify-write: do dummy read for LC double-read requirement
   case 0x4A:
     opLSR_A();
     break;
   case 0x46:
     addr = addrZeroPage();
-    write(addr, opLSR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opLSR(value));
     break;
   case 0x56:
     addr = addrZeroPageX();
-    write(addr, opLSR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opLSR(value));
     break;
   case 0x4E:
     addr = addrAbsolute();
-    write(addr, opLSR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opLSR(value));
     break;
   case 0x5E:
     addr = addrAbsoluteX(false);
-    write(addr, opLSR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opLSR(value));
     break;
 
-  // ROL
+  // ROL - Read-modify-write: do dummy read for LC double-read requirement
   case 0x2A:
     opROL_A();
     break;
   case 0x26:
     addr = addrZeroPage();
-    write(addr, opROL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROL(value));
     break;
   case 0x36:
     addr = addrZeroPageX();
-    write(addr, opROL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROL(value));
     break;
   case 0x2E:
     addr = addrAbsolute();
-    write(addr, opROL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROL(value));
     break;
   case 0x3E:
     addr = addrAbsoluteX(false);
-    write(addr, opROL(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROL(value));
     break;
 
-  // ROR
+  // ROR - Read-modify-write: do dummy read for LC double-read requirement
   case 0x6A:
     opROR_A();
     break;
   case 0x66:
     addr = addrZeroPage();
-    write(addr, opROR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROR(value));
     break;
   case 0x76:
     addr = addrZeroPageX();
-    write(addr, opROR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROR(value));
     break;
   case 0x6E:
     addr = addrAbsolute();
-    write(addr, opROR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROR(value));
     break;
   case 0x7E:
     addr = addrAbsoluteX(false);
-    write(addr, opROR(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opROR(value));
     break;
 
-  // INC
+  // INC - Read-modify-write: do dummy read for LC double-read requirement
   case 0xE6:
     addr = addrZeroPage();
-    write(addr, opINC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opINC(value));
     break;
   case 0xF6:
     addr = addrZeroPageX();
-    write(addr, opINC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opINC(value));
     break;
   case 0xEE:
     addr = addrAbsolute();
-    write(addr, opINC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opINC(value));
     break;
   case 0xFE:
     addr = addrAbsoluteX(false);
-    write(addr, opINC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opINC(value));
     break;
   case 0x1A:
     if (variant_ == CPUVariant::CMOS_65C02) {
@@ -896,22 +936,30 @@ void CPU6502::executeOpcode(uint8_t opcode) {
     }
     break; // INC A (65C02)
 
-  // DEC
+  // DEC - Read-modify-write: do dummy read for LC double-read requirement
   case 0xC6:
     addr = addrZeroPage();
-    write(addr, opDEC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opDEC(value));
     break;
   case 0xD6:
     addr = addrZeroPageX();
-    write(addr, opDEC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opDEC(value));
     break;
   case 0xCE:
     addr = addrAbsolute();
-    write(addr, opDEC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opDEC(value));
     break;
   case 0xDE:
     addr = addrAbsoluteX(false);
-    write(addr, opDEC(read(addr)));
+    value = read(addr);
+    read(addr); // Dummy read (6502 RMW behavior)
+    write(addr, opDEC(value));
     break;
   case 0x3A:
     if (variant_ == CPUVariant::CMOS_65C02) {
