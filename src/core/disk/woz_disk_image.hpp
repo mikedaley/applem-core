@@ -60,6 +60,7 @@ public:
   bool isModified() const override { return modified_; }
   std::string getFormatName() const override;
   const uint8_t *getSectorData(size_t *size) const override;
+  const uint8_t *exportData(size_t *size) override;
 
   // ===== Debug Methods =====
   uint8_t getNibbleAt(int track, int position) const override;
@@ -162,6 +163,9 @@ private:
   Format format_ = Format::Unknown;
   bool loaded_ = false;
   bool modified_ = false;
+
+  // Export buffer for saving
+  mutable std::vector<uint8_t> export_buffer_;
 
   // INFO chunk data
   InfoChunk info_{};

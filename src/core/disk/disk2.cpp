@@ -144,6 +144,12 @@ uint8_t Disk2Controller::handleSoftSwitch(uint8_t offset, bool is_write) {
     break;
 
   case Q7L:
+    if (q7_) {
+      // Switching from write mode to read mode
+      // Reset timing so we don't jump the disk position
+      last_read_cycle_[selected_drive_] = getCycles();
+      latch_valid_ = false;
+    }
     q7_ = false; // Read mode
     break;
 
@@ -324,6 +330,9 @@ void Disk2Controller::writeDiskData() {
 
   // Write the nibble
   disk->writeNibble(write_latch_);
+
+  // Update timing to stay in sync with disk rotation
+  last_read_cycle_[selected_drive_] = getCycles();
 }
 
 void Disk2Controller::update(int cycles) { total_cycles_ += cycles; }
@@ -335,6 +344,15 @@ const uint8_t *Disk2Controller::getDiskData(int drive, size_t *size) const {
   }
 
   return disk_images_[drive]->getSectorData(size);
+}
+
+const uint8_t *Disk2Controller::exportDiskData(int drive, size_t *size) {
+  if (drive < 0 || drive > 1 || !hasDisk(drive)) {
+    *size = 0;
+    return nullptr;
+  }
+
+  return disk_images_[drive]->exportData(size);
 }
 
 } // namespace a2e

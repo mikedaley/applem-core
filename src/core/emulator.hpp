@@ -47,6 +47,7 @@ public:
                   const char *filename);
   void ejectDisk(int drive);
   const uint8_t *getDiskData(int drive, size_t *size) const;
+  const uint8_t *exportDiskData(int drive, size_t *size);
 
   // Debugger interface
   void addBreakpoint(uint16_t address);

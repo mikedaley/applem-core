@@ -568,6 +568,11 @@ const uint8_t *DskDiskImage::getSectorData(size_t *size) const {
   return sector_data_.data();
 }
 
+const uint8_t *DskDiskImage::exportData(size_t *size) {
+  // DSK format is already in its native format, just return sector data
+  return getSectorData(size);
+}
+
 uint8_t DskDiskImage::getNibbleAt(int track, int position) const {
   if (track < 0 || track >= TRACKS) {
     return 0;

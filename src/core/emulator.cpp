@@ -166,6 +166,10 @@ const uint8_t *Emulator::getDiskData(int drive, size_t *size) const {
   return disk_->getDiskData(drive, size);
 }
 
+const uint8_t *Emulator::exportDiskData(int drive, size_t *size) {
+  return disk_->exportDiskData(drive, size);
+}
+
 void Emulator::addBreakpoint(uint16_t address) { breakpoints_.insert(address); }
 
 void Emulator::removeBreakpoint(uint16_t address) {

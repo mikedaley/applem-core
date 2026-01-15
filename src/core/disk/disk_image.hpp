@@ -171,6 +171,17 @@ public:
    */
   virtual const uint8_t *getSectorData(size_t *size) const = 0;
 
+  /**
+   * Export disk data in its native format for saving
+   * This reconstructs the disk image file that can be saved to disk.
+   * The returned pointer is valid until the next call to exportData()
+   * or until the disk image is destroyed.
+   *
+   * @param size Output: size of the exported data
+   * @return Pointer to exported data, or nullptr if export not supported
+   */
+  virtual const uint8_t *exportData(size_t *size) = 0;
+
   // ===== Debug Methods =====
 
   /**

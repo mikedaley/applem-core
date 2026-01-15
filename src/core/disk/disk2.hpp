@@ -110,6 +110,15 @@ public:
   const uint8_t *getDiskData(int drive, size_t *size) const;
 
   /**
+   * Export disk data in its native format for saving
+   * This works for both DSK and WOZ formats.
+   * @param drive Drive number (0 or 1)
+   * @param size Output: size of the exported data
+   * @return Pointer to exported data, or nullptr if no disk
+   */
+  const uint8_t *exportDiskData(int drive, size_t *size);
+
+  /**
    * Get the disk image for a drive (for UI display)
    * @param drive Drive number (0 or 1)
    * @return Pointer to disk image, or nullptr if no disk

@@ -27,31 +27,23 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
 
   reset();
 
-  printf("WOZ load: size=%zu\n", size);
-
   if (size < sizeof(WozHeader)) {
-    printf("WOZ load failed: size too small\n");
     return false;
   }
 
   // Validate header
   const auto *header = reinterpret_cast<const WozHeader *>(data);
-  printf("WOZ signature: 0x%08X (expected WOZ2: 0x%08X)\n", header->signature, WOZ2_SIGNATURE);
   if (header->signature == WOZ1_SIGNATURE) {
     format_ = Format::WOZ1;
   } else if (header->signature == WOZ2_SIGNATURE) {
     format_ = Format::WOZ2;
   } else {
-    printf("WOZ load failed: invalid signature\n");
     return false;
   }
 
   // Validate magic bytes
-  printf("WOZ magic: high_bits=0x%02X, lfcrlf=[0x%02X, 0x%02X, 0x%02X]\n",
-         header->high_bits, header->lfcrlf[0], header->lfcrlf[1], header->lfcrlf[2]);
   if (header->high_bits != 0xFF || header->lfcrlf[0] != 0x0A ||
       header->lfcrlf[1] != 0x0D || header->lfcrlf[2] != 0x0A) {
-    printf("WOZ load failed: invalid magic bytes\n");
     return false;
   }
 
@@ -105,9 +97,7 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
   }
 
   // Validate required chunks
-  printf("WOZ chunks: has_info=%d, has_tmap=%d, has_trks=%d\n", has_info, has_tmap, has_trks);
   if (!has_info || !has_tmap || !has_trks) {
-    printf("WOZ load failed: missing required chunks\n");
     return false;
   }
 
@@ -119,22 +109,17 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
     trks_ok = parseTrksChunkWoz2(data, size, trks_data, trks_size);
   }
 
-  printf("WOZ TRKS parse result: %d\n", trks_ok);
   if (!trks_ok) {
-    printf("WOZ load failed: TRKS parse failed\n");
     return false;
   }
 
   loaded_ = true;
-  printf("WOZ load successful!\n");
   return true;
 }
 
 bool WozDiskImage::parseInfoChunk(const uint8_t *data, uint32_t size) {
-  printf("parseInfoChunk: size=%u\n", size);
   // Minimum size is 60 bytes for WOZ2, but accept smaller for WOZ1
   if (size < 37) {
-    printf("parseInfoChunk failed: size too small\n");
     return false;
   }
 
@@ -143,10 +128,8 @@ bool WozDiskImage::parseInfoChunk(const uint8_t *data, uint32_t size) {
   std::memcpy(&info_, data,
               std::min(size, static_cast<uint32_t>(sizeof(info_))));
 
-  printf("parseInfoChunk: disk_type=%d\n", info_.disk_type);
   // Validate disk type
   if (info_.disk_type != 1 && info_.disk_type != 2) {
-    printf("parseInfoChunk failed: invalid disk_type\n");
     return false;
   }
 
@@ -154,14 +137,11 @@ bool WozDiskImage::parseInfoChunk(const uint8_t *data, uint32_t size) {
 }
 
 bool WozDiskImage::parseTmapChunk(const uint8_t *data, uint32_t size) {
-  printf("parseTmapChunk: size=%u (need %d)\n", size, QUARTER_TRACK_COUNT);
   if (size < QUARTER_TRACK_COUNT) {
-    printf("parseTmapChunk failed: size too small\n");
     return false;
   }
 
   std::memcpy(tmap_.data(), data, QUARTER_TRACK_COUNT);
-  printf("parseTmapChunk: tmap[0]=%d, tmap[4]=%d\n", tmap_[0], tmap_[4]);
   return true;
 }
 
@@ -180,12 +160,9 @@ bool WozDiskImage::parseTrksChunkWoz1(const uint8_t *data, uint32_t size) {
 
   // Count how many tracks we have
   size_t track_count = size / WOZ1_ENTRY_SIZE;
-  printf("parseTrksChunkWoz1: size=%u, entry_size=%zu, track_count=%zu\n",
-         size, WOZ1_ENTRY_SIZE, track_count);
 
   tracks_.resize(track_count);
 
-  int valid_tracks = 0;
   for (size_t i = 0; i < track_count; i++) {
     const uint8_t *entry = data + i * WOZ1_ENTRY_SIZE;
     uint16_t bytes_used =
@@ -197,18 +174,9 @@ bool WozDiskImage::parseTrksChunkWoz1(const uint8_t *data, uint32_t size) {
       tracks_[i].bit_count = bit_count;
       tracks_[i].bits.assign(entry, entry + bytes_used);
       tracks_[i].valid = true;
-      valid_tracks++;
-
-      // Debug first few tracks
-      if (i < 3) {
-        printf("  Track %zu: bytes_used=%u, bit_count=%u, first_bytes=[%02X %02X %02X %02X]\n",
-               i, bytes_used, bit_count,
-               entry[0], entry[1], entry[2], entry[3]);
-      }
     }
   }
 
-  printf("parseTrksChunkWoz1: loaded %d valid tracks\n", valid_tracks);
   return true;
 }
 
@@ -219,11 +187,7 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
   // Track data follows at block offsets specified in entries
   static constexpr size_t WOZ2_TRK_TABLE_SIZE = 160 * sizeof(Woz2TrackEntry);
 
-  printf("parseTrksChunkWoz2: trks_size=%u, need=%zu, file_size=%zu\n",
-         trks_size, WOZ2_TRK_TABLE_SIZE, file_size);
-
   if (trks_size < WOZ2_TRK_TABLE_SIZE) {
-    printf("parseTrksChunkWoz2 failed: trks_size too small\n");
     return false;
   }
 
@@ -237,10 +201,7 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
     }
   }
 
-  printf("parseTrksChunkWoz2: max_track_index=%d\n", max_track_index);
-
   if (max_track_index < 0) {
-    printf("parseTrksChunkWoz2: no tracks in TMAP\n");
     return true; // No tracks - empty disk
   }
 
@@ -345,16 +306,7 @@ void WozDiskImage::updateHeadPosition(int phase) {
     }
   }
 
-  // Debug track changes
-  if (quarter_track_ != old_quarter_track) {
-    static int step_count = 0;
-    if (step_count++ < 20) {
-      uint8_t track_index = (quarter_track_ < QUARTER_TRACK_COUNT) ? tmap_[quarter_track_] : 0xFF;
-      printf("Head step: phase %d->%d, quarter_track %d->%d (track %d), tmap=%d\n",
-             last_phase_, phase, old_quarter_track, quarter_track_,
-             quarter_track_ / 4, track_index);
-    }
-  }
+  (void)old_quarter_track; // Suppress unused variable warning
 
   last_phase_ = phase;
 }
@@ -377,28 +329,14 @@ const WozDiskImage::TrackData *WozDiskImage::getCurrentTrackData() const {
 
   uint8_t track_index = tmap_[quarter_track_];
   if (track_index == NO_TRACK) {
-    static int no_track_count = 0;
-    if (no_track_count++ < 5) {
-      printf("getCurrentTrackData: NO_TRACK at quarter_track=%d\n", quarter_track_);
-    }
     return nullptr;
   }
   if (track_index >= static_cast<uint8_t>(tracks_.size())) {
-    static int oob_count = 0;
-    if (oob_count++ < 5) {
-      printf("getCurrentTrackData: track_index=%d >= tracks_.size()=%zu at quarter_track=%d\n",
-             track_index, tracks_.size(), quarter_track_);
-    }
     return nullptr;
   }
 
   const TrackData &track = tracks_[track_index];
   if (!track.valid) {
-    static int invalid_count = 0;
-    if (invalid_count++ < 5) {
-      printf("getCurrentTrackData: track %d is not valid at quarter_track=%d\n",
-             track_index, quarter_track_);
-    }
     return nullptr;
   }
   return &track;
@@ -436,21 +374,7 @@ uint8_t WozDiskImage::readBitInternal() const {
   uint8_t bit_offset = 7 - (pos % 8); // MSB first
 
   if (byte_offset >= track->bits.size()) {
-    static int oob_count = 0;
-    if (oob_count++ < 5) {
-      printf("readBitInternal: byte_offset=%u >= bits.size()=%zu, pos=%u, bit_count=%u\n",
-             byte_offset, track->bits.size(), pos, track->bit_count);
-    }
     return 0;
-  }
-
-  // Debug: show first read from each track
-  static int last_track = -1;
-  int current_track = quarter_track_ / 4;
-  if (current_track != last_track) {
-    printf("First read on track %d: byte_offset=%u, byte_value=0x%02X, bits.size()=%zu\n",
-           current_track, byte_offset, track->bits[byte_offset], track->bits.size());
-    last_track = current_track;
   }
 
   return (track->bits[byte_offset] >> bit_offset) & 1;
@@ -459,21 +383,7 @@ uint8_t WozDiskImage::readBitInternal() const {
 uint8_t WozDiskImage::readNibble() {
   const TrackData *track = getCurrentTrackData();
   if (!track || track->bit_count == 0) {
-    static int null_track_count = 0;
-    if (null_track_count++ < 5) {
-      printf("readNibble: no track data at quarter_track=%d\n", quarter_track_);
-    }
     return 0;
-  }
-
-  // Sanity check: bit_count should be reasonable (roughly 8 * data size)
-  // A normal 5.25" track has about 50,000 bits
-  if (track->bit_count < 1000 || track->bit_count > 100000) {
-    static int bad_bitcount = 0;
-    if (bad_bitcount++ < 5) {
-      printf("readNibble: suspicious bit_count=%u at quarter_track=%d\n",
-             track->bit_count, quarter_track_);
-    }
   }
 
   // Read bits until we get a nibble (byte with high bit set)
@@ -498,23 +408,11 @@ uint8_t WozDiskImage::readNibble() {
 
     // Check if we have a complete nibble (bit 7 set)
     if (value & 0x80) {
-      // Debug: log first few nibbles from each track
-      static int track_nibble_counts[40] = {0};
-      int track_num = quarter_track_ / 4;
-      if (track_num < 40 && track_nibble_counts[track_num]++ < 10) {
-        printf("Nibble: track=%d, value=0x%02X, bits_read=%d\n",
-               track_num, value, bits_read);
-      }
       return value;
     }
   }
 
   // Timeout - return whatever we have
-  static int timeout_count = 0;
-  if (timeout_count++ < 5) {
-    printf("readNibble: timeout after %d bits, value=0x%02X, track=%d, bit_pos=%u, bit_count=%u\n",
-           bits_read, value, quarter_track_ / 4, bit_position_, track->bit_count);
-  }
   return value;
 }
 
@@ -630,6 +528,132 @@ int WozDiskImage::getTrackNibbleCount(int track) const {
   // WOZ stores bit-level data
   (void)track;
   return 0;
+}
+
+const uint8_t *WozDiskImage::exportData(size_t *size) {
+  if (!loaded_) {
+    *size = 0;
+    return nullptr;
+  }
+
+  // Calculate required size for WOZ2 format
+  // Header: 12 bytes
+  // INFO chunk: 8 (header) + 60 (data) = 68 bytes
+  // TMAP chunk: 8 (header) + 160 (data) = 168 bytes
+  // TRKS chunk: 8 (header) + 1280 (track table) = 1288 bytes
+  // Total header area: pad to block 3 (1536 bytes)
+  static constexpr size_t HEADER_SIZE = 12;
+  static constexpr size_t INFO_CHUNK_SIZE = 68;
+  static constexpr size_t TMAP_CHUNK_SIZE = 168;
+  static constexpr size_t TRKS_HEADER_SIZE = 8;
+  static constexpr size_t TRKS_TABLE_SIZE = 160 * 8;  // 1280 bytes
+  static constexpr size_t TRACK_DATA_START_BLOCK = 3;
+  static constexpr size_t BLOCK_SIZE = 512;
+
+  // Count tracks and calculate total track data size
+  size_t total_track_blocks = 0;
+  for (size_t i = 0; i < tracks_.size(); i++) {
+    if (tracks_[i].valid && tracks_[i].bit_count > 0) {
+      size_t track_bytes = (tracks_[i].bit_count + 7) / 8;
+      size_t track_blocks = (track_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+      total_track_blocks += track_blocks;
+    }
+  }
+
+  size_t total_size = TRACK_DATA_START_BLOCK * BLOCK_SIZE + total_track_blocks * BLOCK_SIZE;
+  export_buffer_.resize(total_size);
+  std::fill(export_buffer_.begin(), export_buffer_.end(), 0);
+
+  size_t offset = 0;
+
+  // === WOZ2 Header (12 bytes) ===
+  export_buffer_[offset++] = 0x57;  // 'W'
+  export_buffer_[offset++] = 0x4F;  // 'O'
+  export_buffer_[offset++] = 0x5A;  // 'Z'
+  export_buffer_[offset++] = 0x32;  // '2'
+  export_buffer_[offset++] = 0xFF;  // High bit
+  export_buffer_[offset++] = 0x0A;  // LF
+  export_buffer_[offset++] = 0x0D;  // CR
+  export_buffer_[offset++] = 0x0A;  // LF
+  // CRC32 placeholder (not validated by loader)
+  export_buffer_[offset++] = 0x00;
+  export_buffer_[offset++] = 0x00;
+  export_buffer_[offset++] = 0x00;
+  export_buffer_[offset++] = 0x00;
+
+  // === INFO Chunk ===
+  export_buffer_[offset++] = 0x49;  // 'I'
+  export_buffer_[offset++] = 0x4E;  // 'N'
+  export_buffer_[offset++] = 0x46;  // 'F'
+  export_buffer_[offset++] = 0x4F;  // 'O'
+  // Chunk size: 60 bytes
+  export_buffer_[offset++] = 60;
+  export_buffer_[offset++] = 0;
+  export_buffer_[offset++] = 0;
+  export_buffer_[offset++] = 0;
+  // Copy INFO data
+  std::memcpy(&export_buffer_[offset], &info_, sizeof(info_));
+  offset += 60;
+
+  // === TMAP Chunk ===
+  export_buffer_[offset++] = 0x54;  // 'T'
+  export_buffer_[offset++] = 0x4D;  // 'M'
+  export_buffer_[offset++] = 0x41;  // 'A'
+  export_buffer_[offset++] = 0x50;  // 'P'
+  // Chunk size: 160 bytes
+  export_buffer_[offset++] = 160;
+  export_buffer_[offset++] = 0;
+  export_buffer_[offset++] = 0;
+  export_buffer_[offset++] = 0;
+  // Copy TMAP data
+  std::memcpy(&export_buffer_[offset], tmap_.data(), QUARTER_TRACK_COUNT);
+  offset += QUARTER_TRACK_COUNT;
+
+  // === TRKS Chunk ===
+  export_buffer_[offset++] = 0x54;  // 'T'
+  export_buffer_[offset++] = 0x52;  // 'R'
+  export_buffer_[offset++] = 0x4B;  // 'K'
+  export_buffer_[offset++] = 0x53;  // 'S'
+  // Chunk size: track table only (1280 bytes)
+  export_buffer_[offset++] = TRKS_TABLE_SIZE & 0xFF;
+  export_buffer_[offset++] = (TRKS_TABLE_SIZE >> 8) & 0xFF;
+  export_buffer_[offset++] = (TRKS_TABLE_SIZE >> 16) & 0xFF;
+  export_buffer_[offset++] = (TRKS_TABLE_SIZE >> 24) & 0xFF;
+
+  // Build track entries and copy track data
+  size_t current_block = TRACK_DATA_START_BLOCK;
+  size_t track_table_offset = offset;
+
+  for (size_t i = 0; i < 160; i++) {
+    if (i < tracks_.size() && tracks_[i].valid && tracks_[i].bit_count > 0) {
+      const TrackData &track = tracks_[i];
+      size_t track_bytes = (track.bit_count + 7) / 8;
+      size_t block_count = (track_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+      // Write track entry
+      export_buffer_[track_table_offset + i * 8 + 0] = current_block & 0xFF;
+      export_buffer_[track_table_offset + i * 8 + 1] = (current_block >> 8) & 0xFF;
+      export_buffer_[track_table_offset + i * 8 + 2] = block_count & 0xFF;
+      export_buffer_[track_table_offset + i * 8 + 3] = (block_count >> 8) & 0xFF;
+      export_buffer_[track_table_offset + i * 8 + 4] = track.bit_count & 0xFF;
+      export_buffer_[track_table_offset + i * 8 + 5] = (track.bit_count >> 8) & 0xFF;
+      export_buffer_[track_table_offset + i * 8 + 6] = (track.bit_count >> 16) & 0xFF;
+      export_buffer_[track_table_offset + i * 8 + 7] = (track.bit_count >> 24) & 0xFF;
+
+      // Copy track data
+      size_t data_offset = current_block * BLOCK_SIZE;
+      size_t copy_size = std::min(track.bits.size(), block_count * BLOCK_SIZE);
+      std::memcpy(&export_buffer_[data_offset], track.bits.data(), copy_size);
+
+      current_block += block_count;
+    } else {
+      // Empty track entry
+      std::memset(&export_buffer_[track_table_offset + i * 8], 0, 8);
+    }
+  }
+
+  *size = export_buffer_.size();
+  return export_buffer_.data();
 }
 
 } // namespace a2e
