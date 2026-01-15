@@ -116,4 +116,10 @@ constexpr std::array<uint32_t, 6> HIRES_COLORS = {{
     0xFFF25006  // 5: Orange (odd pixels, high bit = 1)
 }};
 
+// Double Hi-Res color translation table
+// Maps raw 4-bit values to correct color indices due to DHGR's bit ordering
+constexpr std::array<uint8_t, 16> DHGR_COLOR_TRANSLATE = {{
+    0, 1, 8, 9, 4, 5, 12, 13, 2, 3, 10, 11, 6, 7, 14, 15
+}};
+
 } // namespace a2e

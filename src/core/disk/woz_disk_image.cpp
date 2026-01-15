@@ -166,31 +166,49 @@ bool WozDiskImage::parseTmapChunk(const uint8_t *data, uint32_t size) {
 }
 
 bool WozDiskImage::parseTrksChunkWoz1(const uint8_t *data, uint32_t size) {
-  // WOZ1 TRKS: each track is 6656 bytes of nibble data + metadata
-  static constexpr size_t WOZ1_NIBBLE_DATA_SIZE = 6656;
-  static constexpr size_t WOZ1_ENTRY_SIZE =
-      6656 + 2 + 2 + 2 + 2; // nibbles + bytes_used + bit_count + splice fields
+  // WOZ1 TRKS: each track entry is 6656 bytes total
+  // - Bytes 0-6645: Bitstream data (up to 6646 bytes)
+  // - Bytes 6646-6647: bytes_used (uint16 LE)
+  // - Bytes 6648-6649: bit_count (uint16 LE)
+  // - Bytes 6650-6651: splice_point (uint16 LE)
+  // - Byte 6652: splice_nibble
+  // - Byte 6653: splice_bit_count
+  // - Bytes 6654-6655: reserved
+  static constexpr size_t WOZ1_ENTRY_SIZE = 6656;
+  static constexpr size_t WOZ1_BYTES_USED_OFFSET = 6646;
+  static constexpr size_t WOZ1_BIT_COUNT_OFFSET = 6648;
 
   // Count how many tracks we have
   size_t track_count = size / WOZ1_ENTRY_SIZE;
+  printf("parseTrksChunkWoz1: size=%u, entry_size=%zu, track_count=%zu\n",
+         size, WOZ1_ENTRY_SIZE, track_count);
+
   tracks_.resize(track_count);
 
+  int valid_tracks = 0;
   for (size_t i = 0; i < track_count; i++) {
     const uint8_t *entry = data + i * WOZ1_ENTRY_SIZE;
     uint16_t bytes_used =
-        entry[WOZ1_NIBBLE_DATA_SIZE] | (entry[WOZ1_NIBBLE_DATA_SIZE + 1] << 8);
-    uint16_t bit_count = entry[WOZ1_NIBBLE_DATA_SIZE + 2] |
-                         (entry[WOZ1_NIBBLE_DATA_SIZE + 3] << 8);
+        entry[WOZ1_BYTES_USED_OFFSET] | (entry[WOZ1_BYTES_USED_OFFSET + 1] << 8);
+    uint16_t bit_count =
+        entry[WOZ1_BIT_COUNT_OFFSET] | (entry[WOZ1_BIT_COUNT_OFFSET + 1] << 8);
 
-    if (bytes_used > 0) {
-      // Convert nibble data to bit data
-      // Each nibble byte contains 8 bits
+    if (bytes_used > 0 && bytes_used <= 6646) {
       tracks_[i].bit_count = bit_count;
       tracks_[i].bits.assign(entry, entry + bytes_used);
       tracks_[i].valid = true;
+      valid_tracks++;
+
+      // Debug first few tracks
+      if (i < 3) {
+        printf("  Track %zu: bytes_used=%u, bit_count=%u, first_bytes=[%02X %02X %02X %02X]\n",
+               i, bytes_used, bit_count,
+               entry[0], entry[1], entry[2], entry[3]);
+      }
     }
   }
 
+  printf("parseTrksChunkWoz1: loaded %d valid tracks\n", valid_tracks);
   return true;
 }
 
@@ -296,6 +314,8 @@ void WozDiskImage::updateHeadPosition(int phase) {
   // half-track). When two adjacent phases are on, head settles at odd
   // quarter-track between.
 
+  int old_quarter_track = quarter_track_;
+
   // Calculate step direction based on phase difference from last activated
   // phase
   int phase_diff = phase - last_phase_;
@@ -325,6 +345,17 @@ void WozDiskImage::updateHeadPosition(int phase) {
     }
   }
 
+  // Debug track changes
+  if (quarter_track_ != old_quarter_track) {
+    static int step_count = 0;
+    if (step_count++ < 20) {
+      uint8_t track_index = (quarter_track_ < QUARTER_TRACK_COUNT) ? tmap_[quarter_track_] : 0xFF;
+      printf("Head step: phase %d->%d, quarter_track %d->%d (track %d), tmap=%d\n",
+             last_phase_, phase, old_quarter_track, quarter_track_,
+             quarter_track_ / 4, track_index);
+    }
+  }
+
   last_phase_ = phase;
 }
 
@@ -345,13 +376,32 @@ const WozDiskImage::TrackData *WozDiskImage::getCurrentTrackData() const {
   }
 
   uint8_t track_index = tmap_[quarter_track_];
-  if (track_index == NO_TRACK ||
-      track_index >= static_cast<uint8_t>(tracks_.size())) {
+  if (track_index == NO_TRACK) {
+    static int no_track_count = 0;
+    if (no_track_count++ < 5) {
+      printf("getCurrentTrackData: NO_TRACK at quarter_track=%d\n", quarter_track_);
+    }
+    return nullptr;
+  }
+  if (track_index >= static_cast<uint8_t>(tracks_.size())) {
+    static int oob_count = 0;
+    if (oob_count++ < 5) {
+      printf("getCurrentTrackData: track_index=%d >= tracks_.size()=%zu at quarter_track=%d\n",
+             track_index, tracks_.size(), quarter_track_);
+    }
     return nullptr;
   }
 
   const TrackData &track = tracks_[track_index];
-  return track.valid ? &track : nullptr;
+  if (!track.valid) {
+    static int invalid_count = 0;
+    if (invalid_count++ < 5) {
+      printf("getCurrentTrackData: track %d is not valid at quarter_track=%d\n",
+             track_index, quarter_track_);
+    }
+    return nullptr;
+  }
+  return &track;
 }
 
 // Timing constants for WOZ format
@@ -386,7 +436,21 @@ uint8_t WozDiskImage::readBitInternal() const {
   uint8_t bit_offset = 7 - (pos % 8); // MSB first
 
   if (byte_offset >= track->bits.size()) {
+    static int oob_count = 0;
+    if (oob_count++ < 5) {
+      printf("readBitInternal: byte_offset=%u >= bits.size()=%zu, pos=%u, bit_count=%u\n",
+             byte_offset, track->bits.size(), pos, track->bit_count);
+    }
     return 0;
+  }
+
+  // Debug: show first read from each track
+  static int last_track = -1;
+  int current_track = quarter_track_ / 4;
+  if (current_track != last_track) {
+    printf("First read on track %d: byte_offset=%u, byte_value=0x%02X, bits.size()=%zu\n",
+           current_track, byte_offset, track->bits[byte_offset], track->bits.size());
+    last_track = current_track;
   }
 
   return (track->bits[byte_offset] >> bit_offset) & 1;
@@ -395,7 +459,21 @@ uint8_t WozDiskImage::readBitInternal() const {
 uint8_t WozDiskImage::readNibble() {
   const TrackData *track = getCurrentTrackData();
   if (!track || track->bit_count == 0) {
+    static int null_track_count = 0;
+    if (null_track_count++ < 5) {
+      printf("readNibble: no track data at quarter_track=%d\n", quarter_track_);
+    }
     return 0;
+  }
+
+  // Sanity check: bit_count should be reasonable (roughly 8 * data size)
+  // A normal 5.25" track has about 50,000 bits
+  if (track->bit_count < 1000 || track->bit_count > 100000) {
+    static int bad_bitcount = 0;
+    if (bad_bitcount++ < 5) {
+      printf("readNibble: suspicious bit_count=%u at quarter_track=%d\n",
+             track->bit_count, quarter_track_);
+    }
   }
 
   // Read bits until we get a nibble (byte with high bit set)
@@ -420,11 +498,23 @@ uint8_t WozDiskImage::readNibble() {
 
     // Check if we have a complete nibble (bit 7 set)
     if (value & 0x80) {
+      // Debug: log first few nibbles from each track
+      static int track_nibble_counts[40] = {0};
+      int track_num = quarter_track_ / 4;
+      if (track_num < 40 && track_nibble_counts[track_num]++ < 10) {
+        printf("Nibble: track=%d, value=0x%02X, bits_read=%d\n",
+               track_num, value, bits_read);
+      }
       return value;
     }
   }
 
   // Timeout - return whatever we have
+  static int timeout_count = 0;
+  if (timeout_count++ < 5) {
+    printf("readNibble: timeout after %d bits, value=0x%02X, track=%d, bit_pos=%u, bit_count=%u\n",
+           bits_read, value, quarter_track_ / 4, bit_position_, track->bit_count);
+  }
   return value;
 }
 
