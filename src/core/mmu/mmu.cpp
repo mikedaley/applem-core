@@ -71,13 +71,12 @@ uint8_t MMU::read(uint16_t address) {
   if (address < 0xC000) {
     // Text page 1: $0400-$07FF
     if (address >= 0x0400 && address < 0x0800) {
-      if (switches_.store80 && switches_.page2) {
-        return auxRAM_[address];
+      if (switches_.store80) {
+        // 80STORE on: PAGE2 controls main/aux, RAMRD is ignored
+        return switches_.page2 ? auxRAM_[address] : mainRAM_[address];
       }
-      if (switches_.ramrd) {
-        return auxRAM_[address];
-      }
-      return mainRAM_[address];
+      // 80STORE off: RAMRD controls main/aux
+      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
     }
 
     // Text page 2: $0800-$0BFF
@@ -90,13 +89,12 @@ uint8_t MMU::read(uint16_t address) {
 
     // HiRes page 1: $2000-$3FFF
     if (address >= 0x2000 && address < 0x4000) {
-      if (switches_.store80 && switches_.page2 && switches_.hires) {
-        return auxRAM_[address];
+      if (switches_.store80 && switches_.hires) {
+        // 80STORE+HIRES on: PAGE2 controls main/aux, RAMRD is ignored
+        return switches_.page2 ? auxRAM_[address] : mainRAM_[address];
       }
-      if (switches_.ramrd) {
-        return auxRAM_[address];
-      }
-      return mainRAM_[address];
+      // 80STORE off or HIRES off: RAMRD controls main/aux
+      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
     }
 
     // HiRes page 2: $4000-$5FFF
@@ -164,10 +162,16 @@ void MMU::write(uint16_t address, uint8_t value) {
   if (address < 0xC000) {
     // Text page 1: $0400-$07FF
     if (address >= 0x0400 && address < 0x0800) {
-      if (switches_.store80 && switches_.page2) {
-        auxRAM_[address] = value;
+      if (switches_.store80) {
+        // 80STORE on: PAGE2 controls main/aux, RAMWRT is ignored
+        if (switches_.page2) {
+          auxRAM_[address] = value;
+        } else {
+          mainRAM_[address] = value;
+        }
         return;
       }
+      // 80STORE off: RAMWRT controls main/aux
       if (switches_.ramwrt) {
         auxRAM_[address] = value;
       } else {
@@ -188,10 +192,16 @@ void MMU::write(uint16_t address, uint8_t value) {
 
     // HiRes page 1: $2000-$3FFF
     if (address >= 0x2000 && address < 0x4000) {
-      if (switches_.store80 && switches_.page2 && switches_.hires) {
-        auxRAM_[address] = value;
+      if (switches_.store80 && switches_.hires) {
+        // 80STORE+HIRES on: PAGE2 controls main/aux, RAMWRT is ignored
+        if (switches_.page2) {
+          auxRAM_[address] = value;
+        } else {
+          mainRAM_[address] = value;
+        }
         return;
       }
+      // 80STORE off or HIRES off: RAMWRT controls main/aux
       if (switches_.ramwrt) {
         auxRAM_[address] = value;
       } else {
