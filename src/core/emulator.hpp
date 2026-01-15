@@ -41,6 +41,7 @@ public:
   void keyDown(int keycode);
   void keyUp(int keycode);
   void setButton(int button, bool pressed);  // Set button state (0=Open Apple, 1=Closed Apple, 2=Button2)
+  bool isKeyboardReady() const { return (keyboardLatch_ & 0x80) == 0; }  // True if strobe cleared
 
   // Disk management
   bool insertDisk(int drive, const uint8_t *data, size_t size,

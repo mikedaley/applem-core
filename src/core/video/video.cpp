@@ -16,13 +16,15 @@ VideoMode Video::getCurrentMode() const {
   }
 
   if (sw.hires) {
-    if (sw.col80 && sw.an3) {
+    // DHR requires: AN3 OFF (!an3), 80COL on, HIRES on
+    if (sw.col80 && !sw.an3) {
       return VideoMode::DOUBLE_HIRES;
     }
     return VideoMode::HIRES;
   }
 
-  if (sw.col80 && sw.an3) {
+  // Double LoRes: AN3 OFF (!an3), 80COL on
+  if (sw.col80 && !sw.an3) {
     return VideoMode::DOUBLE_LORES;
   }
   return VideoMode::LORES;
@@ -47,7 +49,8 @@ void Video::renderFrame() {
     }
   } else if (sw.hires) {
     // Hi-res graphics
-    if (sw.col80 && sw.an3) {
+    // DHR requires: AN3 OFF (!an3), 80COL on
+    if (sw.col80 && !sw.an3) {
       renderDoubleHiRes();
     } else {
       renderHiRes();
@@ -59,7 +62,8 @@ void Video::renderFrame() {
     }
   } else {
     // Lo-res graphics
-    if (sw.col80 && sw.an3) {
+    // Double LoRes: AN3 OFF (!an3), 80COL on
+    if (sw.col80 && !sw.an3) {
       renderDoubleLoRes();
     } else {
       renderLoRes();
@@ -82,29 +86,26 @@ void Video::renderMixedMode() {
     for (int col = 0; col < 40; col++) {
       uint16_t addr = getTextAddress(row, col);
 
-      // Determine which memory page
-      bool useAux = sw.store80 && sw.page2;
-      uint8_t ch;
-      if (useAux) {
-        ch = mmu_.readRAM(addr, true);
-      } else if (sw.page2 && !sw.store80) {
-        ch = mmu_.readRAM(addr + 0x0400, false);
-      } else {
-        ch = mmu_.readRAM(addr, false);
-      }
-
-      // Determine character attributes
-      bool inverse = (ch & 0xC0) == 0x00;
-      bool flash = (ch & 0xC0) == 0x40;
+      // Determine page offset - PAGE2 without 80STORE displays page 2
+      uint16_t pageOffset = (sw.page2 && !sw.store80) ? 0x0400 : 0x0000;
 
       if (sw.col80) {
-        // 80-column mode - also render aux character
-        uint8_t auxCh = mmu_.readRAM(addr, true);
+        // 80-column mode - interleaved main/aux memory
+        uint8_t mainCh = mmu_.readRAM(addr + pageOffset, false);
+        uint8_t auxCh = mmu_.readRAM(addr + pageOffset, true);
+
+        bool mainInverse = (mainCh & 0xC0) == 0x00;
+        bool mainFlash = (mainCh & 0xC0) == 0x40;
         bool auxInverse = (auxCh & 0xC0) == 0x00;
         bool auxFlash = (auxCh & 0xC0) == 0x40;
+
         renderCharacter80(col * 2, row, auxCh, auxInverse, auxFlash);
-        renderCharacter80(col * 2 + 1, row, ch, inverse, flash);
+        renderCharacter80(col * 2 + 1, row, mainCh, mainInverse, mainFlash);
       } else {
+        // 40-column mode
+        uint8_t ch = mmu_.readRAM(addr + pageOffset, false);
+        bool inverse = (ch & 0xC0) == 0x00;
+        bool flash = (ch & 0xC0) == 0x40;
         renderCharacter(col, row, ch, inverse, flash);
       }
     }
@@ -142,16 +143,14 @@ void Video::renderText80() {
     for (int col = 0; col < 40; col++) {
       uint16_t addr = getTextAddress(row, col);
 
+      // Determine page offset - PAGE2 without 80STORE displays page 2
+      uint16_t pageOffset = (sw.page2 && !sw.store80) ? 0x0400 : 0x0000;
+
       // Main memory character (odd columns in display)
-      uint8_t mainCh;
-      if (sw.page2 && !sw.store80) {
-        mainCh = mmu_.readRAM(addr + 0x0400, false);
-      } else {
-        mainCh = mmu_.readRAM(addr, false);
-      }
+      uint8_t mainCh = mmu_.readRAM(addr + pageOffset, false);
 
       // Aux memory character (even columns in display)
-      uint8_t auxCh = mmu_.readRAM(addr, true);
+      uint8_t auxCh = mmu_.readRAM(addr + pageOffset, true);
 
       // Render aux character first (even column)
       bool auxInverse = (auxCh & 0xC0) == 0x00;

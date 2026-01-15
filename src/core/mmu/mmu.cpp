@@ -404,10 +404,10 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     return getFloatingBusValue();
   case 0x5E:
     switches_.an3 = false;
-    return getFloatingBusValue(); // Also DHIRES off
+    return getFloatingBusValue(); // AN3 OFF = DHIRES enabled
   case 0x5F:
     switches_.an3 = true;
-    return getFloatingBusValue(); // Also DHIRES on
+    return getFloatingBusValue(); // AN3 ON = DHIRES disabled
 
   // Display switches - reading also sets the switch, returns floating bus
   case 0x50:
