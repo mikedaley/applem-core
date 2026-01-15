@@ -435,42 +435,24 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     switches_.hires = true;
     return getFloatingBusValue(); // HIRES
 
-  // 80-column / memory switches (IIe specific) - return floating bus
-  case 0x02:
-    switches_.ramrd = false;
-    return getFloatingBusValue(); // RDMAINRAM
-  case 0x03:
-    switches_.ramrd = true;
-    return getFloatingBusValue(); // RDCARDRAM
-  case 0x04:
-    switches_.ramwrt = false;
-    return getFloatingBusValue(); // WRMAINRAM
-  case 0x05:
-    switches_.ramwrt = true;
-    return getFloatingBusValue(); // WRCARDRAM
-  case 0x06:
-    switches_.intcxrom = false;
-    return getFloatingBusValue(); // SETINTCXROM
-  case 0x07:
-    switches_.intcxrom = true;
-    return getFloatingBusValue(); // SETSLOTCXROM
-  case 0x08:
-    switches_.altzp = false;
-    return getFloatingBusValue(); // SETSTDZP
-  case 0x09:
-    switches_.altzp = true;
-    return getFloatingBusValue(); // SETALTZP
-  case 0x0A:
-    switches_.slotc3rom = false;
-    return getFloatingBusValue(); // SETINTC3ROM
-  case 0x0B:
-    switches_.slotc3rom = true;
-    return getFloatingBusValue(); // SETSLOTC3ROM
-  // $C00C-$C00F are write-only on IIe - reads return floating bus
-  case 0x0C: // CLR80COL (write-only)
-  case 0x0D: // SET80COL (write-only)
-  case 0x0E: // CLRALTCHAR (write-only)
-  case 0x0F: // SETALTCHAR (write-only)
+  // 80-column / memory switches (IIe specific)
+  // $C000-$C00F are WRITE-ONLY switches - reads just return floating bus
+  // Only writes to these addresses should modify the switch state
+  case 0x01: // 80STORE on (write-only)
+  case 0x02: // RAMRD off (write-only)
+  case 0x03: // RAMRD on (write-only)
+  case 0x04: // RAMWRT off (write-only)
+  case 0x05: // RAMWRT on (write-only)
+  case 0x06: // INTCXROM off (write-only)
+  case 0x07: // INTCXROM on (write-only)
+  case 0x08: // ALTZP off (write-only)
+  case 0x09: // ALTZP on (write-only)
+  case 0x0A: // SLOTC3ROM off (write-only)
+  case 0x0B: // SLOTC3ROM on (write-only)
+  case 0x0C: // 80COL off (write-only)
+  case 0x0D: // 80COL on (write-only)
+  case 0x0E: // ALTCHAR off (write-only)
+  case 0x0F: // ALTCHAR on (write-only)
     return getFloatingBusValue();
 
   // Buttons (Open Apple, Closed Apple, Button 2) - bit 7 = state, bits 0-6 = floating bus
