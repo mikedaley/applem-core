@@ -754,9 +754,12 @@ void MMU::handleLanguageCardSwitchWrite(uint8_t reg) {
   // Language card soft switches on WRITE access
   // On Apple IIe, writes to LC soft switches:
   // - Do NOT count toward the "double read" requirement for write-enable
-  // - Writes to EVEN addresses ($C080, $C082, etc.) clear prewrite and disable writes
-  // - Writes to ODD addresses ($C081, $C083, etc.) do NOT affect prewrite state
+  // - ALL writes reset the prewrite state (clearing any pending write-enable)
   // - Bank and read source selection still applies
+  //
+  // This means LDA $C083 + STA $C083 + LDA $C083 does NOT enable writes
+  // (the STA resets the counter), but INC $C083 DOES enable writes
+  // (because INC does two reads before the write).
 
   bool bank2 = !(reg & 0x08);
   uint8_t op = reg & 0x03;
@@ -771,7 +774,8 @@ void MMU::handleLanguageCardSwitchWrite(uint8_t reg) {
     break;
 
   case 1: // $C081, $C089: Read ROM
-    // Write to odd address does NOT affect prewrite state
+    // Write resets prewrite but doesn't disable existing lcwrite
+    switches_.lcprewrite = false;
     break;
 
   case 2: // $C082, $C08A: Read ROM, write disabled
@@ -780,7 +784,8 @@ void MMU::handleLanguageCardSwitchWrite(uint8_t reg) {
     break;
 
   case 3: // $C083, $C08B: Read RAM
-    // Write to odd address does NOT affect prewrite state
+    // Write resets prewrite but doesn't disable existing lcwrite
+    switches_.lcprewrite = false;
     break;
   }
 
