@@ -119,14 +119,21 @@ uint8_t MMU::read(uint16_t address) {
 
   // Slot ROM space: $C100-$CFFF
   if (address < 0xD000) {
-    // Slot 3 special handling
+    // When INTCXROM is ON, all of $C100-$CFFF uses internal ROM
+    if (switches_.intcxrom) {
+      return systemROM_[address - 0xC000];
+    }
+
+    // INTCXROM is OFF - use slot ROMs
+
+    // Slot 3 ($C300-$C3FF) has special handling via SLOTC3ROM
     if (address >= 0xC300 && address < 0xC400) {
       if (!switches_.slotc3rom) {
-        // Use internal ROM
+        // SLOTC3ROM off: use internal ROM for slot 3
         return systemROM_[address - 0xC000];
       }
-      // Use slot 3 ROM (if any)
-      return systemROM_[address - 0xC000];
+      // SLOTC3ROM on: use slot 3 ROM (no card, return floating bus)
+      return getFloatingBusValue();
     }
 
     // Slot 6 (Disk II): $C600-$C6FF
@@ -134,13 +141,15 @@ uint8_t MMU::read(uint16_t address) {
       return diskROM_[address - 0xC600];
     }
 
-    // Other slots - use internal ROM or slot ROM based on INTCXROM
-    if (switches_.intcxrom) {
-      return systemROM_[address - 0xC000];
+    // $C800-$CFFF: Expansion ROM space (directly return floating bus for now)
+    // This area is shared by cards and activated by slot I/O access
+    if (address >= 0xC800) {
+      return getFloatingBusValue();
     }
 
-    // Default to internal ROM
-    return systemROM_[address - 0xC000];
+    // Other slot ROM space ($C100-$C2FF, $C400-$C5FF, $C700-$C7FF)
+    // No cards installed, return floating bus
+    return getFloatingBusValue();
   }
 
   // Language card area: $D000-$FFFF
