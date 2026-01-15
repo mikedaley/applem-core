@@ -478,12 +478,23 @@ void Video::renderCharacter(int col, int row, uint8_t ch, bool inverse,
     inverse = !inverse;
   }
 
-  // Get character index (mask off attribute bits for normal/inverse/flash)
-  uint8_t charIndex = ch & 0x3F;
-  if (ch >= 0x40 && ch < 0x80) {
-    charIndex = ch & 0x3F; // Flash characters
-  } else if (ch >= 0x80) {
-    charIndex = ch & 0x7F; // Normal characters
+  // Get character index based on character code range
+  // Apple IIe character ROM layout:
+  //   $00-$3F: Uppercase, numbers, symbols (@, A-Z, etc.)
+  //   $40-$7F: Lowercase (`, a-z, etc.)
+  uint8_t charIndex;
+  if (ch < 0x40) {
+    // $00-$3F: Inverse characters - ROM positions $00-$3F
+    charIndex = ch;
+  } else if (ch < 0x60) {
+    // $40-$5F: Flash uppercase - ROM positions $00-$1F
+    charIndex = ch & 0x3F;
+  } else if (ch < 0x80) {
+    // $60-$7F: Flash lowercase - ROM positions $60-$7F (same as normal lowercase)
+    charIndex = ch;
+  } else {
+    // $80-$FF: Normal characters - ROM positions $00-$7F
+    charIndex = ch & 0x7F;
     inverse = false;
   }
 
@@ -510,10 +521,10 @@ void Video::renderCharacter(int col, int row, uint8_t ch, bool inverse,
     // Read character ROM
     uint8_t rowData = mmu_.readCharROM(charIndex * 8 + charRow);
 
-    // Handle alternate character set
-    if (sw.altCharSet && ch >= 0x40 && ch < 0x80) {
+    // Handle alternate character set - MouseText replaces inverse characters ($00-$3F)
+    if (sw.altCharSet && ch < 0x40) {
       // MouseText characters
-      rowData = mmu_.readCharROM(0x400 + (ch - 0x40) * 8 + charRow);
+      rowData = mmu_.readCharROM(0x400 + ch * 8 + charRow);
     }
 
     for (int charCol = 0; charCol < 7; charCol++) {
@@ -539,10 +550,22 @@ void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
     inverse = !inverse;
   }
 
-  uint8_t charIndex = ch & 0x3F;
-  if (ch >= 0x40 && ch < 0x80) {
+  // Get character index based on character code range
+  // Apple IIe character ROM layout:
+  //   $00-$3F: Uppercase, numbers, symbols (@, A-Z, etc.)
+  //   $40-$7F: Lowercase (`, a-z, etc.)
+  uint8_t charIndex;
+  if (ch < 0x40) {
+    // $00-$3F: Inverse characters - ROM positions $00-$3F
+    charIndex = ch;
+  } else if (ch < 0x60) {
+    // $40-$5F: Flash uppercase - ROM positions $00-$1F
     charIndex = ch & 0x3F;
-  } else if (ch >= 0x80) {
+  } else if (ch < 0x80) {
+    // $60-$7F: Flash lowercase - ROM positions $60-$7F (same as normal lowercase)
+    charIndex = ch;
+  } else {
+    // $80-$FF: Normal characters - ROM positions $00-$7F
     charIndex = ch & 0x7F;
     inverse = false;
   }
