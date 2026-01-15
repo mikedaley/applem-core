@@ -130,6 +130,8 @@ uint8_t MMU::read(uint16_t address) {
     if (address >= 0xC300 && address < 0xC400) {
       if (!switches_.slotc3rom) {
         // SLOTC3ROM off: use internal ROM for slot 3
+        // Also activates internal ROM for $C800-$CFFF
+        switches_.intc8rom = true;
         return systemROM_[address - 0xC000];
       }
       // SLOTC3ROM on: use slot 3 ROM (no card, return floating bus)
@@ -141,9 +143,17 @@ uint8_t MMU::read(uint16_t address) {
       return diskROM_[address - 0xC600];
     }
 
-    // $C800-$CFFF: Expansion ROM space (directly return floating bus for now)
-    // This area is shared by cards and activated by slot I/O access
+    // $C800-$CFFF: Expansion ROM space
     if (address >= 0xC800) {
+      // Access to $CFFF clears the $C800 ROM select
+      if (address == 0xCFFF) {
+        switches_.intc8rom = false;
+      }
+      // Return internal ROM if slot 3 internal ROM was accessed
+      if (switches_.intc8rom) {
+        return systemROM_[address - 0xC000];
+      }
+      // Otherwise return floating bus (no expansion ROM active)
       return getFloatingBusValue();
     }
 
@@ -245,7 +255,11 @@ void MMU::write(uint16_t address, uint8_t value) {
   }
 
   // Slot ROM space: $C100-$CFFF - writes are ignored
+  // BUT access to $CFFF (read or write) clears the $C800 ROM select
   if (address < 0xD000) {
+    if (address == 0xCFFF) {
+      switches_.intc8rom = false;
+    }
     return;
   }
 

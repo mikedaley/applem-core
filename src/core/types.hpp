@@ -57,6 +57,7 @@ struct SoftSwitches {
   bool altzp = false;     // ALTZP - aux zero page/stack
   bool intcxrom = false;  // INTCXROM - internal slot ROM
   bool slotc3rom = false; // SLOTC3ROM - slot 3 ROM
+  bool intc8rom = false;  // Internal $C800-$CFFF ROM active
 
   // Language card
   bool lcram = false;      // LC RAM enabled for read
