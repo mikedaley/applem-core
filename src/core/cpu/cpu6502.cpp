@@ -1236,44 +1236,236 @@ void CPU6502::executeOpcode(uint8_t opcode) {
 }
 
 std::string CPU6502::disassembleAt(uint16_t address) const {
+  // Addressing mode enumeration
+  enum AddrMode {
+    IMP,  // Implied
+    ACC,  // Accumulator
+    IMM,  // Immediate #$nn
+    ZP,   // Zero Page $nn
+    ZPX,  // Zero Page,X $nn,X
+    ZPY,  // Zero Page,Y $nn,Y
+    ABS,  // Absolute $nnnn
+    ABX,  // Absolute,X $nnnn,X
+    ABY,  // Absolute,Y $nnnn,Y
+    IND,  // Indirect ($nnnn)
+    IZX,  // Indexed Indirect ($nn,X)
+    IZY,  // Indirect Indexed ($nn),Y
+    REL,  // Relative (branches)
+    ZPI,  // Zero Page Indirect ($nn) - 65C02
+    AIX,  // Absolute Indexed Indirect ($nnnn,X) - 65C02
+    ZPR   // Zero Page Relative (BBR/BBS) - 65C02
+  };
+
+  // Opcode info: mnemonic and addressing mode
+  struct OpcodeInfo {
+    const char *mnemonic;
+    AddrMode mode;
+  };
+
+  static const OpcodeInfo opcodes[256] = {
+      // 0x00-0x0F
+      {"BRK", IMP}, {"ORA", IZX}, {"???", IMP}, {"???", IMP},
+      {"TSB", ZP},  {"ORA", ZP},  {"ASL", ZP},  {"RMB0", ZP},
+      {"PHP", IMP}, {"ORA", IMM}, {"ASL", ACC}, {"???", IMP},
+      {"TSB", ABS}, {"ORA", ABS}, {"ASL", ABS}, {"BBR0", ZPR},
+      // 0x10-0x1F
+      {"BPL", REL}, {"ORA", IZY}, {"ORA", ZPI}, {"???", IMP},
+      {"TRB", ZP},  {"ORA", ZPX}, {"ASL", ZPX}, {"RMB1", ZP},
+      {"CLC", IMP}, {"ORA", ABY}, {"INC", ACC}, {"???", IMP},
+      {"TRB", ABS}, {"ORA", ABX}, {"ASL", ABX}, {"BBR1", ZPR},
+      // 0x20-0x2F
+      {"JSR", ABS}, {"AND", IZX}, {"???", IMP}, {"???", IMP},
+      {"BIT", ZP},  {"AND", ZP},  {"ROL", ZP},  {"RMB2", ZP},
+      {"PLP", IMP}, {"AND", IMM}, {"ROL", ACC}, {"???", IMP},
+      {"BIT", ABS}, {"AND", ABS}, {"ROL", ABS}, {"BBR2", ZPR},
+      // 0x30-0x3F
+      {"BMI", REL}, {"AND", IZY}, {"AND", ZPI}, {"???", IMP},
+      {"BIT", ZPX}, {"AND", ZPX}, {"ROL", ZPX}, {"RMB3", ZP},
+      {"SEC", IMP}, {"AND", ABY}, {"DEC", ACC}, {"???", IMP},
+      {"BIT", ABX}, {"AND", ABX}, {"ROL", ABX}, {"BBR3", ZPR},
+      // 0x40-0x4F
+      {"RTI", IMP}, {"EOR", IZX}, {"???", IMP}, {"???", IMP},
+      {"???", IMP}, {"EOR", ZP},  {"LSR", ZP},  {"RMB4", ZP},
+      {"PHA", IMP}, {"EOR", IMM}, {"LSR", ACC}, {"???", IMP},
+      {"JMP", ABS}, {"EOR", ABS}, {"LSR", ABS}, {"BBR4", ZPR},
+      // 0x50-0x5F
+      {"BVC", REL}, {"EOR", IZY}, {"EOR", ZPI}, {"???", IMP},
+      {"???", IMP}, {"EOR", ZPX}, {"LSR", ZPX}, {"RMB5", ZP},
+      {"CLI", IMP}, {"EOR", ABY}, {"PHY", IMP}, {"???", IMP},
+      {"???", IMP}, {"EOR", ABX}, {"LSR", ABX}, {"BBR5", ZPR},
+      // 0x60-0x6F
+      {"RTS", IMP}, {"ADC", IZX}, {"???", IMP}, {"???", IMP},
+      {"STZ", ZP},  {"ADC", ZP},  {"ROR", ZP},  {"RMB6", ZP},
+      {"PLA", IMP}, {"ADC", IMM}, {"ROR", ACC}, {"???", IMP},
+      {"JMP", IND}, {"ADC", ABS}, {"ROR", ABS}, {"BBR6", ZPR},
+      // 0x70-0x7F
+      {"BVS", REL}, {"ADC", IZY}, {"ADC", ZPI}, {"???", IMP},
+      {"STZ", ZPX}, {"ADC", ZPX}, {"ROR", ZPX}, {"RMB7", ZP},
+      {"SEI", IMP}, {"ADC", ABY}, {"PLY", IMP}, {"???", IMP},
+      {"JMP", AIX}, {"ADC", ABX}, {"ROR", ABX}, {"BBR7", ZPR},
+      // 0x80-0x8F
+      {"BRA", REL}, {"STA", IZX}, {"???", IMP}, {"???", IMP},
+      {"STY", ZP},  {"STA", ZP},  {"STX", ZP},  {"SMB0", ZP},
+      {"DEY", IMP}, {"BIT", IMM}, {"TXA", IMP}, {"???", IMP},
+      {"STY", ABS}, {"STA", ABS}, {"STX", ABS}, {"BBS0", ZPR},
+      // 0x90-0x9F
+      {"BCC", REL}, {"STA", IZY}, {"STA", ZPI}, {"???", IMP},
+      {"STY", ZPX}, {"STA", ZPX}, {"STX", ZPY}, {"SMB1", ZP},
+      {"TYA", IMP}, {"STA", ABY}, {"TXS", IMP}, {"???", IMP},
+      {"STZ", ABS}, {"STA", ABX}, {"STZ", ABX}, {"BBS1", ZPR},
+      // 0xA0-0xAF
+      {"LDY", IMM}, {"LDA", IZX}, {"LDX", IMM}, {"???", IMP},
+      {"LDY", ZP},  {"LDA", ZP},  {"LDX", ZP},  {"SMB2", ZP},
+      {"TAY", IMP}, {"LDA", IMM}, {"TAX", IMP}, {"???", IMP},
+      {"LDY", ABS}, {"LDA", ABS}, {"LDX", ABS}, {"BBS2", ZPR},
+      // 0xB0-0xBF
+      {"BCS", REL}, {"LDA", IZY}, {"LDA", ZPI}, {"???", IMP},
+      {"LDY", ZPX}, {"LDA", ZPX}, {"LDX", ZPY}, {"SMB3", ZP},
+      {"CLV", IMP}, {"LDA", ABY}, {"TSX", IMP}, {"???", IMP},
+      {"LDY", ABX}, {"LDA", ABX}, {"LDX", ABY}, {"BBS3", ZPR},
+      // 0xC0-0xCF
+      {"CPY", IMM}, {"CMP", IZX}, {"???", IMP}, {"???", IMP},
+      {"CPY", ZP},  {"CMP", ZP},  {"DEC", ZP},  {"SMB4", ZP},
+      {"INY", IMP}, {"CMP", IMM}, {"DEX", IMP}, {"WAI", IMP},
+      {"CPY", ABS}, {"CMP", ABS}, {"DEC", ABS}, {"BBS4", ZPR},
+      // 0xD0-0xDF
+      {"BNE", REL}, {"CMP", IZY}, {"CMP", ZPI}, {"???", IMP},
+      {"???", IMP}, {"CMP", ZPX}, {"DEC", ZPX}, {"SMB5", ZP},
+      {"CLD", IMP}, {"CMP", ABY}, {"PHX", IMP}, {"STP", IMP},
+      {"???", IMP}, {"CMP", ABX}, {"DEC", ABX}, {"BBS5", ZPR},
+      // 0xE0-0xEF
+      {"CPX", IMM}, {"SBC", IZX}, {"???", IMP}, {"???", IMP},
+      {"CPX", ZP},  {"SBC", ZP},  {"INC", ZP},  {"SMB6", ZP},
+      {"INX", IMP}, {"SBC", IMM}, {"NOP", IMP}, {"???", IMP},
+      {"CPX", ABS}, {"SBC", ABS}, {"INC", ABS}, {"BBS6", ZPR},
+      // 0xF0-0xFF
+      {"BEQ", REL}, {"SBC", IZY}, {"SBC", ZPI}, {"???", IMP},
+      {"???", IMP}, {"SBC", ZPX}, {"INC", ZPX}, {"SMB7", ZP},
+      {"SED", IMP}, {"SBC", ABY}, {"PLX", IMP}, {"???", IMP},
+      {"???", IMP}, {"SBC", ABX}, {"INC", ABX}, {"BBS7", ZPR}
+  };
+
   std::ostringstream ss;
   ss << std::hex << std::uppercase << std::setfill('0');
-  ss << std::setw(4) << address << ": ";
 
   uint8_t opcode = read_(address);
-  ss << std::setw(2) << static_cast<int>(opcode) << " ";
+  const OpcodeInfo &info = opcodes[opcode];
 
-  // This is a simplified disassembler - a full implementation would
-  // decode all opcodes with proper mnemonics and operands
-  static const char *mnemonics[256] = {
-      "BRK", "ORA",  "???", "???",  "TSB", "ORA",  "ASL", "RMB0", "PHP", "ORA",
-      "ASL", "???",  "TSB", "ORA",  "ASL", "BBR0", "BPL", "ORA",  "ORA", "???",
-      "TRB", "ORA",  "ASL", "RMB1", "CLC", "ORA",  "INC", "???",  "TRB", "ORA",
-      "ASL", "BBR1", "JSR", "AND",  "???", "???",  "BIT", "AND",  "ROL", "RMB2",
-      "PLP", "AND",  "ROL", "???",  "BIT", "AND",  "ROL", "BBR2", "BMI", "AND",
-      "AND", "???",  "BIT", "AND",  "ROL", "RMB3", "SEC", "AND",  "DEC", "???",
-      "BIT", "AND",  "ROL", "BBR3", "RTI", "EOR",  "???", "???",  "???", "EOR",
-      "LSR", "RMB4", "PHA", "EOR",  "LSR", "???",  "JMP", "EOR",  "LSR", "BBR4",
-      "BVC", "EOR",  "EOR", "???",  "???", "EOR",  "LSR", "RMB5", "CLI", "EOR",
-      "PHY", "???",  "???", "EOR",  "LSR", "BBR5", "RTS", "ADC",  "???", "???",
-      "STZ", "ADC",  "ROR", "RMB6", "PLA", "ADC",  "ROR", "???",  "JMP", "ADC",
-      "ROR", "BBR6", "BVS", "ADC",  "ADC", "???",  "STZ", "ADC",  "ROR", "RMB7",
-      "SEI", "ADC",  "PLY", "???",  "JMP", "ADC",  "ROR", "BBR7", "BRA", "STA",
-      "???", "???",  "STY", "STA",  "STX", "SMB0", "DEY", "BIT",  "TXA", "???",
-      "STY", "STA",  "STX", "BBS0", "BCC", "STA",  "STA", "???",  "STY", "STA",
-      "STX", "SMB1", "TYA", "STA",  "TXS", "???",  "STZ", "STA",  "STZ", "BBS1",
-      "LDY", "LDA",  "LDX", "???",  "LDY", "LDA",  "LDX", "SMB2", "TAY", "LDA",
-      "TAX", "???",  "LDY", "LDA",  "LDX", "BBS2", "BCS", "LDA",  "LDA", "???",
-      "LDY", "LDA",  "LDX", "SMB3", "CLV", "LDA",  "TSX", "???",  "LDY", "LDA",
-      "LDX", "BBS3", "CPY", "CMP",  "???", "???",  "CPY", "CMP",  "DEC", "SMB4",
-      "INY", "CMP",  "DEX", "WAI",  "CPY", "CMP",  "DEC", "BBS4", "BNE", "CMP",
-      "CMP", "???",  "???", "CMP",  "DEC", "SMB5", "CLD", "CMP",  "PHX", "STP",
-      "???", "CMP",  "DEC", "BBS5", "CPX", "SBC",  "???", "???",  "CPX", "SBC",
-      "INC", "SMB6", "INX", "SBC",  "NOP", "???",  "CPX", "SBC",  "INC", "BBS6",
-      "BEQ", "SBC",  "SBC", "???",  "???", "SBC",  "INC", "SMB7", "SED", "SBC",
-      "PLX", "???",  "???", "SBC",  "INC", "BBS7"};
+  // Read operand bytes based on addressing mode
+  uint8_t lo = 0, hi = 0;
+  int instrLen = 1;
 
-  ss << mnemonics[opcode];
+  switch (info.mode) {
+  case IMP:
+  case ACC:
+    instrLen = 1;
+    break;
+  case IMM:
+  case ZP:
+  case ZPX:
+  case ZPY:
+  case IZX:
+  case IZY:
+  case ZPI:
+  case REL:
+    lo = read_(address + 1);
+    instrLen = 2;
+    break;
+  case ABS:
+  case ABX:
+  case ABY:
+  case IND:
+  case AIX:
+    lo = read_(address + 1);
+    hi = read_(address + 2);
+    instrLen = 3;
+    break;
+  case ZPR:
+    lo = read_(address + 1);
+    hi = read_(address + 2);
+    instrLen = 3;
+    break;
+  }
+
+  // Format: "AAAA: BB BB BB  MMM OPERAND"
+  ss << std::setw(4) << address << ": ";
+
+  // Output instruction bytes
+  ss << std::setw(2) << static_cast<int>(opcode);
+  if (instrLen >= 2) {
+    ss << " " << std::setw(2) << static_cast<int>(lo);
+  } else {
+    ss << "   ";
+  }
+  if (instrLen >= 3) {
+    ss << " " << std::setw(2) << static_cast<int>(hi);
+  } else {
+    ss << "   ";
+  }
+
+  // Mnemonic
+  ss << "  " << info.mnemonic;
+
+  // Format operand based on addressing mode
+  switch (info.mode) {
+  case IMP:
+    break;
+  case ACC:
+    ss << " A";
+    break;
+  case IMM:
+    ss << " #$" << std::setw(2) << static_cast<int>(lo);
+    break;
+  case ZP:
+    ss << " $" << std::setw(2) << static_cast<int>(lo);
+    break;
+  case ZPX:
+    ss << " $" << std::setw(2) << static_cast<int>(lo) << ",X";
+    break;
+  case ZPY:
+    ss << " $" << std::setw(2) << static_cast<int>(lo) << ",Y";
+    break;
+  case ABS:
+    ss << " $" << std::setw(4) << static_cast<int>((hi << 8) | lo);
+    break;
+  case ABX:
+    ss << " $" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ",X";
+    break;
+  case ABY:
+    ss << " $" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ",Y";
+    break;
+  case IND:
+    ss << " ($" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ")";
+    break;
+  case IZX:
+    ss << " ($" << std::setw(2) << static_cast<int>(lo) << ",X)";
+    break;
+  case IZY:
+    ss << " ($" << std::setw(2) << static_cast<int>(lo) << "),Y";
+    break;
+  case ZPI:
+    ss << " ($" << std::setw(2) << static_cast<int>(lo) << ")";
+    break;
+  case AIX:
+    ss << " ($" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ",X)";
+    break;
+  case REL: {
+    // Calculate branch target
+    int8_t offset = static_cast<int8_t>(lo);
+    uint16_t target = address + 2 + offset;
+    ss << " $" << std::setw(4) << static_cast<int>(target);
+    break;
+  }
+  case ZPR: {
+    // BBR/BBS: zero page address and relative branch
+    int8_t offset = static_cast<int8_t>(hi);
+    uint16_t target = address + 3 + offset;
+    ss << " $" << std::setw(2) << static_cast<int>(lo) << ",$"
+       << std::setw(4) << static_cast<int>(target);
+    break;
+  }
+  }
+
   return ss.str();
 }
 
