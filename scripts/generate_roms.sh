@@ -58,7 +58,7 @@ elif [ -f "$ROM_DIR/342-0135-A-CD.bin" ] && [ -f "$ROM_DIR/342-0134-A-EF.bin" ];
     generate_array "$ROM_DIR/342-0134-A-EF.bin" "ROM_EF"
 fi
 
-generate_array "$ROM_DIR/341-0160-A.bin" "ROM_CHAR"
+generate_array "$ROM_DIR/342-0273-A-US-UK.bin" "ROM_CHAR"
 generate_array "$ROM_DIR/341-0027.bin" "ROM_DISK2"
 
 # Close namespace

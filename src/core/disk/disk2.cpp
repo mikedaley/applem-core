@@ -18,6 +18,7 @@ void Disk2Controller::reset() {
   phase_states_ = 0;
 
   // Reset timing state
+  total_cycles_ = 0;
   last_read_cycle_[0] = 0;
   last_read_cycle_[1] = 0;
   data_latch_ = 0;

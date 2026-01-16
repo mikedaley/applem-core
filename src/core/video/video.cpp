@@ -472,27 +472,102 @@ void Video::renderCharacter(int col, int row, uint8_t ch, bool inverse,
                             bool flash) {
   const auto &sw = mmu_.getSoftSwitches();
 
-  // Get character index based on character code range
   // Apple IIe character ROM layout:
-  //   $00-$3F: Uppercase, numbers, symbols (@, A-Z, etc.)
-  //   $40-$7F: Lowercase (`, a-z, etc.)
-  uint8_t charIndex;
-  if (ch < 0x40) {
-    // $00-$3F: Inverse characters - ROM positions $00-$3F
-    charIndex = ch;
-  } else if (ch < 0x80) {
-    // $40-$7F: Flash characters
-    // $40-$5F: Flash uppercase - same chars as $00-$1F (uppercase A-Z, @, etc.)
-    // $60-$7F: Flash lowercase - same chars as $60-$7F in ROM (lowercase a-z)
-    if (ch < 0x60) {
-      charIndex = ch & 0x3F;  // Map $40-$5F to $00-$1F
+  // The ROM contains 128 unique character patterns (indices 0-127).
+  // Screen codes map to character indices via the lower 7 bits.
+  // The display mode (inverse/flash/normal) is determined by the high bits
+  // and controls color rendering, not which pattern is fetched.
+  //
+  // Screen code ranges:
+  // - $00-$3F: Inverse characters - charIndex = ch (0-63)
+  // - $40-$5F: Flash uppercase - charIndex = ch & $3F (0-31, same as inverse uppercase)
+  // - $60-$7F: Flash lowercase - charIndex = ch (96-127)
+  // - $80-$FF: Normal characters - charIndex = ch & $7F (0-127)
+  //
+  // ALTCHARSET ($C00F) selects alternate character set with MouseText at $40-$5F.
+
+  // Apple IIe Enhanced character ROM (342-0273-A) layout:
+  // This 8KB ROM contains US and UK character sets. The first 2KB is the US set:
+  //   $000-$3FF (0-1023): Primary character set, NON-inverted data
+  //     - Indices 0-63: Characters for screen codes $00-$3F and $40-$7F
+  //     - Indices 64-95: Inverted/unused region (skip this)
+  //     - Indices 96-127: Lowercase characters for $E0-$FF
+  //   $400-$7FF (1024-2047): Alternate character set (MouseText), INVERTED data
+  //
+  // Screen code to character mapping (using indices 0-63 and 96-127 only):
+  //   $00-$1F: Inverse uppercase @ A-Z etc → index 0-31
+  //   $20-$3F: Inverse symbols/digits → index 32-63
+  //   $40-$5F: Flash uppercase → index 0-31 (same as inverse)
+  //   $60-$7F: Flash symbols → index 32-63
+  //   $80-$9F: Normal uppercase → index 0-31
+  //   $A0-$BF: Normal symbols/digits → index 32-63
+  //   $C0-$DF: Normal uppercase → index 0-31
+  //   $E0-$FF: Normal lowercase → index 96-127
+
+  uint16_t romOffset;
+  bool needsXor = false;
+
+  if (sw.altCharSet) {
+    // ALTCHARSET mode: MouseText replaces flash characters at $40-$5F
+    // MouseText characters are stored at indices 64-95 (offset 512-767), INVERTED
+    // All other characters use primary charset mapping
+    uint8_t charIndex;
+    if (ch >= 0x40 && ch < 0x60) {
+      // $40-$5F: MouseText characters at indices 64-95
+      charIndex = ch;  // $40-$5F maps to indices 64-95 directly
+      needsXor = true;
+      inverse = false;
+    } else if (ch >= 0x60 && ch < 0x80) {
+      // $60-$7F: MouseText continuation at indices 96-127? Or symbols?
+      // Actually these show as inverse MouseText in ALTCHARSET mode
+      charIndex = ch;  // Direct mapping
+      needsXor = true;
+    } else if (ch < 0x40) {
+      // $00-$3F: Inverse characters, same as primary
+      charIndex = ch;
+      needsXor = false;
     } else {
-      charIndex = ch;  // $60-$7F stays as-is for lowercase
+      // $80-$FF: Normal characters, same mapping as primary
+      if (ch < 0xA0) {
+        charIndex = ch & 0x1F;
+      } else if (ch < 0xC0) {
+        charIndex = (ch & 0x1F) + 32;
+      } else if (ch < 0xE0) {
+        charIndex = ch & 0x1F;
+      } else {
+        charIndex = (ch & 0x1F) + 96;
+      }
+      needsXor = false;
+      inverse = false;
     }
+    romOffset = charIndex * 8;
   } else {
-    // $80-$FF: Normal characters - ROM positions $00-$7F
-    charIndex = ch & 0x7F;
-    inverse = false;
+    // Primary character set at offset 0-1023, data is NON-inverted
+    // Map screen codes to avoid indices 64-95 (which have bad data)
+    uint8_t charIndex;
+    if (ch < 0x20) {
+      charIndex = ch;           // $00-$1F → 0-31
+    } else if (ch < 0x40) {
+      charIndex = ch;           // $20-$3F → 32-63
+    } else if (ch < 0x60) {
+      charIndex = ch & 0x1F;    // $40-$5F → 0-31
+    } else if (ch < 0x80) {
+      charIndex = (ch & 0x1F) + 32;  // $60-$7F → 32-63
+    } else if (ch < 0xA0) {
+      charIndex = ch & 0x1F;    // $80-$9F → 0-31
+      inverse = false;
+    } else if (ch < 0xC0) {
+      charIndex = (ch & 0x1F) + 32;  // $A0-$BF → 32-63
+      inverse = false;
+    } else if (ch < 0xE0) {
+      charIndex = ch & 0x1F;    // $C0-$DF → 0-31
+      inverse = false;
+    } else {
+      charIndex = (ch & 0x1F) + 96;  // $E0-$FF → 96-127
+      inverse = false;
+    }
+    romOffset = charIndex * 8;
+    needsXor = false;  // Primary set data is NOT inverted
   }
 
   // Handle flash - toggle inverse state when flash is active
@@ -522,7 +597,12 @@ void Video::renderCharacter(int col, int row, uint8_t ch, bool inverse,
   // Render 8x8 character with 2x scaling
   for (int charRow = 0; charRow < 8; charRow++) {
     // Read character ROM
-    uint8_t rowData = mmu_.readCharROM(charIndex * 8 + charRow);
+    uint8_t rowData = mmu_.readCharROM(romOffset + charRow);
+
+    // XOR with 0xFF if data is stored inverted
+    if (needsXor) {
+      rowData ^= 0xFF;
+    }
 
     for (int charCol = 0; charCol < 7; charCol++) {
       bool pixelOn = (rowData & (1 << charCol)) != 0;
@@ -544,31 +624,66 @@ void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
   // 80-column mode: 7x8 characters, single-width pixels
   const auto &sw = mmu_.getSoftSwitches();
 
-  // Get character index based on character code range
-  // Apple IIe character ROM layout:
-  //   $00-$3F: Uppercase, numbers, symbols (@, A-Z, etc.)
-  //   $40-$7F: Lowercase (`, a-z, etc.)
-  uint8_t charIndex;
-  if (ch < 0x40) {
-    // $00-$3F: Inverse characters - ROM positions $00-$3F
-    charIndex = ch;
-  } else if (ch < 0x80) {
-    // $40-$7F: Flash characters
-    if (ch < 0x60) {
-      // $40-$5F: Flash uppercase - ROM positions $00-$1F
-      charIndex = ch & 0x3F;
-    } else {
-      // $60-$7F: Flash lowercase - ROM positions $60-$7F (same as normal lowercase)
+  // Same ROM addressing as 40-column mode
+  uint16_t romOffset;
+  bool needsXor = false;
+
+  if (sw.altCharSet) {
+    // ALTCHARSET mode: MouseText replaces flash characters at $40-$5F
+    uint8_t charIndex;
+    if (ch >= 0x40 && ch < 0x60) {
       charIndex = ch;
+      needsXor = true;
+      inverse = false;
+    } else if (ch >= 0x60 && ch < 0x80) {
+      charIndex = ch;
+      needsXor = true;
+    } else if (ch < 0x40) {
+      charIndex = ch;
+      needsXor = false;
+    } else {
+      if (ch < 0xA0) {
+        charIndex = ch & 0x1F;
+      } else if (ch < 0xC0) {
+        charIndex = (ch & 0x1F) + 32;
+      } else if (ch < 0xE0) {
+        charIndex = ch & 0x1F;
+      } else {
+        charIndex = (ch & 0x1F) + 96;
+      }
+      needsXor = false;
+      inverse = false;
     }
+    romOffset = charIndex * 8;
   } else {
-    // $80-$FF: Normal characters - ROM positions $00-$7F
-    charIndex = ch & 0x7F;
-    inverse = false;
+    // Primary character set at offset 0-1023, data is NON-inverted
+    uint8_t charIndex;
+    if (ch < 0x20) {
+      charIndex = ch;
+    } else if (ch < 0x40) {
+      charIndex = ch;
+    } else if (ch < 0x60) {
+      charIndex = ch & 0x1F;
+    } else if (ch < 0x80) {
+      charIndex = (ch & 0x1F) + 32;
+    } else if (ch < 0xA0) {
+      charIndex = ch & 0x1F;
+      inverse = false;
+    } else if (ch < 0xC0) {
+      charIndex = (ch & 0x1F) + 32;
+      inverse = false;
+    } else if (ch < 0xE0) {
+      charIndex = ch & 0x1F;
+      inverse = false;
+    } else {
+      charIndex = (ch & 0x1F) + 96;
+      inverse = false;
+    }
+    romOffset = charIndex * 8;
+    needsXor = false;
   }
 
-  // Handle flash - toggle inverse state when flash is active
-  // Note: When altCharSet is enabled, flash characters display as normal (no flash)
+  // Handle flash
   if (flash && flashState_ && !sw.altCharSet) {
     inverse = !inverse;
   }
@@ -590,7 +705,11 @@ void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
   }
 
   for (int charRow = 0; charRow < 8; charRow++) {
-    uint8_t rowData = mmu_.readCharROM(charIndex * 8 + charRow);
+    uint8_t rowData = mmu_.readCharROM(romOffset + charRow);
+
+    if (needsXor) {
+      rowData ^= 0xFF;
+    }
 
     for (int charCol = 0; charCol < 7; charCol++) {
       bool pixelOn = (rowData & (1 << charCol)) != 0;

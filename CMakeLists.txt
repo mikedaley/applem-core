@@ -22,7 +22,7 @@ set(CORE_SOURCES
 # ROM embedding - generate C arrays from ROM files
 set(ROM_FILES
     roms/342-0349-B-C0-FF.bin # Combined 16KB system ROM (C0-FF)
-    roms/341-0160-A.bin       # Character ROM
+    roms/342-0273-A-US-UK.bin # Character ROM (Apple IIe Enhanced)
     roms/341-0027.bin         # Disk II ROM
 )
 
