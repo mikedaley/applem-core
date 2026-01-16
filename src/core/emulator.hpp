@@ -75,6 +75,7 @@ public:
 
   // Memory access
   uint8_t readMemory(uint16_t address) const;
+  uint8_t peekMemory(uint16_t address) const; // Non-side-effecting read for debugger
   void writeMemory(uint16_t address, uint8_t value);
 
   // Disassembly

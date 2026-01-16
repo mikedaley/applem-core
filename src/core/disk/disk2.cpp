@@ -57,6 +57,51 @@ void Disk2Controller::write(uint8_t reg, uint8_t value) {
   handleSoftSwitch(offset, true);
 }
 
+uint8_t Disk2Controller::peek(uint8_t reg) const {
+  // Non-side-effecting read for debugger/memory viewer
+  uint8_t offset = reg & 0x0F;
+
+  switch (offset) {
+  case PHASE0_OFF:
+  case PHASE0_ON:
+  case PHASE1_OFF:
+  case PHASE1_ON:
+  case PHASE2_OFF:
+  case PHASE2_ON:
+  case PHASE3_OFF:
+  case PHASE3_ON:
+    // Return current phase state
+    return (phase_states_ >> (offset / 2)) & 1 ? 0x80 : 0x00;
+
+  case MOTOR_OFF:
+  case MOTOR_ON:
+    return isMotorOn() ? 0x80 : 0x00;
+
+  case DRIVE1_SELECT:
+  case DRIVE2_SELECT:
+    return selected_drive_ == 1 ? 0x80 : 0x00;
+
+  case Q6L: // Data register in read mode
+    return data_latch_;
+
+  case Q6H: // Write protect sense
+    if (hasDisk(selected_drive_)) {
+      const DiskImage *disk = disk_images_[selected_drive_].get();
+      return disk->isWriteProtected() ? 0x80 : 0x00;
+    }
+    return 0x00;
+
+  case Q7L: // Read mode indicator
+    return q7_ ? 0x00 : 0x80;
+
+  case Q7H: // Write mode indicator
+    return q7_ ? 0x80 : 0x00;
+
+  default:
+    return 0x00;
+  }
+}
+
 uint8_t Disk2Controller::handleSoftSwitch(uint8_t offset, bool is_write) {
   (void)is_write; // Both reads and writes toggle/access the switches
 

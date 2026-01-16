@@ -63,6 +63,13 @@ public:
   void write(uint8_t reg, uint8_t value);
 
   /**
+   * Peek at a register without side effects (for debugger)
+   * @param reg Register offset (0-15)
+   * @return byte value
+   */
+  uint8_t peek(uint8_t reg) const;
+
+  /**
    * Update the controller state (call once per CPU cycle)
    * @param cycles Number of cycles elapsed
    */

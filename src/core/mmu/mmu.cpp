@@ -58,6 +58,208 @@ void MMU::writeRAM(uint16_t address, uint8_t value, bool aux) {
   }
 }
 
+uint8_t MMU::peek(uint16_t address) const {
+  // Non-side-effecting read for debugger/memory viewer
+  // Same logic as read() but without any state changes or callbacks
+
+  // Zero page and stack
+  if (address < 0x0200) {
+    if (switches_.altzp) {
+      return auxRAM_[address];
+    }
+    return mainRAM_[address];
+  }
+
+  // Main RAM: $0200-$BFFF
+  if (address < 0xC000) {
+    // Text page 1: $0400-$07FF
+    if (address >= 0x0400 && address < 0x0800) {
+      if (switches_.store80) {
+        return switches_.page2 ? auxRAM_[address] : mainRAM_[address];
+      }
+      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
+    }
+
+    // Text page 2: $0800-$0BFF
+    if (address >= 0x0800 && address < 0x0C00) {
+      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
+    }
+
+    // HiRes page 1: $2000-$3FFF
+    if (address >= 0x2000 && address < 0x4000) {
+      if (switches_.store80 && switches_.hires) {
+        return switches_.page2 ? auxRAM_[address] : mainRAM_[address];
+      }
+      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
+    }
+
+    // HiRes page 2: $4000-$5FFF
+    if (address >= 0x4000 && address < 0x6000) {
+      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
+    }
+
+    // All other main RAM
+    return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
+  }
+
+  // I/O and soft switches: $C000-$C0FF
+  if (address < 0xC100) {
+    return peekSoftSwitch(address);
+  }
+
+  // Slot ROM space: $C100-$CFFF
+  if (address < 0xD000) {
+    if (switches_.intcxrom) {
+      return systemROM_[address - 0xC000];
+    }
+
+    // Slot 3 ($C300-$C3FF)
+    if (address >= 0xC300 && address < 0xC400) {
+      if (!switches_.slotc3rom) {
+        return systemROM_[address - 0xC000];
+      }
+      return 0xFF; // No card, return high byte
+    }
+
+    // Slot 6 (Disk II): $C600-$C6FF
+    if (address >= 0xC600 && address < 0xC700) {
+      return diskROM_[address - 0xC600];
+    }
+
+    // $C800-$CFFF: Expansion ROM space
+    if (address >= 0xC800) {
+      if (switches_.intc8rom) {
+        return systemROM_[address - 0xC000];
+      }
+      return 0xFF;
+    }
+
+    // Other slot ROM space - no cards
+    return 0xFF;
+  }
+
+  // Language card area: $D000-$FFFF
+  if (switches_.lcram) {
+    bool useAux = switches_.altzp;
+    if (address < 0xE000) {
+      uint16_t offset = address - 0xD000;
+      if (switches_.lcram2) {
+        return useAux ? auxLcBank2_[offset] : lcBank2_[offset];
+      } else {
+        return useAux ? auxLcBank1_[offset] : lcBank1_[offset];
+      }
+    } else {
+      uint16_t offset = address - 0xE000;
+      return useAux ? auxLcHighRAM_[offset] : lcHighRAM_[offset];
+    }
+  }
+  return systemROM_[address - 0xC000];
+}
+
+uint8_t MMU::peekSoftSwitch(uint16_t address) const {
+  // Non-side-effecting soft switch read for debugger
+  uint8_t reg = address & 0xFF;
+
+  switch (reg) {
+  // Keyboard - return current latch without updating
+  case 0x00:
+    return keyboardLatch_;
+  case 0x10:
+    return keyboardLatch_ & 0x7F; // Would clear strobe, but we just peek
+
+  // Memory switch status reads (these are safe - just report state)
+  case 0x11:
+    return switches_.lcram2 ? 0x80 : 0x00;
+  case 0x12:
+    return switches_.lcram ? 0x80 : 0x00;
+  case 0x13:
+    return switches_.ramrd ? 0x80 : 0x00;
+  case 0x14:
+    return switches_.ramwrt ? 0x80 : 0x00;
+  case 0x15:
+    return switches_.intcxrom ? 0x80 : 0x00;
+  case 0x16:
+    return switches_.altzp ? 0x80 : 0x00;
+  case 0x17:
+    return switches_.slotc3rom ? 0x80 : 0x00;
+  case 0x18:
+    return switches_.store80 ? 0x80 : 0x00;
+  case 0x19:
+    return 0x00; // VBL status - return arbitrary value for peek
+  case 0x1A:
+    return switches_.text ? 0x80 : 0x00;
+  case 0x1B:
+    return switches_.mixed ? 0x80 : 0x00;
+  case 0x1C:
+    return switches_.page2 ? 0x80 : 0x00;
+  case 0x1D:
+    return switches_.hires ? 0x80 : 0x00;
+  case 0x1E:
+    return switches_.altCharSet ? 0x80 : 0x00;
+  case 0x1F:
+    return switches_.col80 ? 0x80 : 0x00;
+
+  // Buttons - peek returns current state
+  case 0x61:
+    return buttonCallback_ ? (buttonCallback_(0) & 0x80) : 0x00;
+  case 0x62:
+    return buttonCallback_ ? (buttonCallback_(1) & 0x80) : 0x00;
+  case 0x63:
+    return buttonCallback_ ? (buttonCallback_(2) & 0x80) : 0x00;
+
+  // Paddle inputs
+  case 0x64:
+  case 0x65:
+  case 0x66:
+  case 0x67:
+    return 0x00;
+
+  // Disk II controller - use peek if available, otherwise return 0
+  case 0xE0:
+  case 0xE1:
+  case 0xE2:
+  case 0xE3:
+  case 0xE4:
+  case 0xE5:
+  case 0xE6:
+  case 0xE7:
+  case 0xE8:
+  case 0xE9:
+  case 0xEA:
+  case 0xEB:
+  case 0xEC:
+  case 0xED:
+  case 0xEE:
+  case 0xEF:
+    if (diskController_) {
+      return diskController_->peek(reg - 0xE0);
+    }
+    return 0x00;
+
+  // Language card switches - report switch state
+  case 0x80:
+  case 0x81:
+  case 0x82:
+  case 0x83:
+  case 0x84:
+  case 0x85:
+  case 0x86:
+  case 0x87:
+  case 0x88:
+  case 0x89:
+  case 0x8A:
+  case 0x8B:
+  case 0x8C:
+  case 0x8D:
+  case 0x8E:
+  case 0x8F:
+    return switches_.lcram ? 0x80 : 0x00;
+
+  default:
+    return 0x00;
+  }
+}
+
 uint8_t MMU::read(uint16_t address) {
   // Zero page and stack
   if (address < 0x0200) {

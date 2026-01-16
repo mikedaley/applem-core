@@ -212,6 +212,10 @@ uint8_t Emulator::readMemory(uint16_t address) const {
   return const_cast<MMU *>(mmu_.get())->read(address);
 }
 
+uint8_t Emulator::peekMemory(uint16_t address) const {
+  return mmu_->peek(address);
+}
+
 void Emulator::writeMemory(uint16_t address, uint8_t value) {
   mmu_->write(address, value);
 }

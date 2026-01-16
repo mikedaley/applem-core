@@ -24,6 +24,9 @@ public:
   uint8_t read(uint16_t address);
   void write(uint16_t address, uint8_t value);
 
+  // Non-side-effecting read for debugger/memory viewer
+  uint8_t peek(uint16_t address) const;
+
   // Direct memory access (bypasses soft switches)
   uint8_t readRAM(uint16_t address, bool aux = false) const;
   void writeRAM(uint16_t address, uint8_t value, bool aux = false);
@@ -61,6 +64,7 @@ public:
 private:
   // Soft switch handling
   uint8_t readSoftSwitch(uint16_t address);
+  uint8_t peekSoftSwitch(uint16_t address) const;
   void writeSoftSwitch(uint16_t address, uint8_t value);
 
   // Floating bus - returns value video hardware is currently reading
