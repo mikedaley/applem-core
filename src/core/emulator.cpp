@@ -45,7 +45,7 @@ void Emulator::init() {
 
 void Emulator::reset() {
   mmu_->reset();
-  cpu_->resetCycleCount();  // Clear cycle counter for fresh power-on state
+  cpu_->resetCycleCount(); // Clear cycle counter for fresh power-on state
   cpu_->reset();
   audio_->reset();
   disk_->reset();
