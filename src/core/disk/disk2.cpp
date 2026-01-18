@@ -30,6 +30,12 @@ void Disk2Controller::reset() {
   // Don't reset disk images - preserve loaded disks across reset
 }
 
+void Disk2Controller::stopMotor() {
+  // Stop motor immediately without resetting other state
+  motor_on_ = false;
+  motor_off_cycle_ = 0;
+}
+
 bool Disk2Controller::isMotorOn() const {
   // Check if motor-off delay has elapsed
   if (motor_on_ && motor_off_cycle_ != 0) {

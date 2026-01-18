@@ -65,6 +65,9 @@ void Emulator::warmReset() {
   // Clear keyboard strobe
   keyboardLatch_ &= 0x7F;
 
+  // Stop disk motor (real Apple II behavior on Ctrl+Reset)
+  disk_->stopMotor();
+
   breakpointHit_ = false;
   paused_ = false;
 }
@@ -226,49 +229,89 @@ const char *Emulator::disassembleAt(uint16_t address) {
   return disasmBuffer_.c_str();
 }
 
-uint32_t Emulator::getSoftSwitchState() const {
+uint64_t Emulator::getSoftSwitchState() const {
   const auto &sw = mmu_->getSoftSwitches();
-  uint32_t state = 0;
+  uint64_t state = 0;
 
-  // Pack soft switch state into a 32-bit value
+  // Pack soft switch state into a 64-bit value
+  // Display switches (bits 0-5)
   if (sw.text)
-    state |= (1 << 0);
+    state |= (1ULL << 0);
   if (sw.mixed)
-    state |= (1 << 1);
+    state |= (1ULL << 1);
   if (sw.page2)
-    state |= (1 << 2);
+    state |= (1ULL << 2);
   if (sw.hires)
-    state |= (1 << 3);
+    state |= (1ULL << 3);
   if (sw.col80)
-    state |= (1 << 4);
-  if (sw.store80)
-    state |= (1 << 5);
-  if (sw.ramrd)
-    state |= (1 << 6);
-  if (sw.ramwrt)
-    state |= (1 << 7);
-  if (sw.altzp)
-    state |= (1 << 8);
-  if (sw.lcram)
-    state |= (1 << 9);
-  if (sw.lcram2)
-    state |= (1 << 10);
-  if (sw.lcwrite)
-    state |= (1 << 11);
-  if (sw.intcxrom)
-    state |= (1 << 12);
-  if (sw.slotc3rom)
-    state |= (1 << 13);
+    state |= (1ULL << 4);
   if (sw.altCharSet)
-    state |= (1 << 14);
+    state |= (1ULL << 5);
+
+  // Memory switches (bits 6-12)
+  if (sw.store80)
+    state |= (1ULL << 6);
+  if (sw.ramrd)
+    state |= (1ULL << 7);
+  if (sw.ramwrt)
+    state |= (1ULL << 8);
+  if (sw.intcxrom)
+    state |= (1ULL << 9);
+  if (sw.altzp)
+    state |= (1ULL << 10);
+  if (sw.slotc3rom)
+    state |= (1ULL << 11);
+  if (sw.intc8rom)
+    state |= (1ULL << 12);
+
+  // Language card (bits 13-16)
+  if (sw.lcram)
+    state |= (1ULL << 13);
+  if (sw.lcram2)
+    state |= (1ULL << 14);
+  if (sw.lcwrite)
+    state |= (1ULL << 15);
+  if (sw.lcprewrite)
+    state |= (1ULL << 16);
+
+  // Annunciators (bits 17-20)
   if (sw.an0)
-    state |= (1 << 15);
+    state |= (1ULL << 17);
   if (sw.an1)
-    state |= (1 << 16);
+    state |= (1ULL << 18);
   if (sw.an2)
-    state |= (1 << 17);
+    state |= (1ULL << 19);
   if (sw.an3)
-    state |= (1 << 18);
+    state |= (1ULL << 20);
+
+  // I/O state (bits 21-23)
+  if (sw.vblBar)
+    state |= (1ULL << 21);
+  if (sw.cassetteOut)
+    state |= (1ULL << 22);
+  if (sw.cassetteIn)
+    state |= (1ULL << 23);
+
+  // Buttons (bits 24-26)
+  if (buttonState_[0])
+    state |= (1ULL << 24);
+  if (buttonState_[1])
+    state |= (1ULL << 25);
+  if (buttonState_[2])
+    state |= (1ULL << 26);
+
+  // Keyboard (bit 27)
+  if (keyboardLatch_ & 0x80)
+    state |= (1ULL << 27);
+
+  // DHIRES (bit 28) - computed from AN3 off + 80COL + HIRES
+  bool dhires = !sw.an3 && sw.col80 && sw.hires;
+  if (dhires)
+    state |= (1ULL << 28);
+
+  // IOUDIS (bit 29)
+  if (sw.ioudis)
+    state |= (1ULL << 29);
 
   return state;
 }

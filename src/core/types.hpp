@@ -40,36 +40,64 @@ enum class VideoMode : uint8_t {
   DOUBLE_HIRES
 };
 
-// Soft switch state
+// Soft switch state - comprehensive Apple IIe soft switches
 struct SoftSwitches {
-  // Display switches
-  bool text = true;        // TEXT/GRAPHICS mode
-  bool mixed = false;      // Mixed mode (4 lines text at bottom)
-  bool page2 = false;      // PAGE1/PAGE2
-  bool hires = false;      // LORES/HIRES
-  bool col80 = false;      // 40/80 column mode
-  bool altCharSet = false; // Primary/alternate character set
+  // Display switches ($C050-$C057)
+  bool text = true;        // $C050/$C051: TEXT/GRAPHICS mode
+  bool mixed = false;      // $C052/$C053: Mixed mode (4 lines text at bottom)
+  bool page2 = false;      // $C054/$C055: PAGE1/PAGE2
+  bool hires = false;      // $C056/$C057: LORES/HIRES
 
-  // Memory switches
-  bool store80 = false;   // 80STORE
-  bool ramrd = false;     // RAMRD - aux RAM read
-  bool ramwrt = false;    // RAMWRT - aux RAM write
-  bool altzp = false;     // ALTZP - aux zero page/stack
-  bool intcxrom = false;  // INTCXROM - internal slot ROM
-  bool slotc3rom = false; // SLOTC3ROM - slot 3 ROM
+  // 80-column switches ($C00C-$C00F)
+  bool col80 = false;      // $C00C/$C00D: 40/80 column mode
+  bool altCharSet = false; // $C00E/$C00F: Primary/alternate character set
+
+  // Memory switches ($C000-$C00B)
+  bool store80 = false;   // $C000/$C001: 80STORE
+  bool ramrd = false;     // $C002/$C003: RAMRD - aux RAM read
+  bool ramwrt = false;    // $C004/$C005: RAMWRT - aux RAM write
+  bool intcxrom = false;  // $C006/$C007: INTCXROM - internal slot ROM
+  bool altzp = false;     // $C008/$C009: ALTZP - aux zero page/stack
+  bool slotc3rom = false; // $C00A/$C00B: SLOTC3ROM - slot 3 ROM
   bool intc8rom = false;  // Internal $C800-$CFFF ROM active
 
-  // Language card
+  // Language card ($C080-$C08F)
   bool lcram = false;      // LC RAM enabled for read
   bool lcram2 = false;     // LC RAM bank 2
   bool lcwrite = false;    // LC RAM write-enabled
   bool lcprewrite = false; // LC pre-write state
 
-  // Annunciators
-  bool an0 = false;
-  bool an1 = false;
-  bool an2 = false;
-  bool an3 = false;
+  // Annunciators ($C058-$C05F)
+  bool an0 = false;        // $C058/$C059: Annunciator 0
+  bool an1 = false;        // $C05A/$C05B: Annunciator 1
+  bool an2 = false;        // $C05C/$C05D: Annunciator 2
+  bool an3 = false;        // $C05E/$C05F: Annunciator 3 (DHIRES control)
+
+  // I/O state (read-only status)
+  bool vblBar = false;     // $C019: Vertical blank (true = in VBL)
+
+  // Button states ($C061-$C063)
+  bool button0 = false;    // $C061: Open Apple / Button 0
+  bool button1 = false;    // $C062: Closed Apple / Button 1
+  bool button2 = false;    // $C063: Button 2 / Shift key state
+
+  // Keyboard
+  uint8_t keyLatch = 0;    // $C000: Keyboard latch (bit 7 = key available)
+  bool keyStrobe = false;  // $C010: Keyboard strobe (key available)
+
+  // Paddle/Joystick
+  uint8_t paddle0 = 128;   // $C064: PDL0 value (0-255, 128 = center)
+  uint8_t paddle1 = 128;   // $C065: PDL1 value
+  uint8_t paddle2 = 128;   // $C066: PDL2 value
+  uint8_t paddle3 = 128;   // $C067: PDL3 value
+
+  // Cassette (stub)
+  bool cassetteOut = false; // $C020: Cassette output
+  bool cassetteIn = false;  // $C060: Cassette input
+
+  // IOU / DHIRES
+  bool ioudis = false;      // $C07E/$C07F: IOU disable (IIc specific)
+  bool dhires = false;      // Double hi-res mode (AN3 off + 80COL + HIRES)
 };
 
 // Disk drive state

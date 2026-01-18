@@ -81,8 +81,8 @@ public:
   // Disassembly
   const char *disassembleAt(uint16_t address);
 
-  // Soft switch state
-  uint32_t getSoftSwitchState() const;
+  // Soft switch state (64-bit packed state)
+  uint64_t getSoftSwitchState() const;
 
   // Components access
   MMU &getMMU() { return *mmu_; }

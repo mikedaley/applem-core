@@ -101,6 +101,11 @@ private:
   // Keyboard state
   uint8_t keyboardLatch_ = 0;
 
+  // Paddle/joystick state
+  std::array<uint8_t, 4> paddleValues_ = {128, 128, 128, 128}; // Centered by default
+  uint64_t paddleTriggerCycle_ = 0;
+  static constexpr int PADDLE_CYCLES_PER_UNIT = 11; // ~11 cycles per paddle unit
+
   // Callbacks
   KeyboardCallback keyboardCallback_;
   KeyStrobeCallback keyStrobeCallback_;

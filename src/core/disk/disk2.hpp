@@ -49,6 +49,12 @@ public:
   void reset();
 
   /**
+   * Stop the motor immediately (for warm reset)
+   * Does not reset other controller state like track position
+   */
+  void stopMotor();
+
+  /**
    * Read a byte from the controller I/O space ($C0E0-$C0EF)
    * @param reg Register offset (0-15)
    * @return byte value

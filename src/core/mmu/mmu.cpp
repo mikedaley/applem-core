@@ -611,11 +611,35 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
   case 0x1F:
     return (switches_.col80 ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RD80COL
 
+  // Cassette output toggle ($C020)
+  case 0x20: // CASSETTE OUT - toggle cassette output
+    switches_.cassetteOut = !switches_.cassetteOut;
+    return getFloatingBusValue();
+
+  // Unused/reserved ($C021-$C02F)
+  case 0x21: case 0x22: case 0x23: case 0x24: case 0x25: case 0x26: case 0x27:
+  case 0x28: case 0x29: case 0x2A: case 0x2B: case 0x2C: case 0x2D: case 0x2E: case 0x2F:
+    return getFloatingBusValue();
+
   // Speaker - returns floating bus
   case 0x30: // SPKR
     if (speakerCallback_) {
       speakerCallback_();
     }
+    return getFloatingBusValue();
+
+  // Unused/reserved ($C031-$C03F)
+  case 0x31: case 0x32: case 0x33: case 0x34: case 0x35: case 0x36: case 0x37:
+  case 0x38: case 0x39: case 0x3A: case 0x3B: case 0x3C: case 0x3D: case 0x3E: case 0x3F:
+    return getFloatingBusValue();
+
+  // Utility strobe ($C040)
+  case 0x40: // STROBE - utility strobe
+    return getFloatingBusValue();
+
+  // Reserved ($C041-$C04F)
+  case 0x41: case 0x42: case 0x43: case 0x44: case 0x45: case 0x46: case 0x47:
+  case 0x48: case 0x49: case 0x4A: case 0x4B: case 0x4C: case 0x4D: case 0x4E: case 0x4F:
     return getFloatingBusValue();
 
   // Annunciators - return floating bus
@@ -690,6 +714,11 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
   case 0x0F: // ALTCHAR on (write-only)
     return getFloatingBusValue();
 
+  // Cassette input ($C060)
+  case 0x60: // CASSETTE IN - cassette input (active high)
+    // Always return low (no cassette) - bit 7 indicates cassette signal
+    return getFloatingBusValue() & 0x7F;
+
   // Buttons (Open Apple, Closed Apple, Button 2) - bit 7 = state, bits 0-6 = floating bus
   case 0x61: // PB0 / Open Apple
     if (buttonCallback_) {
@@ -708,15 +737,63 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     return getFloatingBusValue() & 0x7F;
 
   // Paddle inputs - bit 7 = timer status, bits 0-6 = floating bus
-  case 0x64: // PDL0
-  case 0x65: // PDL1
+  case 0x64: // PDL0 (joystick X)
+  case 0x65: // PDL1 (joystick Y)
   case 0x66: // PDL2
-  case 0x67: // PDL3
-    return getFloatingBusValue() & 0x7F; // Paddle not triggered (bit 7 = 0)
+  case 0x67: { // PDL3
+    int paddle = reg - 0x64;
+    uint64_t currentCycle = cycleCallback_ ? cycleCallback_() : 0;
+    uint64_t elapsedCycles = currentCycle - paddleTriggerCycle_;
+    uint64_t timerDuration = paddleValues_[paddle] * PADDLE_CYCLES_PER_UNIT;
+    // Bit 7 = 1 while timer is running, 0 when expired
+    bool timerRunning = (elapsedCycles < timerDuration);
+    return (timerRunning ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F);
+  }
 
-  // Paddle trigger reset - returns floating bus
+  // Paddle trigger reset - starts all paddle timers
   case 0x70: // PTRIG - reset paddle timers
+    paddleTriggerCycle_ = cycleCallback_ ? cycleCallback_() : 0;
     return getFloatingBusValue();
+
+  // Reserved/unused ($C068-$C06F) - State register on IIc
+  case 0x68: // STATEREG (IIc only) - on IIe returns floating bus
+  case 0x69: case 0x6A: case 0x6B: case 0x6C: case 0x6D: case 0x6E: case 0x6F:
+    return getFloatingBusValue();
+
+  // Bank switch registers ($C071-$C07E) - mostly IIc/IIgs specific
+  case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x77:
+  case 0x78: case 0x79: case 0x7A: case 0x7B: case 0x7C: case 0x7D: case 0x7E:
+    return getFloatingBusValue();
+
+  // IOUDIS ($C07F) - IOU disable (IIc specific, ignored on IIe)
+  case 0x7F:
+    // On IIe, reading $C07F returns DHIRES status in bit 7 (same as AN3 inverted)
+    return (!switches_.an3 ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F);
+
+  // Slot 1 I/O ($C090-$C09F)
+  case 0x90: case 0x91: case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x97:
+  case 0x98: case 0x99: case 0x9A: case 0x9B: case 0x9C: case 0x9D: case 0x9E: case 0x9F:
+    return getFloatingBusValue(); // No card in slot 1
+
+  // Slot 2 I/O ($C0A0-$C0AF)
+  case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: case 0xA6: case 0xA7:
+  case 0xA8: case 0xA9: case 0xAA: case 0xAB: case 0xAC: case 0xAD: case 0xAE: case 0xAF:
+    return getFloatingBusValue(); // No card in slot 2
+
+  // Slot 3 I/O ($C0B0-$C0BF)
+  case 0xB0: case 0xB1: case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+  case 0xB8: case 0xB9: case 0xBA: case 0xBB: case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+    return getFloatingBusValue(); // No card in slot 3
+
+  // Slot 4 I/O ($C0C0-$C0CF)
+  case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5: case 0xC6: case 0xC7:
+  case 0xC8: case 0xC9: case 0xCA: case 0xCB: case 0xCC: case 0xCD: case 0xCE: case 0xCF:
+    return getFloatingBusValue(); // No card in slot 4
+
+  // Slot 5 I/O ($C0D0-$C0DF)
+  case 0xD0: case 0xD1: case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6: case 0xD7:
+  case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: case 0xDF:
+    return getFloatingBusValue(); // No card in slot 5
 
   // Disk II controller (slot 6): $C0E0-$C0EF
   case 0xE0:
@@ -739,6 +816,11 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
       return diskController_->read(reg - 0xE0);
     }
     return 0x00;
+
+  // Slot 7 I/O ($C0F0-$C0FF)
+  case 0xF0: case 0xF1: case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6: case 0xF7:
+  case 0xF8: case 0xF9: case 0xFA: case 0xFB: case 0xFC: case 0xFD: case 0xFE: case 0xFF:
+    return getFloatingBusValue(); // No card in slot 7
 
   // Language card
   case 0x80:
@@ -910,6 +992,11 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
     break;
   case 0x57:
     switches_.hires = true;
+    break;
+
+  // Paddle trigger (write also triggers)
+  case 0x70:
+    paddleTriggerCycle_ = cycleCallback_ ? cycleCallback_() : 0;
     break;
 
   // Annunciators
