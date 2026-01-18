@@ -164,6 +164,10 @@ bool Emulator::insertDisk(int drive, const uint8_t *data, size_t size,
   return disk_->insertDisk(drive, data, size, filename ? filename : "");
 }
 
+bool Emulator::insertBlankDisk(int drive) {
+  return disk_->insertBlankDisk(drive);
+}
+
 void Emulator::ejectDisk(int drive) { disk_->ejectDisk(drive); }
 
 const uint8_t *Emulator::getDiskData(int drive, size_t *size) const {

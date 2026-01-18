@@ -102,6 +102,13 @@ public:
                   const std::string &filename);
 
   /**
+   * Insert a blank, unformatted disk into a drive
+   * @param drive Drive number (0 or 1)
+   * @return true on success
+   */
+  bool insertBlankDisk(int drive);
+
+  /**
    * Eject disk from a drive
    * @param drive Drive number (0 or 1)
    */

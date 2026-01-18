@@ -46,6 +46,7 @@ public:
   // Disk management
   bool insertDisk(int drive, const uint8_t *data, size_t size,
                   const char *filename);
+  bool insertBlankDisk(int drive);
   void ejectDisk(int drive);
   const uint8_t *getDiskData(int drive, size_t *size) const;
   const uint8_t *exportDiskData(int drive, size_t *size);

@@ -70,6 +70,12 @@ public:
   // ===== WOZ-specific methods =====
 
   /**
+   * Create a blank, unformatted WOZ2 disk
+   * The disk will have 35 empty tracks filled with sync bytes
+   */
+  void createBlank();
+
+  /**
    * Get the disk type from INFO chunk
    * @return 1 = 5.25", 2 = 3.5"
    */

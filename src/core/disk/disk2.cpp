@@ -254,6 +254,18 @@ bool Disk2Controller::insertDisk(int drive, const uint8_t *data, size_t size,
   return true;
 }
 
+bool Disk2Controller::insertBlankDisk(int drive) {
+  if (drive < 0 || drive > 1) {
+    return false;
+  }
+
+  auto image = std::make_unique<WozDiskImage>();
+  image->createBlank();
+
+  disk_images_[drive] = std::move(image);
+  return true;
+}
+
 void Disk2Controller::ejectDisk(int drive) {
   if (drive < 0 || drive > 1) {
     return;

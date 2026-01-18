@@ -235,6 +235,53 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
   return true;
 }
 
+void WozDiskImage::createBlank() {
+  reset();
+
+  // Set up as WOZ2 format
+  format_ = Format::WOZ2;
+
+  // Initialize INFO chunk for a 5.25" disk
+  info_.version = 2;
+  info_.disk_type = 1;           // 5.25"
+  info_.write_protected = 0;     // Not write protected
+  info_.synchronized = 0;
+  info_.cleaned = 1;
+  std::strncpy(info_.creator, "A2E Emulator", sizeof(info_.creator));
+  info_.disk_sides = 1;
+  info_.boot_sector_format = 0;  // Unknown
+  info_.optimal_bit_timing = 32; // 4 microseconds
+  info_.compatible_hardware = 0;
+  info_.required_ram = 0;
+  info_.largest_track = 13;      // 13 blocks per track
+
+  // Standard 5.25" disk parameters
+  static constexpr int NUM_TRACKS = 35;
+  static constexpr uint32_t BITS_PER_TRACK = 51200;  // Standard track length in bits
+  static constexpr size_t BYTES_PER_TRACK = (BITS_PER_TRACK + 7) / 8;  // 6400 bytes
+
+  // Initialize TMAP - map quarter-tracks to whole tracks
+  for (int qt = 0; qt < QUARTER_TRACK_COUNT; qt++) {
+    int track = qt / 4;
+    if (track < NUM_TRACKS) {
+      tmap_[qt] = static_cast<uint8_t>(track);
+    } else {
+      tmap_[qt] = NO_TRACK;
+    }
+  }
+
+  // Initialize tracks with sync bytes (0xFF)
+  tracks_.resize(NUM_TRACKS);
+  for (int t = 0; t < NUM_TRACKS; t++) {
+    tracks_[t].bit_count = BITS_PER_TRACK;
+    tracks_[t].bits.resize(BYTES_PER_TRACK, 0xFF);  // Fill with sync bytes
+    tracks_[t].valid = true;
+  }
+
+  loaded_ = true;
+  modified_ = true;  // Mark as modified so it will be saved
+}
+
 bool WozDiskImage::isLoaded() const { return loaded_; }
 
 DiskImage::Format WozDiskImage::getFormat() const { return format_; }
