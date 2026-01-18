@@ -22,6 +22,29 @@ void MMU::reset() {
 
   // Keyboard
   keyboardLatch_ = 0;
+
+  // Clear tracking (but preserve enabled state)
+  clearTracking();
+}
+
+void MMU::clearTracking() {
+  readCounts_.fill(0);
+  writeCounts_.fill(0);
+}
+
+void MMU::decayTracking(uint8_t amount) {
+  for (size_t i = 0; i < 65536; ++i) {
+    if (readCounts_[i] > amount) {
+      readCounts_[i] -= amount;
+    } else {
+      readCounts_[i] = 0;
+    }
+    if (writeCounts_[i] > amount) {
+      writeCounts_[i] -= amount;
+    } else {
+      writeCounts_[i] = 0;
+    }
+  }
 }
 
 void MMU::loadROM(const uint8_t *systemRom, size_t systemSize,
@@ -261,6 +284,11 @@ uint8_t MMU::peekSoftSwitch(uint16_t address) const {
 }
 
 uint8_t MMU::read(uint16_t address) {
+  // Track read access
+  if (trackingEnabled_ && readCounts_[address] < 255) {
+    ++readCounts_[address];
+  }
+
   // Zero page and stack
   if (address < 0x0200) {
     if (switches_.altzp) {
@@ -369,6 +397,11 @@ uint8_t MMU::read(uint16_t address) {
 }
 
 void MMU::write(uint16_t address, uint8_t value) {
+  // Track write access
+  if (trackingEnabled_ && writeCounts_[address] < 255) {
+    ++writeCounts_[address];
+  }
+
   // Zero page and stack
   if (address < 0x0200) {
     if (switches_.altzp) {

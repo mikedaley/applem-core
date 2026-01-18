@@ -61,6 +61,14 @@ public:
   // Reset
   void reset();
 
+  // Memory access tracking for debugger heat map
+  void enableTracking(bool enable) { trackingEnabled_ = enable; }
+  bool isTrackingEnabled() const { return trackingEnabled_; }
+  void clearTracking();
+  void decayTracking(uint8_t amount = 1); // Reduce all counts for real-time visualization
+  const uint8_t* getReadCounts() const { return readCounts_.data(); }
+  const uint8_t* getWriteCounts() const { return writeCounts_.data(); }
+
 private:
   // Soft switch handling
   uint8_t readSoftSwitch(uint16_t address);
@@ -115,6 +123,11 @@ private:
 
   // Peripherals
   Disk2Controller *diskController_ = nullptr;
+
+  // Memory access tracking for debugger heat map
+  bool trackingEnabled_ = false;
+  std::array<uint8_t, 65536> readCounts_{};
+  std::array<uint8_t, 65536> writeCounts_{};
 };
 
 } // namespace a2e
