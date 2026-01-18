@@ -570,6 +570,11 @@ void Video::renderCharacter(int col, int row, uint8_t ch, bool inverse,
     needsXor = false;  // Primary set data is NOT inverted
   }
 
+  // Apply UK character set offset if enabled (UK chars in second 4KB of ROM)
+  if (ukCharSet_) {
+    romOffset += 0x1000;  // 4KB offset for UK character set
+  }
+
   // Handle flash - toggle inverse state when flash is active
   // Note: When altCharSet is enabled, flash characters display as normal (no flash)
   if (flash && flashState_ && !sw.altCharSet) {
@@ -681,6 +686,11 @@ void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
     }
     romOffset = charIndex * 8;
     needsXor = false;
+  }
+
+  // Apply UK character set offset if enabled (UK chars in second 4KB of ROM)
+  if (ukCharSet_) {
+    romOffset += 0x1000;  // 4KB offset for UK character set
   }
 
   // Handle flash

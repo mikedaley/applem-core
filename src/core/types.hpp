@@ -11,7 +11,7 @@ namespace a2e {
 constexpr size_t MAIN_RAM_SIZE = 64 * 1024; // 64KB main RAM
 constexpr size_t AUX_RAM_SIZE = 64 * 1024;  // 64KB auxiliary RAM
 constexpr size_t ROM_SIZE = 16 * 1024;      // 16KB ROM ($C000-$FFFF)
-constexpr size_t CHAR_ROM_SIZE = 4 * 1024;  // 4KB character ROM
+constexpr size_t CHAR_ROM_SIZE = 8 * 1024;  // 8KB character ROM (US + UK sets)
 constexpr size_t DISK_ROM_SIZE = 256;       // 256 bytes Disk II ROM
 
 // Display constants

@@ -27,6 +27,9 @@ public:
   // Non-side-effecting read for debugger/memory viewer
   uint8_t peek(uint16_t address) const;
 
+  // Non-side-effecting read of auxiliary memory (for text selection in 80-col mode)
+  uint8_t peekAux(uint16_t address) const;
+
   // Direct memory access (bypasses soft switches)
   uint8_t readRAM(uint16_t address, bool aux = false) const;
   void writeRAM(uint16_t address, uint8_t value, bool aux = false);

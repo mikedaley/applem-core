@@ -179,6 +179,12 @@ uint8_t MMU::peek(uint16_t address) const {
   return systemROM_[address - 0xC000];
 }
 
+uint8_t MMU::peekAux(uint16_t address) const {
+  // Direct read of auxiliary memory for text selection in 80-column mode
+  // This always reads from aux RAM regardless of soft switch state
+  return auxRAM_[address];
+}
+
 uint8_t MMU::peekSoftSwitch(uint16_t address) const {
   // Non-side-effecting soft switch read for debugger
   uint8_t reg = address & 0xFF;

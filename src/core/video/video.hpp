@@ -36,6 +36,10 @@ public:
   void setGreenPhosphor(bool green) { greenPhosphor_ = green; }
   bool isGreenPhosphor() const { return greenPhosphor_; }
 
+  // UK character set (like the physical switch on UK Apple IIe)
+  void setUKCharacterSet(bool uk) { ukCharSet_ = uk; }
+  bool isUKCharacterSet() const { return ukCharSet_; }
+
 private:
   // Rendering methods for each mode
   void renderText40();
@@ -82,6 +86,7 @@ private:
   // Display options
   bool monochrome_ = false;
   bool greenPhosphor_ = false;
+  bool ukCharSet_ = false;  // UK character set switch
 
   // Lookup tables
   static constexpr std::array<int, 24> TEXT_ROW_OFFSETS = {
