@@ -11,12 +11,16 @@ Emulator::Emulator() {
   disk_ = std::make_unique<Disk2Controller>();
   video_ = std::make_unique<Video>(*mmu_);
   audio_ = std::make_unique<Audio>();
+  keyboard_ = std::make_unique<Keyboard>();
 
   // Create CPU with memory callbacks
   cpu_ = std::make_unique<CPU6502>(
       [this](uint16_t addr) { return cpuRead(addr); },
       [this](uint16_t addr, uint8_t val) { cpuWrite(addr, val); },
       CPUVariant::CMOS_65C02);
+
+  // Set up keyboard callback to receive translated keys
+  keyboard_->setKeyCallback([this](int key) { keyDown(key); });
 
   // Set up MMU callbacks
   mmu_->setKeyboardCallback([this]() { return getKeyboardData(); });
@@ -137,14 +141,37 @@ const uint8_t *Emulator::getFramebuffer() const {
   return video_->getFramebuffer();
 }
 
+int Emulator::handleRawKeyDown(int browserKeycode, bool shift, bool ctrl,
+                                bool alt, bool meta, bool capsLock) {
+  int result = keyboard_->handleKeyDown(browserKeycode, shift, ctrl, alt, meta, capsLock);
+
+  // Update button state from modifier keys
+  setButton(0, keyboard_->isOpenApplePressed());   // Open Apple
+  setButton(1, keyboard_->isClosedApplePressed()); // Closed Apple
+
+  return result;
+}
+
+void Emulator::handleRawKeyUp(int browserKeycode, bool shift, bool ctrl,
+                              bool alt, bool meta) {
+  keyboard_->handleKeyUp(browserKeycode, shift, ctrl, alt, meta);
+
+  // Update button state from modifier keys
+  setButton(0, keyboard_->isOpenApplePressed());   // Open Apple
+  setButton(1, keyboard_->isClosedApplePressed()); // Closed Apple
+}
+
 void Emulator::keyDown(int keycode) {
-  // JavaScript already sends the correct Apple II ASCII value
-  // Just set the keyboard latch with high bit set
+  // Direct Apple II keycode input (used for paste functionality)
+  // Sets the keyboard latch with high bit set
   keyboardLatch_ = (keycode & 0x7F) | 0x80;
   keyDown_ = true;
 }
 
-void Emulator::keyUp(int keycode) { keyDown_ = false; }
+void Emulator::keyUp(int keycode) {
+  (void)keycode;
+  keyDown_ = false;
+}
 
 void Emulator::setButton(int button, bool pressed) {
   if (button >= 0 && button < 3) {

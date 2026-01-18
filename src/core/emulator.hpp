@@ -3,6 +3,7 @@
 #include "audio/audio.hpp"
 #include "cpu/cpu6502.hpp"
 #include "disk/disk2.hpp"
+#include "input/keyboard.hpp"
 #include "mmu/mmu.hpp"
 #include "types.hpp"
 #include "video/video.hpp"
@@ -37,7 +38,13 @@ public:
   const uint8_t *getFramebuffer() const;
   size_t getFramebufferSize() const { return FRAMEBUFFER_SIZE; }
 
-  // Input
+  // Input - raw browser keycodes (preferred)
+  int handleRawKeyDown(int browserKeycode, bool shift, bool ctrl, bool alt,
+                       bool meta, bool capsLock);
+  void handleRawKeyUp(int browserKeycode, bool shift, bool ctrl, bool alt,
+                      bool meta);
+
+  // Input - direct Apple II keycodes (for paste functionality)
   void keyDown(int keycode);
   void keyUp(int keycode);
   void setButton(int button, bool pressed);  // Set button state (0=Open Apple, 1=Closed Apple, 2=Button2)
@@ -109,6 +116,7 @@ private:
   std::unique_ptr<Video> video_;
   std::unique_ptr<Audio> audio_;
   std::unique_ptr<Disk2Controller> disk_;
+  std::unique_ptr<Keyboard> keyboard_;
 
   // Keyboard state
   uint8_t keyboardLatch_ = 0;
