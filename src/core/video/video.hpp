@@ -36,6 +36,9 @@ public:
   void setGreenPhosphor(bool green) { greenPhosphor_ = green; }
   bool isGreenPhosphor() const { return greenPhosphor_; }
 
+  void setColorFringing(bool fringing) { colorFringing_ = fringing; }
+  bool isColorFringing() const { return colorFringing_; }
+
   // UK character set (like the physical switch on UK Apple IIe)
   void setUKCharacterSet(bool uk) { ukCharSet_ = uk; }
   bool isUKCharacterSet() const { return ukCharSet_; }
@@ -86,6 +89,7 @@ private:
   // Display options
   bool monochrome_ = false;
   bool greenPhosphor_ = false;
+  bool colorFringing_ = false;  // NTSC color fringing on isolated dots
   bool ukCharSet_ = false;  // UK character set switch
 
   // Lookup tables

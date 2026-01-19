@@ -281,8 +281,8 @@ void Video::renderHiRes() {
           bool evenColumn = (x & 1) == 0;
 
           if (!dotOn) {
-            // OFF dot - check if part of alternating color pattern
-            if (prevOn && !((i > 1) ? byteDots[i - 2] : ((byteIdx > 0) && dots[baseX - 2]))) {
+            // OFF dot - check if fringing is enabled
+            if (colorFringing_ && prevOn && !((i > 1) ? byteDots[i - 2] : ((byteIdx > 0) && dots[baseX - 2]))) {
               // Previous is isolated ON, bleed its color
               bool prevEven = ((x - 1) & 1) == 0;
               if (prevEven) {
@@ -290,7 +290,7 @@ void Video::renderHiRes() {
               } else {
                 color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Green/Orange
               }
-            } else if (nextOn && !((i < 5) ? byteDots[i + 2] : ((byteIdx < 39) && dots[baseX + 8]))) {
+            } else if (colorFringing_ && nextOn && !((i < 5) ? byteDots[i + 2] : ((byteIdx < 39) && dots[baseX + 8]))) {
               // Next is isolated ON, bleed its color
               bool nextEven = ((x + 1) & 1) == 0;
               if (nextEven) {
