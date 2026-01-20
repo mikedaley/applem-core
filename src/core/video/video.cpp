@@ -3,6 +3,24 @@
 
 namespace a2e {
 
+// Helper function to blend two ARGB colors
+static uint32_t blendColors(uint32_t c1, uint32_t c2, float factor) {
+  uint8_t a1 = (c1 >> 24) & 0xFF;
+  uint8_t r1 = (c1 >> 16) & 0xFF;
+  uint8_t g1 = (c1 >> 8) & 0xFF;
+  uint8_t b1 = c1 & 0xFF;
+
+  uint8_t r2 = (c2 >> 16) & 0xFF;
+  uint8_t g2 = (c2 >> 8) & 0xFF;
+  uint8_t b2 = c2 & 0xFF;
+
+  uint8_t r = static_cast<uint8_t>(r1 * (1.0f - factor) + r2 * factor);
+  uint8_t g = static_cast<uint8_t>(g1 * (1.0f - factor) + g2 * factor);
+  uint8_t b = static_cast<uint8_t>(b1 * (1.0f - factor) + b2 * factor);
+
+  return (a1 << 24) | (r << 16) | (g << 8) | b;
+}
+
 Video::Video(MMU &mmu) : mmu_(mmu) {
   // Initialize framebuffer to black
   std::memset(framebuffer_.data(), 0, framebuffer_.size());
@@ -253,76 +271,52 @@ void Video::renderHiRes() {
         setPixel(screenX + 1, screenY + 1, color);
       }
     } else {
-      // Color mode: process each byte separately for consistent colors
-      // This avoids byte-boundary color shifting issues
-      for (int byteIdx = 0; byteIdx < 40; byteIdx++) {
-        int baseX = byteIdx * 7;
-        bool highBit = highBits[baseX] != 0;
+      // NTSC artifact color mode
+      //
+      // Per Apple IIe Technical Reference:
+      // - Dots in even screen columns produce violet (high=0) or blue (high=1)
+      // - Dots in odd screen columns produce green (high=0) or orange (high=1)
+      // - Adjacent ON dots combine to produce white
+      //
+      // Simple and efficient rule matching classic emulators:
+      // - 2+ adjacent ON dots = white
+      // - 1 isolated ON dot = artifact color
+      // - OFF dots = black (with optional fringing)
 
-        // Get the 7 dots for this byte
-        bool byteDots[7];
-        for (int i = 0; i < 7; i++) {
-          byteDots[i] = dots[baseX + i] != 0;
-        }
+      for (int x = 0; x < 280; x++) {
+        uint32_t color;
+        bool highBit = highBits[x] != 0;
+        bool dotOn = dots[x] != 0;
+        bool evenColumn = (x & 1) == 0;
 
-        // Determine color for each dot based on local pattern
-        for (int i = 0; i < 7; i++) {
-          uint32_t color;
-          int x = baseX + i;
+        // Check immediate neighbors (O(1) per pixel)
+        bool prevOn = (x > 0) && dots[x - 1];
+        bool nextOn = (x < 279) && dots[x + 1];
 
-          bool dotOn = byteDots[i];
-          bool prevOn = (i > 0) ? byteDots[i - 1] : ((byteIdx > 0) && dots[baseX - 1]);
-          bool nextOn = (i < 6) ? byteDots[i + 1] : ((byteIdx < 39) && dots[baseX + 7]);
-
-          // Per Apple IIe Technical Reference (page 24):
-          // - Dots in even screen columns can be black, purple, or blue
-          // - Dots in odd screen columns can be black, green, or orange
-          // Use absolute screen column (x), not bit position within byte (i)
-          bool evenColumn = (x & 1) == 0;
-
-          if (!dotOn) {
-            // OFF dot - check if fringing is enabled
-            if (colorFringing_ && prevOn && !((i > 1) ? byteDots[i - 2] : ((byteIdx > 0) && dots[baseX - 2]))) {
-              // Previous is isolated ON, bleed its color
-              bool prevEven = ((x - 1) & 1) == 0;
-              if (prevEven) {
-                color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
-              } else {
-                color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Green/Orange
-              }
-            } else if (colorFringing_ && nextOn && !((i < 5) ? byteDots[i + 2] : ((byteIdx < 39) && dots[baseX + 8]))) {
-              // Next is isolated ON, bleed its color
-              bool nextEven = ((x + 1) & 1) == 0;
-              if (nextEven) {
-                color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
-              } else {
-                color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Green/Orange
-              }
-            } else {
-              color = HIRES_COLORS[0]; // Black
-            }
+        if (!dotOn) {
+          // OFF dot = black (NTSC fringing is handled in the shader)
+          color = HIRES_COLORS[0];
+        } else {
+          // ON dot - white if adjacent to another ON, otherwise artifact color
+          if (prevOn || nextOn) {
+            // Part of a run of 2+ adjacent ON dots = white
+            color = HIRES_COLORS[3];
           } else {
-            // ON dot
-            if (prevOn || nextOn) {
-              // Part of white run (2+ adjacent ON)
-              color = HIRES_COLORS[3]; // White
+            // Isolated ON dot = artifact color based on column and high bit
+            if (evenColumn) {
+              color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
             } else {
-              // Isolated ON dot - artifact color based on screen column
-              if (evenColumn) {
-                color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
-              } else {
-                color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Green/Orange
-              }
+              color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
             }
           }
-
-          // Draw 2x2 block
-          int screenX = x * 2;
-          setPixel(screenX, screenY, color);
-          setPixel(screenX + 1, screenY, color);
-          setPixel(screenX, screenY + 1, color);
-          setPixel(screenX + 1, screenY + 1, color);
         }
+
+        // Draw 2x2 block
+        int screenX = x * 2;
+        setPixel(screenX, screenY, color);
+        setPixel(screenX + 1, screenY, color);
+        setPixel(screenX, screenY + 1, color);
+        setPixel(screenX + 1, screenY + 1, color);
       }
     }
   }
@@ -443,26 +437,18 @@ void Video::renderDoubleHiRes() {
         setPixel(i, screenY + 1, color);
       }
     } else {
-      // Color mode: 140 color pixels, each 4 dots wide
-      // Each color pixel's value is the 4-bit pattern of its dots
-      // Per Table 2-7: the bit pattern is written with leftmost dot as MSB
-      for (int colorPixel = 0; colorPixel < 140; colorPixel++) {
-        int base = colorPixel * 4;
-
-        // 4-bit color value: dot0=bit3(MSB), dot1=bit2, dot2=bit1, dot3=bit0(LSB)
-        // e.g., pattern 0001 (Magenta) = dots [0,0,0,1] = index 1
-        uint8_t colorIdx = (dots[base] << 3) |
-                          (dots[base + 1] << 2) |
-                          (dots[base + 2] << 1) |
-                          dots[base + 3];
+      // Color mode: clean DHGR output using phase-aligned 4-dot windows
+      // NTSC fringing effects are applied in the CRT shader for better quality
+      for (int i = 0; i < 560; i++) {
+        int alignedBase = (i / 4) * 4;
+        uint8_t colorIdx = (dots[alignedBase] << 3) |
+                          (dots[alignedBase + 1] << 2) |
+                          (dots[alignedBase + 2] << 1) |
+                          dots[alignedBase + 3];
 
         uint32_t color = DHGR_COLORS[colorIdx];
-
-        // Each color pixel is 4 screen dots wide
-        for (int px = 0; px < 4; px++) {
-          setPixel(base + px, screenY, color);
-          setPixel(base + px, screenY + 1, color);
-        }
+        setPixel(i, screenY, color);
+        setPixel(i, screenY + 1, color);
       }
     }
   }
