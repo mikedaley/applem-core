@@ -230,15 +230,35 @@ void Video::renderLoRes() {
 }
 
 void Video::renderHiRes() {
-  const auto &sw = mmu_.getSoftSwitches();
+  // Apple II Hi-Res Graphics: 280x192 with NTSC artifact coloring
+  //
+  // Technical background:
+  // - Each scanline is 40 bytes, each byte contributes 7 dots (280 total)
+  // - Bit 0 (LSB) of each byte is the leftmost dot
+  // - Bit 7 (high bit) selects the color palette for ALL 7 dots in that byte:
+  //   - High bit = 0: Group 1 (Violet on even columns, Green on odd)
+  //   - High bit = 1: Group 2 (Blue on even columns, Orange on odd)
+  //
+  // NTSC artifact color rules:
+  // - Each dot is 1/2 of an NTSC color clock cycle (140ns)
+  // - A single ON dot produces an artifact color based on its phase (column)
+  // - Two adjacent ON dots = one full color clock = white
+  // - The transition from ON to OFF (and vice versa) creates color fringing
+  //   which is handled by the CRT shader's NTSC fringing effect
+  //
+  // References:
+  // - Apple IIe Technical Reference Manual, Chapter 2
+  // - https://www.xtof.info/hires-graphics-apple-ii.html
 
+  const auto &sw = mmu_.getSoftSwitches();
   int maxRow = sw.mixed ? 160 : 192;
 
   for (int row = 0; row < maxRow; row++) {
-    // Build scanline array: 280 dots across (40 bytes × 7 bits)
+    // Build scanline arrays: 280 dots plus padding for neighbor checks
     uint8_t dots[280] = {0};
-    uint8_t highBits[280] = {0}; // High bit expanded per dot for easy lookup
+    uint8_t highBits[280] = {0};
 
+    // Extract dots and high bits from memory
     for (int col = 0; col < 40; col++) {
       uint16_t addr = getHiResAddress(row, col);
 
@@ -249,8 +269,10 @@ void Video::renderHiRes() {
         dataByte = mmu_.readRAM(addr, false);
       }
 
+      // High bit affects all 7 dots in this byte (palette selection)
       bool highBit = (dataByte & 0x80) != 0;
 
+      // Extract 7 dots (bit 0 = leftmost)
       for (int bit = 0; bit < 7; bit++) {
         int dotX = col * 7 + bit;
         dots[dotX] = (dataByte & (1 << bit)) ? 1 : 0;
@@ -261,10 +283,10 @@ void Video::renderHiRes() {
     int screenY = row * 2;
 
     if (monochrome_) {
-      // Monochrome mode: render each dot individually
-      for (int dotX = 0; dotX < 280; dotX++) {
-        uint32_t color = getMonochromeColor(dots[dotX] != 0);
-        int screenX = dotX * 2;
+      // Monochrome mode: simple 1-bit display
+      for (int x = 0; x < 280; x++) {
+        uint32_t color = getMonochromeColor(dots[x] != 0);
+        int screenX = x * 2;
         setPixel(screenX, screenY, color);
         setPixel(screenX + 1, screenY, color);
         setPixel(screenX, screenY + 1, color);
@@ -272,46 +294,39 @@ void Video::renderHiRes() {
       }
     } else {
       // NTSC artifact color mode
-      //
-      // Per Apple IIe Technical Reference:
-      // - Dots in even screen columns produce violet (high=0) or blue (high=1)
-      // - Dots in odd screen columns produce green (high=0) or orange (high=1)
-      // - Adjacent ON dots combine to produce white
-      //
-      // Simple and efficient rule matching classic emulators:
-      // - 2+ adjacent ON dots = white
-      // - 1 isolated ON dot = artifact color
-      // - OFF dots = black (with optional fringing)
-
       for (int x = 0; x < 280; x++) {
         uint32_t color;
         bool highBit = highBits[x] != 0;
         bool dotOn = dots[x] != 0;
-        bool evenColumn = (x & 1) == 0;
 
-        // Check immediate neighbors (O(1) per pixel)
+        // Check neighbors for run detection
         bool prevOn = (x > 0) && dots[x - 1];
         bool nextOn = (x < 279) && dots[x + 1];
 
         if (!dotOn) {
-          // OFF dot = black (NTSC fringing is handled in the shader)
-          color = HIRES_COLORS[0];
+          // OFF dot = black
+          // Note: NTSC color fringing at edges is applied by the CRT shader
+          color = HIRES_COLORS[0]; // Black
+        } else if (prevOn || nextOn) {
+          // Adjacent to another ON dot = white
+          // Two adjacent dots span one full NTSC color clock cycle
+          color = HIRES_COLORS[3]; // White
         } else {
-          // ON dot - white if adjacent to another ON, otherwise artifact color
-          if (prevOn || nextOn) {
-            // Part of a run of 2+ adjacent ON dots = white
-            color = HIRES_COLORS[3];
+          // Isolated ON dot = artifact color
+          // Color depends on screen column (phase) and high bit (palette)
+          //
+          // Column phase:  Even = 0°/180°    Odd = 90°/270°
+          // High bit = 0:  Violet            Green
+          // High bit = 1:  Blue              Orange
+          bool evenColumn = (x & 1) == 0;
+          if (evenColumn) {
+            color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
           } else {
-            // Isolated ON dot = artifact color based on column and high bit
-            if (evenColumn) {
-              color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
-            } else {
-              color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
-            }
+            color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
           }
         }
 
-        // Draw 2x2 block
+        // Output at 2x scale (280 dots → 560 pixels)
         int screenX = x * 2;
         setPixel(screenX, screenY, color);
         setPixel(screenX + 1, screenY, color);
@@ -374,17 +389,26 @@ void Video::renderDoubleLoRes() {
 }
 
 void Video::renderDoubleHiRes() {
-  // Double hi-res: 560x192 monochrome or 140x192 with 16 colors
-  // Reference: Apple IIe Technical Reference Manual, Chapter 2
+  // Apple II Double Hi-Res Graphics: 560x192 monochrome or 140x192 color
   //
-  // Memory layout: 80 bytes per line (40 aux + 40 main interleaved)
-  // "Seven bits from a byte in auxiliary memory are displayed first,
-  //  followed by seven bits from the corresponding byte on the motherboard"
+  // Technical background:
+  // - Each scanline uses 80 bytes (40 aux + 40 main, interleaved)
+  // - Memory interleaving: aux[0], main[0], aux[1], main[1], ...
+  // - Each byte contributes 7 dots, for 560 dots per line
+  // - Bit 0 (LSB) of each byte is the leftmost dot
+  // - The high bit (bit 7) is NOT used for display in DHGR
   //
-  // Color: "any four adjacent dots along a line" determine color
-  // "Think of a four-dot-wide window moving across the screen"
-  // The 4-bit value directly indexes the 16-color palette (Table 2-7)
-  
+  // Color mode (16 colors):
+  // - Colors are determined by groups of 4 adjacent dots
+  // - The 4-bit pattern indexes directly into the 16-color DHGR palette
+  // - Colors are phase-aligned to 4-dot boundaries for clean output
+  // - NTSC fringing effects at color transitions are handled by the
+  //   CRT shader for smoother, more authentic results
+  //
+  // References:
+  // - Apple IIe Technical Reference Manual, Chapter 2, Table 2-7
+  // - http://www.appleoldies.ca/graphics/dhgr/dhgrtechnote.txt
+
   const auto &sw = mmu_.getSoftSwitches();
   int maxRow = sw.mixed ? 160 : 192;
 
