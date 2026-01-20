@@ -299,14 +299,43 @@ void Video::renderHiRes() {
         bool highBit = highBits[x] != 0;
         bool dotOn = dots[x] != 0;
 
-        // Check neighbors for run detection
+        // Check neighbors for pattern detection
         bool prevOn = (x > 0) && dots[x - 1];
         bool nextOn = (x < 279) && dots[x + 1];
 
         if (!dotOn) {
-          // OFF dot = black
-          // Note: NTSC color fringing at edges is applied by the CRT shader
-          color = HIRES_COLORS[0]; // Black
+          // OFF dot - check for alternating pattern
+          //
+          // On real hardware, an alternating pattern like 10101010 produces
+          // a continuous colored line, not individual dots with gaps.
+          // The NTSC signal blends the alternating dots into a solid color.
+          //
+          // Detect alternating: OFF dot with ON neighbors, where those ONs
+          // are themselves isolated (their far neighbors are OFF).
+          bool prev2On = (x > 1) && dots[x - 2];
+          bool next2On = (x < 278) && dots[x + 2];
+
+          if (prevOn && nextOn && !prev2On && !next2On) {
+            // Alternating pattern: ...ON-OFF-ON... where outer neighbors are OFF
+            // Fill with artifact color if both neighbors have same high bit
+            if (highBits[x - 1] == highBits[x + 1]) {
+              // Both neighbors have same parity (x±1 are both even or both odd)
+              bool neighborEven = ((x - 1) & 1) == 0;
+              bool neighborHighBit = highBits[x - 1];
+              if (neighborEven) {
+                color = neighborHighBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
+              } else {
+                color = neighborHighBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
+              }
+            } else {
+              // Different high bits across byte boundary - leave black
+              color = HIRES_COLORS[0];
+            }
+          } else {
+            // Not an alternating pattern - black
+            // NTSC fringing at edges is handled by the CRT shader
+            color = HIRES_COLORS[0];
+          }
         } else if (prevOn || nextOn) {
           // Adjacent to another ON dot = white
           // Two adjacent dots span one full NTSC color clock cycle
