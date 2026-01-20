@@ -398,21 +398,21 @@ void Video::renderDoubleHiRes() {
   // Index = 4-bit pattern from dots, value = RGB color
   static const uint32_t DHGR_COLORS[16] = {
     0xFF000000, // 0  = 0000 = Black
-    0xFFDD0033, // 1  = 0001 = Magenta
-    0xFF885500, // 2  = 0010 = Brown
-    0xFFFF6600, // 3  = 0011 = Orange
-    0xFF007722, // 4  = 0100 = Dark Green
-    0xFF555555, // 5  = 0101 = Gray 1
-    0xFF11DD00, // 6  = 0110 = Green
-    0xFFFFFF00, // 7  = 0111 = Yellow
-    0xFF000099, // 8  = 1000 = Dark Blue
-    0xFFDD22DD, // 9  = 1001 = Purple
-    0xFFAAAAAA, // 10 = 1010 = Gray 2
-    0xFFFF9988, // 11 = 1011 = Pink
-    0xFF2222FF, // 12 = 1100 = Medium Blue
-    0xFF66AAFF, // 13 = 1101 = Light Blue
-    0xFF4FDC4A, // 14 = 1110 = Aqua
-    0xFFFFFFFF  // 15 = 1111 = White
+    0xFF9F1B48, // 1  = 0001 = Magenta
+    0xFF496500, // 2  = 0010 = Brown
+    0xFFD87300, // 3  = 0011 = Orange
+    0xFF197544, // 4  = 0100 = Dark Green
+    0xFF818181, // 5  = 0101 = Grey 1
+    0xFF3CCC00, // 6  = 0110 = Light Green
+    0xFFBCD600, // 7  = 0111 = Yellow
+    0xFF4832EB, // 8  = 1000 = Dark Blue
+    0xFFD643FF, // 9  = 1001 = Purple
+    0xFF818181, // 10 = 1010 = Grey 2
+    0xFFFB8FBC, // 11 = 1011 = Pink
+    0xFF3692FF, // 12 = 1100 = Medium Blue
+    0xFFB89EFF, // 13 = 1101 = Light Blue
+    0xFF6CE6B8, // 14 = 1110 = Aqua
+    0xFFF1F1F1  // 15 = 1111 = White
   };
 
   for (int row = 0; row < maxRow; row++) {

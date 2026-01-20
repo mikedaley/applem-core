@@ -116,21 +116,21 @@ struct DriveState {
 // Color palette for Apple II
 constexpr std::array<uint32_t, 16> LORES_COLORS = {{
     0xFF000000, // 0: Black
-    0xFFDD0033, // 1: Magenta
-    0xFF000099, // 2: Dark Blue
-    0xFFDD22DD, // 3: Purple
-    0xFF007722, // 4: Dark Green
-    0xFF555555, // 5: Grey 1
-    0xFF2222FF, // 6: Medium Blue
-    0xFF66AAFF, // 7: Light Blue
-    0xFF885500, // 8: Brown
-    0xFFFF6600, // 9: Orange
-    0xFFAAAAAA, // 10: Grey 2
-    0xFFFF9988, // 11: Pink
-    0xFF11DD00, // 12: Light Green
-    0xFFFFFF00, // 13: Yellow
-    0xFF4FDC4A, // 14: Aqua
-    0xFFFFFFFF  // 15: White
+    0xFF9F1B48, // 1: Magenta
+    0xFF4832EB, // 2: Dark Blue
+    0xFFD643FF, // 3: Purple
+    0xFF197544, // 4: Dark Green
+    0xFF818181, // 5: Grey 1
+    0xFF3692FF, // 6: Medium Blue
+    0xFFB89EFF, // 7: Light Blue
+    0xFF496500, // 8: Brown
+    0xFFD87300, // 9: Orange
+    0xFF818181, // 10: Grey 2
+    0xFFFB8FBC, // 11: Pink
+    0xFF3CCC00, // 12: Light Green
+    0xFFBCD600, // 13: Yellow
+    0xFF6CE6B8, // 14: Aqua
+    0xFFF1F1F1  // 15: White
 }};
 
 // HiRes artifact colors (NTSC-accurate values)
@@ -138,11 +138,11 @@ constexpr std::array<uint32_t, 16> LORES_COLORS = {{
 // Group 2 (high bit = 1): Black, Orange, Blue, White
 constexpr std::array<uint32_t, 6> HIRES_COLORS = {{
     0xFF000000, // 0: Black
-    0xFF2FBC1A, // 1: Green (odd pixels, high bit = 0)
-    0xFFD93CF0, // 2: Violet (even pixels, high bit = 0)
-    0xFFFFFFFF, // 3: White
-    0xFF0E5CE8, // 4: Blue (even pixels, high bit = 1)
-    0xFFF25006  // 5: Orange (odd pixels, high bit = 1)
+    0xFF3CCC00, // 1: Green (odd pixels, high bit = 0)
+    0xFFD643FF, // 2: Violet (even pixels, high bit = 0)
+    0xFFF1F1F1, // 3: White
+    0xFF3692FF, // 4: Blue (even pixels, high bit = 1)
+    0xFFD87300  // 5: Orange (odd pixels, high bit = 1)
 }};
 
 // Double Hi-Res color translation table
