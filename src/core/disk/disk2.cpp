@@ -154,6 +154,16 @@ uint8_t Disk2Controller::handleSoftSwitch(uint8_t offset, bool is_write) {
     break;
 
   case MOTOR_OFF:
+    // Per Sather p. 9-13, any even address $C08* loads data from the data
+    // register. Some disks (like Mr. Do) read from MOTOR_OFF address.
+    if (isMotorOn() && !q7_) {
+      uint8_t result = readDiskData();
+      // Start the motor-off delay timer (motor stays on for ~1 second)
+      if (motor_on_ && motor_off_cycle_ == 0) {
+        motor_off_cycle_ = total_cycles_;
+      }
+      return result;
+    }
     // Start the motor-off delay timer (motor stays on for ~1 second)
     if (motor_on_ && motor_off_cycle_ == 0) {
       motor_off_cycle_ = total_cycles_;
@@ -162,6 +172,11 @@ uint8_t Disk2Controller::handleSoftSwitch(uint8_t offset, bool is_write) {
   case MOTOR_ON:
     // Cancel any pending motor-off and turn motor on
     motor_off_cycle_ = 0;
+    if (!motor_on_) {
+      // Motor was truly off - reset timing to avoid catch-up issues
+      last_read_cycle_[selected_drive_] = 0;
+      latch_valid_ = false;
+    }
     motor_on_ = true;
     break;
 
@@ -185,13 +200,34 @@ uint8_t Disk2Controller::handleSoftSwitch(uint8_t offset, bool is_write) {
 
   case Q6H:
     q6_ = true;
-    // In read mode (Q7=0, Q6=1): return write protect status
-    // Bit 7 = 1 means write protected
     if (!q7_) {
-      if (hasDisk(selected_drive_)) {
+      // Read mode (Q7=0, Q6=1): return write protect status AND reset sequencer
+      // The E7 protection scheme reads $C08D,X in the middle of reading data.
+      // This resets the sequencer and clears the data latch.
+      // Used by Wings of Fury on track 0.
+      if (isMotorOn() && hasDisk(selected_drive_)) {
+        // Reset the data latch (clear shift register)
+        data_latch_ = 0;
+        latch_valid_ = false;
+        // Advance track position for elapsed time (keeps disk spinning)
+        uint64_t current_cycle = getCycles();
+        uint64_t &last_cycle = last_read_cycle_[selected_drive_];
+        if (last_cycle != 0) {
+          uint64_t elapsed = current_cycle - last_cycle;
+          uint64_t nibbles = elapsed / CYCLES_PER_NIBBLE;
+          if (nibbles > 0) {
+            DiskImage *disk = disk_images_[selected_drive_].get();
+            for (uint64_t i = 0; i < nibbles && i < 50; i++) {
+              disk->readNibble(); // Advance disk position
+            }
+          }
+        }
+        last_cycle = current_cycle;
+        // Return write protect status
         return disk_images_[selected_drive_]->isWriteProtected() ? 0x80 : 0x00;
       }
-      return 0x80; // No disk = write protected
+      // No disk = write protected
+      return 0x80;
     }
     break;
 
@@ -251,6 +287,14 @@ bool Disk2Controller::insertDisk(int drive, const uint8_t *data, size_t size,
   }
 
   disk_images_[drive] = std::move(image);
+
+  // Reset timing state for this drive to avoid catch-up issues
+  last_read_cycle_[drive] = 0;
+  if (drive == selected_drive_) {
+    latch_valid_ = false;
+    data_latch_ = 0;
+  }
+
   return true;
 }
 
@@ -342,16 +386,21 @@ uint8_t Disk2Controller::readDiskData() {
     // If more than CYCLES_PER_NIBBLE elapsed since last read, the disk
     // has rotated past multiple nibbles. We need to "catch up" the disk
     // position for the extra elapsed time before reading.
-    if (last_cycle != 0) {
+    if (last_cycle != 0 && current_cycle > last_cycle) {
       uint64_t elapsed = current_cycle - last_cycle;
       // Calculate how many extra nibbles worth of time passed
       // (subtract 1 because readNibble will advance by 1)
       uint64_t extra_nibbles = (elapsed / CYCLES_PER_NIBBLE);
       if (extra_nibbles > 1) {
         // Advance disk position for elapsed time (readNibble will add 1 more)
-        // Use advanceBitPosition to handle the catch-up efficiently
-        // We simulate the disk having rotated during CPU processing time
-        for (uint64_t i = 1; i < extra_nibbles && i < 50; i++) {
+        // Limit catch-up to avoid skipping too much data - if we've been
+        // away too long, just reset timing and read from current position
+        if (extra_nibbles > 10) {
+          // Too much time elapsed - don't try to catch up, just read
+          // from current position (disk has rotated an unknown amount)
+          extra_nibbles = 1;
+        }
+        for (uint64_t i = 1; i < extra_nibbles; i++) {
           disk->readNibble(); // Advance disk position
         }
       }

@@ -64,7 +64,7 @@ bool DskDiskImage::load(const uint8_t *data, size_t size,
   // Reset head position
   quarter_track_ = 0;
   phase_states_ = 0;
-  last_phase_ = 0; // Reset to phase 0 for correct stepper tracking
+  current_phase_ = 0; // Reset to phase 0 for correct stepper tracking
   nibble_position_ = 0;
   last_cycle_count_ = 0;
 
@@ -395,60 +395,55 @@ void DskDiskImage::setPhase(int phase, bool on) {
 
   if (on) {
     phase_states_ |= phase_bit;
-    // Update head position when a phase is activated
-    updateHeadPosition(phase);
   } else {
     phase_states_ &= ~phase_bit;
-    // Turning off a phase doesn't cause stepping
+    // Stepping happens when the current phase is turned OFF
+    // and an adjacent phase is ON (like apple2ts)
+    updateHeadPosition();
   }
 }
 
-void DskDiskImage::updateHeadPosition(int phase) {
-  // The Disk II uses a 4-phase stepper motor with phases 2 quarter-tracks
-  // apart:
-  //   Phase 0: quarter-tracks 0, 8, 16... (tracks 0, 2, 4...)
-  //   Phase 1: quarter-tracks 2, 10, 18... (half-tracks 0.5, 2.5...)
-  //   Phase 2: quarter-tracks 4, 12, 20... (tracks 1, 3, 5...)
-  //   Phase 3: quarter-tracks 6, 14, 22... (half-tracks 1.5, 3.5...)
+void DskDiskImage::updateHeadPosition() {
+  // The Disk II stepper motor only moves when:
+  // 1. The current phase (where head is settled) is turned OFF
+  // 2. An adjacent phase is ON
   //
-  // Each adjacent phase change moves the head by 2 quarter-tracks (1
-  // half-track). When two adjacent phases are on, head settles at odd
-  // quarter-track between.
+  // This matches apple2ts behavior and real hardware.
 
-  // Calculate step direction based on phase difference from last activated
-  // phase
-  int phase_diff = phase - last_phase_;
-
-  // Normalize to handle wrap-around
-  if (phase_diff == 3)
-    phase_diff = -1; // 0->3 is stepping backward
-  if (phase_diff == -3)
-    phase_diff = 1; // 3->0 is stepping forward
-
-  // Only move if the phase change is a valid single step (+1 or -1)
-  // Each valid step moves 2 quarter-tracks (1 half-track)
-  // Max quarter-track for 35 tracks is (35 * 4) - 1 = 139
   constexpr int MAX_QUARTER_TRACK = (TRACKS * 4) - 1;
 
-  if (phase_diff == 1) {
-    // Stepping inward (toward higher track numbers)
-    if (quarter_track_ < MAX_QUARTER_TRACK - 1) // Leave room for 2-step
-                                                // movement
-    {
+  // Check if current phase is now off
+  uint8_t current_phase_bit = 1 << current_phase_;
+  if (phase_states_ & current_phase_bit) {
+    // Current phase is still on, don't step
+    return;
+  }
+
+  // Current phase is off - check adjacent phases
+  int next_phase = (current_phase_ + 1) % 4;
+  int prev_phase = (current_phase_ + 3) % 4;
+
+  bool next_on = (phase_states_ & (1 << next_phase)) != 0;
+  bool prev_on = (phase_states_ & (1 << prev_phase)) != 0;
+
+  if (next_on && !prev_on) {
+    // Step inward (toward higher track numbers)
+    current_phase_ = next_phase;
+    if (quarter_track_ < MAX_QUARTER_TRACK - 1) {
       quarter_track_ += 2;
     } else if (quarter_track_ < MAX_QUARTER_TRACK) {
-      quarter_track_ = MAX_QUARTER_TRACK; // Clamp to max
+      quarter_track_ = MAX_QUARTER_TRACK;
     }
-  } else if (phase_diff == -1) {
-    // Stepping outward (toward track 0)
+  } else if (prev_on && !next_on) {
+    // Step outward (toward track 0)
+    current_phase_ = prev_phase;
     if (quarter_track_ > 1) {
       quarter_track_ -= 2;
     } else if (quarter_track_ > 0) {
-      quarter_track_ = 0; // Clamp to min
+      quarter_track_ = 0;
     }
   }
-
-  last_phase_ = phase;
+  // If both or neither adjacent phases are on, don't step
 }
 
 bool DskDiskImage::hasData() const {

@@ -110,7 +110,7 @@ private:
   // Head position (0-139 quarter-tracks)
   int quarter_track_ = 0;
   uint8_t phase_states_ = 0; // Bit field of active phases
-  int last_phase_ = 0; // Last phase that was activated (for stepper direction)
+  int current_phase_ = 0; // Current phase where head is settled (for stepper)
 
   // Nibble position within current track
   size_t nibble_position_ = 0;
@@ -138,8 +138,9 @@ private:
 
   /**
    * Update head position based on phase magnet states
+   * Called when a phase is turned OFF to check if stepping should occur
    */
-  void updateHeadPosition(int phase);
+  void updateHeadPosition();
 
   /**
    * Get the logical sector number for a physical sector

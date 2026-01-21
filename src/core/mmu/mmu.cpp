@@ -191,10 +191,29 @@ uint8_t MMU::peekSoftSwitch(uint16_t address) const {
 
   switch (reg) {
   // Keyboard - return current latch without updating
+  // Per AppleWin/hardware behavior, reading any address in $C000-$C00F returns keyboard latch
   case 0x00:
+  case 0x01:
+  case 0x02:
+  case 0x03:
+  case 0x04:
+  case 0x05:
+  case 0x06:
+  case 0x07:
+  case 0x08:
+  case 0x09:
+  case 0x0A:
+  case 0x0B:
+  case 0x0C:
+  case 0x0D:
+  case 0x0E:
+  case 0x0F:
     return keyboardLatch_;
-  case 0x10:
-    return keyboardLatch_ & 0x7F; // Would clear strobe, but we just peek
+  case 0x10: {
+    // Peek returns AKD in bit 7, key code in bits 0-6 (without clearing strobe)
+    bool anyKeyDown = anyKeyDownCallback_ ? anyKeyDownCallback_() : false;
+    return (anyKeyDown ? 0x80 : 0x00) | (keyboardLatch_ & 0x7F);
+  }
 
   // Memory switch status reads (these are safe - just report state)
   case 0x11:
@@ -606,12 +625,15 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     }
     return keyboardLatch_;
 
-  case 0x10: // KBDSTRB - clear keyboard strobe
+  case 0x10: { // KBDSTRB - clear keyboard strobe, return any-key-down status
     if (keyStrobeCallback_) {
       keyStrobeCallback_();
     }
     keyboardLatch_ &= 0x7F;
-    return keyboardLatch_;
+    // Bit 7 = any key down status, bits 0-6 = key code
+    bool anyKeyDown = anyKeyDownCallback_ ? anyKeyDownCallback_() : false;
+    return (anyKeyDown ? 0x80 : 0x00) | (keyboardLatch_ & 0x7F);
+  }
 
   // Memory switches - reading returns switch state in bit 7, floating bus in bits 0-6
   case 0x11:
@@ -734,8 +756,8 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     return getFloatingBusValue(); // HIRES
 
   // 80-column / memory switches (IIe specific)
-  // $C000-$C00F are WRITE-ONLY switches - reads just return floating bus
-  // Only writes to these addresses should modify the switch state
+  // $C000-$C00F are WRITE-ONLY switches - writes modify state, reads return keyboard data
+  // Per AppleWin/hardware behavior, reading any address in $C000-$C00F returns keyboard latch
   case 0x01: // 80STORE on (write-only)
   case 0x02: // RAMRD off (write-only)
   case 0x03: // RAMRD on (write-only)
@@ -751,7 +773,7 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
   case 0x0D: // 80COL on (write-only)
   case 0x0E: // ALTCHAR off (write-only)
   case 0x0F: // ALTCHAR on (write-only)
-    return getFloatingBusValue();
+    return keyboardLatch_;
 
   // Cassette input ($C060)
   case 0x60: // CASSETTE IN - cassette input (active high)

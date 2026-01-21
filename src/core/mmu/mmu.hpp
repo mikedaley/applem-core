@@ -14,6 +14,7 @@ class MMU {
 public:
   using KeyboardCallback = std::function<uint8_t()>;
   using KeyStrobeCallback = std::function<void()>;
+  using AnyKeyDownCallback = std::function<bool()>;   // Returns true if any key is currently held
   using SpeakerCallback = std::function<void()>;
   using ButtonCallback = std::function<uint8_t(int)>; // Returns button state for button 0-2
   using CycleCallback = std::function<uint64_t()>;    // Returns current CPU cycle count
@@ -52,6 +53,9 @@ public:
   void setKeyStrobeCallback(KeyStrobeCallback cb) {
     keyStrobeCallback_ = std::move(cb);
   }
+  void setAnyKeyDownCallback(AnyKeyDownCallback cb) {
+    anyKeyDownCallback_ = std::move(cb);
+  }
   void setSpeakerCallback(SpeakerCallback cb) {
     speakerCallback_ = std::move(cb);
   }
@@ -71,6 +75,11 @@ public:
   void decayTracking(uint8_t amount = 1); // Reduce all counts for real-time visualization
   const uint8_t* getReadCounts() const { return readCounts_.data(); }
   const uint8_t* getWriteCounts() const { return writeCounts_.data(); }
+
+  // Direct memory array access for heat map visualization
+  const uint8_t* getMainRAM() const { return mainRAM_.data(); }
+  const uint8_t* getAuxRAM() const { return auxRAM_.data(); }
+  const uint8_t* getSystemROM() const { return systemROM_.data(); }
 
 private:
   // Soft switch handling
@@ -120,6 +129,7 @@ private:
   // Callbacks
   KeyboardCallback keyboardCallback_;
   KeyStrobeCallback keyStrobeCallback_;
+  AnyKeyDownCallback anyKeyDownCallback_;
   SpeakerCallback speakerCallback_;
   ButtonCallback buttonCallback_;
   CycleCallback cycleCallback_;
