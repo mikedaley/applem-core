@@ -34,6 +34,9 @@ void CPU6502::executeInstruction() {
     pushWord(pc_);
     push((p_ & ~FLAG_B) | FLAG_U);
     setFlag(FLAG_I, true);
+    if (variant_ == CPUVariant::CMOS_65C02) {
+      setFlag(FLAG_D, false); // 65C02 clears D on NMI
+    }
     pc_ = read_(0xFFFA) | (read_(0xFFFB) << 8);
     totalCycles_ += 7;
     return;
@@ -44,6 +47,9 @@ void CPU6502::executeInstruction() {
     pushWord(pc_);
     push((p_ & ~FLAG_B) | FLAG_U);
     setFlag(FLAG_I, true);
+    if (variant_ == CPUVariant::CMOS_65C02) {
+      setFlag(FLAG_D, false); // 65C02 clears D on IRQ
+    }
     pc_ = read_(0xFFFE) | (read_(0xFFFF) << 8);
     totalCycles_ += 7;
     return;
@@ -195,23 +201,44 @@ uint16_t CPU6502::addrIndirectZP() {
 // ALU operations
 void CPU6502::opADC(uint8_t value) {
   if (getFlag(FLAG_D)) {
-    // Decimal mode
-    uint16_t lo = (a_ & 0x0F) + (value & 0x0F) + (getFlag(FLAG_C) ? 1 : 0);
-    uint16_t hi = (a_ & 0xF0) + (value & 0xF0);
+    // Decimal mode - 65C02 takes an extra cycle
+    if (variant_ == CPUVariant::CMOS_65C02) {
+      cycleCount_++;
+    }
 
+    uint8_t carry = getFlag(FLAG_C) ? 1 : 0;
+
+    // V flag is computed from binary result (same for both variants)
+    uint16_t binResult = a_ + value + carry;
+    setFlag(FLAG_V, ~(a_ ^ value) & (a_ ^ binResult) & 0x80);
+
+    // Add low nibbles
+    int lo = (a_ & 0x0F) + (value & 0x0F) + carry;
+
+    // Add high nibbles
+    int hi = (a_ >> 4) + (value >> 4);
+
+    // BCD adjust low nibble
     if (lo > 9) {
       lo += 6;
-      hi += 0x10;
     }
 
-    setFlag(FLAG_V, ~(a_ ^ value) & (a_ ^ hi) & 0x80);
+    // Carry from low to high (handles overflow from correction)
+    hi += (lo >> 4);
+    lo &= 0x0F;
 
-    if (hi > 0x90) {
-      hi += 0x60;
+    // BCD adjust high nibble and set carry
+    if (hi > 9) {
+      hi += 6;
+      setFlag(FLAG_C, true);
+    } else {
+      setFlag(FLAG_C, false);
     }
 
-    setFlag(FLAG_C, hi > 0xFF);
-    a_ = (lo & 0x0F) | (hi & 0xF0);
+    a_ = static_cast<uint8_t>(((hi & 0x0F) << 4) | lo);
+
+    // 65C02: N and Z are set from final BCD result (valid flags)
+    // NMOS 6502: N and Z are set but may not be valid
     updateNZ(a_);
   } else {
     uint16_t result = a_ + value + (getFlag(FLAG_C) ? 1 : 0);
@@ -224,23 +251,38 @@ void CPU6502::opADC(uint8_t value) {
 
 void CPU6502::opSBC(uint8_t value) {
   if (getFlag(FLAG_D)) {
-    // Decimal mode
-    uint16_t lo = (a_ & 0x0F) - (value & 0x0F) - (getFlag(FLAG_C) ? 0 : 1);
-    uint16_t hi = (a_ & 0xF0) - (value & 0xF0);
+    // Decimal mode - 65C02 takes an extra cycle
+    if (variant_ == CPUVariant::CMOS_65C02) {
+      cycleCount_++;
+    }
 
-    if (lo & 0x10) {
+    uint8_t borrow = getFlag(FLAG_C) ? 0 : 1;
+
+    // V and C flags computed from binary result
+    uint16_t binResult = a_ - value - borrow;
+    setFlag(FLAG_C, binResult < 0x100);
+    setFlag(FLAG_V, (a_ ^ value) & (a_ ^ binResult) & 0x80);
+
+    // Subtract low nibbles
+    int lo = (a_ & 0x0F) - (value & 0x0F) - borrow;
+
+    // Subtract high nibbles
+    int hi = (a_ >> 4) - (value >> 4);
+
+    // BCD adjust low nibble (borrow if negative)
+    if (lo < 0) {
       lo -= 6;
-      hi -= 0x10;
+      hi--;
     }
 
-    if (hi & 0x0100) {
-      hi -= 0x60;
+    // BCD adjust high nibble
+    if (hi < 0) {
+      hi -= 6;
     }
 
-    uint16_t result = a_ - value - (getFlag(FLAG_C) ? 0 : 1);
-    setFlag(FLAG_C, result < 0x100);
-    setFlag(FLAG_V, (a_ ^ value) & (a_ ^ result) & 0x80);
-    a_ = (lo & 0x0F) | (hi & 0xF0);
+    a_ = static_cast<uint8_t>(((hi & 0x0F) << 4) | (lo & 0x0F));
+
+    // N and Z from final BCD result
     updateNZ(a_);
   } else {
     uint16_t result = a_ - value - (getFlag(FLAG_C) ? 0 : 1);
@@ -365,8 +407,7 @@ void CPU6502::executeOpcode(uint8_t opcode) {
   switch (opcode) {
   // LDA
   case 0xA9:
-    opAND(read(addrImmediate()));
-    a_ = read(pc_ - 1);
+    a_ = read(addrImmediate());
     updateNZ(a_);
     break;
   case 0xA5:
@@ -397,6 +438,12 @@ void CPU6502::executeOpcode(uint8_t opcode) {
     a_ = read(addrIndirectIndexed());
     updateNZ(a_);
     break;
+  case 0xB2:
+    if (variant_ == CPUVariant::CMOS_65C02) {
+      a_ = read(addrIndirectZP());
+      updateNZ(a_);
+    }
+    break; // LDA (zp) - 65C02
 
   // LDX
   case 0xA2:
@@ -464,6 +511,10 @@ void CPU6502::executeOpcode(uint8_t opcode) {
   case 0x91:
     write(addrIndirectIndexed(false), a_);
     break;
+  case 0x92:
+    if (variant_ == CPUVariant::CMOS_65C02)
+      write(addrIndirectZP(), a_);
+    break; // STA (zp) - 65C02
 
   // STX
   case 0x86:
@@ -789,145 +840,207 @@ void CPU6502::executeOpcode(uint8_t opcode) {
       opBIT(read(addrAbsoluteX()));
     break;
 
-  // ASL - Read-modify-write: do dummy read for LC double-read requirement
+  // ASL - Read-modify-write
+  // NMOS 6502: read, write-old, write-new (double write)
+  // CMOS 65C02: read, read-dummy, write-new (double read)
   case 0x0A:
     opASL_A();
     break;
   case 0x06:
     addr = addrZeroPage();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr); // 65C02: dummy read
+    else
+      write(addr, value); // NMOS: dummy write of old value
     write(addr, opASL(value));
     break;
   case 0x16:
     addr = addrZeroPageX();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opASL(value));
     break;
   case 0x0E:
     addr = addrAbsolute();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opASL(value));
     break;
   case 0x1E:
     addr = addrAbsoluteX(false);
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opASL(value));
     break;
 
-  // LSR - Read-modify-write: do dummy read for LC double-read requirement
+  // LSR - Read-modify-write
   case 0x4A:
     opLSR_A();
     break;
   case 0x46:
     addr = addrZeroPage();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opLSR(value));
     break;
   case 0x56:
     addr = addrZeroPageX();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opLSR(value));
     break;
   case 0x4E:
     addr = addrAbsolute();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opLSR(value));
     break;
   case 0x5E:
     addr = addrAbsoluteX(false);
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opLSR(value));
     break;
 
-  // ROL - Read-modify-write: do dummy read for LC double-read requirement
+  // ROL - Read-modify-write
   case 0x2A:
     opROL_A();
     break;
   case 0x26:
     addr = addrZeroPage();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROL(value));
     break;
   case 0x36:
     addr = addrZeroPageX();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROL(value));
     break;
   case 0x2E:
     addr = addrAbsolute();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROL(value));
     break;
   case 0x3E:
     addr = addrAbsoluteX(false);
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROL(value));
     break;
 
-  // ROR - Read-modify-write: do dummy read for LC double-read requirement
+  // ROR - Read-modify-write
   case 0x6A:
     opROR_A();
     break;
   case 0x66:
     addr = addrZeroPage();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROR(value));
     break;
   case 0x76:
     addr = addrZeroPageX();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROR(value));
     break;
   case 0x6E:
     addr = addrAbsolute();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROR(value));
     break;
   case 0x7E:
     addr = addrAbsoluteX(false);
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opROR(value));
     break;
 
-  // INC - Read-modify-write: do dummy read for LC double-read requirement
+  // INC - Read-modify-write
   case 0xE6:
     addr = addrZeroPage();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opINC(value));
     break;
   case 0xF6:
     addr = addrZeroPageX();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opINC(value));
     break;
   case 0xEE:
     addr = addrAbsolute();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opINC(value));
     break;
   case 0xFE:
     addr = addrAbsoluteX(false);
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opINC(value));
     break;
   case 0x1A:
@@ -936,29 +1049,41 @@ void CPU6502::executeOpcode(uint8_t opcode) {
     }
     break; // INC A (65C02)
 
-  // DEC - Read-modify-write: do dummy read for LC double-read requirement
+  // DEC - Read-modify-write
   case 0xC6:
     addr = addrZeroPage();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opDEC(value));
     break;
   case 0xD6:
     addr = addrZeroPageX();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opDEC(value));
     break;
   case 0xCE:
     addr = addrAbsolute();
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opDEC(value));
     break;
   case 0xDE:
     addr = addrAbsoluteX(false);
     value = read(addr);
-    read(addr); // Dummy read (6502 RMW behavior)
+    if (variant_ == CPUVariant::CMOS_65C02)
+      read(addr);
+    else
+      write(addr, value);
     write(addr, opDEC(value));
     break;
   case 0x3A:

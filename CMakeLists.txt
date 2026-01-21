@@ -130,17 +130,43 @@ if(EMSCRIPTEN)
 
 else()
     # Native build for testing
-    add_executable(a2e-native
-        ${CORE_SOURCES}
-        ${CMAKE_BINARY_DIR}/generated/roms.cpp
-        src/native/main.cpp
-    )
+    # Note: a2e-native requires src/native/main.cpp which may not exist
+    # The tests below can be built independently
 
-    target_include_directories(a2e-native PRIVATE
+    # ==========================================================================
+    # Klaus Dormann CPU Functional Tests
+    # ==========================================================================
+
+    enable_testing()
+
+    # 65C02 Extended Opcodes Test
+    add_executable(klaus_65c02_test
+        tests/klaus/klaus_65c02_test.cpp
+        src/core/cpu/cpu6502.cpp
+    )
+    target_include_directories(klaus_65c02_test PRIVATE
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/core/cpu
-        ${CMAKE_BINARY_DIR}/generated
+    )
+    target_compile_options(klaus_65c02_test PRIVATE -O3 -Wall -Wextra)
+    add_test(NAME klaus_65c02_extended_test
+        COMMAND klaus_65c02_test
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
-    target_compile_options(a2e-native PRIVATE -O3 -Wall -Wextra)
+    # 6502 Functional Test
+    add_executable(klaus_6502_test
+        tests/klaus/klaus_6502_test.cpp
+        src/core/cpu/cpu6502.cpp
+    )
+    target_include_directories(klaus_6502_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/core/cpu
+    )
+    target_compile_options(klaus_6502_test PRIVATE -O3 -Wall -Wextra)
+    add_test(NAME klaus_6502_functional_test
+        COMMAND klaus_6502_test
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+
 endif()
