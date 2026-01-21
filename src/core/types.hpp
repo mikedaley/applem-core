@@ -145,10 +145,27 @@ constexpr std::array<uint32_t, 6> HIRES_COLORS = {{
     0xFFD87300  // 5: Orange (odd pixels, high bit = 1)
 }};
 
-// Double Hi-Res color translation table
-// Maps raw 4-bit values to correct color indices due to DHGR's bit ordering
-constexpr std::array<uint8_t, 16> DHGR_COLOR_TRANSLATE = {{
-    0, 1, 8, 9, 4, 5, 12, 13, 2, 3, 10, 11, 6, 7, 14, 15
+// Double Lo-Res / Double Hi-Res color palette
+// Different from Lo-Res due to 14MHz dot rate vs 7MHz (changes NTSC phase relationship)
+// Based on AppleWin's DoubleHiresPalIndex mapping
+// See: https://github.com/AppleWin/AppleWin/blob/master/source/RGBMonitor.cpp
+constexpr std::array<uint32_t, 16> DLGR_COLORS = {{
+    0xFF000000, // 0: Black        (LORES[0])
+    0xFF4832EB, // 1: Dark Blue    (LORES[2])
+    0xFF197544, // 2: Dark Green   (LORES[4])
+    0xFF3692FF, // 3: Medium Blue  (LORES[6])
+    0xFF496500, // 4: Brown        (LORES[8])
+    0xFF818181, // 5: Grey         (LORES[10])
+    0xFF3CCC00, // 6: Light Green  (LORES[12])
+    0xFF6CE6B8, // 7: Aqua         (LORES[14])
+    0xFF9F1B48, // 8: Magenta      (LORES[1])
+    0xFFD643FF, // 9: Purple       (LORES[3])
+    0xFF818181, // 10: Grey        (LORES[5])
+    0xFFB89EFF, // 11: Light Blue  (LORES[7])
+    0xFFD87300, // 12: Orange      (LORES[9])
+    0xFFFB8FBC, // 13: Pink        (LORES[11])
+    0xFFBCD600, // 14: Yellow      (LORES[13])
+    0xFFF1F1F1  // 15: White       (LORES[15])
 }};
 
 } // namespace a2e

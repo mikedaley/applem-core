@@ -368,6 +368,7 @@ void Video::renderHiRes() {
 
 void Video::renderDoubleLoRes() {
   // Double lo-res: 80x48 with 16 colors
+  // Uses DLGR_COLORS palette (different from Lo-Res due to 14MHz dot rate)
   const auto &sw = mmu_.getSoftSwitches();
 
   for (int row = 0; row < 24; row++) {
@@ -387,30 +388,36 @@ void Video::renderDoubleLoRes() {
       uint8_t mainTop = mainByte & 0x0F;
       uint8_t mainBottom = (mainByte >> 4) & 0x0F;
 
+      // Get colors using DLGR palette (handles monochrome mode)
+      uint32_t auxTopColor = monochrome_ ? getMonochromeColor(auxTop != 0) : DLGR_COLORS[auxTop];
+      uint32_t auxBottomColor = monochrome_ ? getMonochromeColor(auxBottom != 0) : DLGR_COLORS[auxBottom];
+      uint32_t mainTopColor = monochrome_ ? getMonochromeColor(mainTop != 0) : DLGR_COLORS[mainTop];
+      uint32_t mainBottomColor = monochrome_ ? getMonochromeColor(mainBottom != 0) : DLGR_COLORS[mainBottom];
+
       int screenX = col * 14;
       int screenY = row * 16;
 
       // Draw aux pixels (left half, 7 pixels wide)
       for (int py = 0; py < 8; py++) {
         for (int px = 0; px < 7; px++) {
-          setPixel(screenX + px, screenY + py, getLoResColor(auxTop));
+          setPixel(screenX + px, screenY + py, auxTopColor);
         }
       }
       for (int py = 8; py < 16; py++) {
         for (int px = 0; px < 7; px++) {
-          setPixel(screenX + px, screenY + py, getLoResColor(auxBottom));
+          setPixel(screenX + px, screenY + py, auxBottomColor);
         }
       }
 
       // Draw main pixels (right half, 7 pixels wide)
       for (int py = 0; py < 8; py++) {
         for (int px = 7; px < 14; px++) {
-          setPixel(screenX + px, screenY + py, getLoResColor(mainTop));
+          setPixel(screenX + px, screenY + py, mainTopColor);
         }
       }
       for (int py = 8; py < 16; py++) {
         for (int px = 7; px < 14; px++) {
-          setPixel(screenX + px, screenY + py, getLoResColor(mainBottom));
+          setPixel(screenX + px, screenY + py, mainBottomColor);
         }
       }
     }
@@ -441,8 +448,9 @@ void Video::renderDoubleHiRes() {
   const auto &sw = mmu_.getSoftSwitches();
   int maxRow = sw.mixed ? 160 : 192;
 
-  // DHGR color palette from Table 2-7 (different order than LORES!)
-  // Index = 4-bit pattern from dots, value = RGB color
+  // DHGR color palette - different from DLGR despite both running at 14MHz
+  // In DHGR, the 4-bit color is assembled from individual dot bits, not memory nibbles
+  // The bit assembly order: (dot0<<3)|(dot1<<2)|(dot2<<1)|dot3 creates this mapping
   static const uint32_t DHGR_COLORS[16] = {
     0xFF000000, // 0  = 0000 = Black
     0xFF9F1B48, // 1  = 0001 = Magenta
