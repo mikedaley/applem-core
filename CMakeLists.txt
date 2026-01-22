@@ -110,6 +110,8 @@ if(EMSCRIPTEN)
                 \"_getLastDiskByte\", \
                 \"_exportState\", \
                 \"_importState\", \
+                \"_setMonochrome\", \
+                \"_isMonochrome\", \
                 \"_malloc\", \
                 \"_free\" \
             ]' \
