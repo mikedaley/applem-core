@@ -66,6 +66,7 @@ public:
   // Cycle counting
   uint64_t getTotalCycles() const { return totalCycles_; }
   void resetCycleCount() { totalCycles_ = 0; }
+  void setTotalCycles(uint64_t cycles) { totalCycles_ = cycles; }
 
   // Debugging
   std::string disassembleAt(uint16_t address) const;

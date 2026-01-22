@@ -23,9 +23,8 @@ void WozDiskImage::reset() {
 
 bool WozDiskImage::load(const uint8_t *data, size_t size,
                         const std::string &filename) {
-  (void)filename; // Not used for WOZ format detection
-
   reset();
+  filename_ = filename;
 
   if (size < sizeof(WozHeader)) {
     return false;
@@ -354,6 +353,10 @@ void WozDiskImage::updateHeadPosition() {
 int WozDiskImage::getQuarterTrack() const { return quarter_track_; }
 
 int WozDiskImage::getTrack() const { return quarter_track_ / 4; }
+
+void WozDiskImage::setQuarterTrack(int quarter_track) {
+  quarter_track_ = std::max(0, std::min(quarter_track, QUARTER_TRACK_COUNT - 1));
+}
 
 bool WozDiskImage::hasData() const {
   if (quarter_track_ < 0 || quarter_track_ >= QUARTER_TRACK_COUNT) {

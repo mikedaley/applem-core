@@ -50,6 +50,7 @@ bool DskDiskImage::load(const uint8_t *data, size_t size,
 
   loaded_ = true;
   modified_ = false;
+  filename_ = filename;
 
   // Detect format from disk content (not file extension)
   format_ = detectFormat(filename);

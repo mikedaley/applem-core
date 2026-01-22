@@ -44,6 +44,7 @@ public:
   void setPhase(int phase, bool on) override;
   int getQuarterTrack() const override;
   int getTrack() const override;
+  void setQuarterTrack(int quarter_track) override;
 
   // Geometry
   int getTrackCount() const override;

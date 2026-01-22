@@ -193,6 +193,51 @@ public:
    */
   uint8_t getDataLatch() const { return data_latch_; }
 
+  // ===== State restoration methods =====
+
+  /**
+   * Set the selected drive (for state restoration)
+   * @param drive Drive number (0 or 1)
+   */
+  void setSelectedDrive(int drive) { selected_drive_ = (drive == 0) ? 0 : 1; }
+
+  /**
+   * Set Q6 latch state (for state restoration)
+   * @param q6 Q6 state
+   */
+  void setQ6(bool q6) { q6_ = q6; }
+
+  /**
+   * Set Q7 latch state (for state restoration)
+   * @param q7 Q7 state
+   */
+  void setQ7(bool q7) { q7_ = q7; }
+
+  /**
+   * Set phase states (for state restoration)
+   * @param states Phase magnet states bit field
+   */
+  void setPhaseStates(uint8_t states) { phase_states_ = states; }
+
+  /**
+   * Set data latch value (for state restoration)
+   * @param latch Data latch value
+   */
+  void setDataLatch(uint8_t latch) { data_latch_ = latch; }
+
+  /**
+   * Set motor state (for state restoration)
+   * @param on Motor on/off state
+   */
+  void setMotorOn(bool on) { motor_on_ = on; }
+
+  /**
+   * Get mutable disk image for a drive (for state restoration)
+   * @param drive Drive number (0 or 1)
+   * @return Pointer to disk image, or nullptr if no disk
+   */
+  DiskImage *getMutableDiskImage(int drive);
+
 private:
   // Soft switch offsets
   static constexpr uint8_t PHASE0_OFF = 0x00;

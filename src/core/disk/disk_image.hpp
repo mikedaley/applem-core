@@ -95,6 +95,12 @@ public:
    */
   virtual int getTrack() const = 0;
 
+  /**
+   * Set the quarter-track position directly (for state restoration)
+   * @param quarter_track Quarter-track position (0-139)
+   */
+  virtual void setQuarterTrack(int quarter_track) = 0;
+
   // ===== Geometry =====
 
   /**
@@ -205,8 +211,23 @@ public:
    */
   virtual size_t getCurrentNibblePosition() const = 0;
 
+  // ===== Filename Tracking =====
+
+  /**
+   * Get the filename associated with this disk image
+   * @return Filename string
+   */
+  const std::string &getFilename() const { return filename_; }
+
+  /**
+   * Set the filename associated with this disk image
+   * @param filename The filename to set
+   */
+  void setFilename(const std::string &filename) { filename_ = filename; }
+
 protected:
   DiskImage() = default;
+  std::string filename_;
 };
 
 } // namespace a2e

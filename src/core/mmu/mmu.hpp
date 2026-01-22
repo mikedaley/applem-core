@@ -35,6 +35,29 @@ public:
   uint8_t readRAM(uint16_t address, bool aux = false) const;
   void writeRAM(uint16_t address, uint8_t value, bool aux = false);
 
+  // Language card RAM access (for state serialization)
+  const uint8_t *getLCBank1(bool aux = false) const {
+    return aux ? auxLcBank1_.data() : lcBank1_.data();
+  }
+  const uint8_t *getLCBank2(bool aux = false) const {
+    return aux ? auxLcBank2_.data() : lcBank2_.data();
+  }
+  const uint8_t *getLCHighRAM(bool aux = false) const {
+    return aux ? auxLcHighRAM_.data() : lcHighRAM_.data();
+  }
+  void setLCBank1(const uint8_t *data, bool aux = false) {
+    auto &bank = aux ? auxLcBank1_ : lcBank1_;
+    std::copy(data, data + bank.size(), bank.begin());
+  }
+  void setLCBank2(const uint8_t *data, bool aux = false) {
+    auto &bank = aux ? auxLcBank2_ : lcBank2_;
+    std::copy(data, data + bank.size(), bank.begin());
+  }
+  void setLCHighRAM(const uint8_t *data, bool aux = false) {
+    auto &bank = aux ? auxLcHighRAM_ : lcHighRAM_;
+    std::copy(data, data + bank.size(), bank.begin());
+  }
+
   // ROM loading - combined 16KB system ROM ($C000-$FFFF)
   void loadROM(const uint8_t *systemRom, size_t systemSize,
                const uint8_t *charRom, size_t charSize, const uint8_t *diskRom,

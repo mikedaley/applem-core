@@ -32,6 +32,9 @@ public:
   void setMuted(bool muted) { muted_ = muted; }
   bool isMuted() const { return muted_; }
 
+  // Speaker state (for state serialization)
+  bool getSpeakerState() const { return speakerState_; }
+
 private:
   // Speaker state
   bool speakerState_ = false;

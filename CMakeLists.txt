@@ -76,6 +76,7 @@ if(EMSCRIPTEN)
                 \"_handleRawKeyDown\", \
                 \"_handleRawKeyUp\", \
                 \"_insertDisk\", \
+                \"_insertBlankDisk\", \
                 \"_ejectDisk\", \
                 \"_getDiskData\", \
                 \"_addBreakpoint\", \
@@ -105,7 +106,10 @@ if(EMSCRIPTEN)
                 \"_getSelectedDrive\", \
                 \"_isDiskInserted\", \
                 \"_isDiskModified\", \
+                \"_getDiskFilename\", \
                 \"_getLastDiskByte\", \
+                \"_exportState\", \
+                \"_importState\", \
                 \"_malloc\", \
                 \"_free\" \
             ]' \

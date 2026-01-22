@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <vector>
 
 namespace a2e {
 
@@ -57,6 +58,7 @@ public:
   void ejectDisk(int drive);
   const uint8_t *getDiskData(int drive, size_t *size) const;
   const uint8_t *exportDiskData(int drive, size_t *size);
+  const char *getDiskFilename(int drive) const;
 
   // Debugger interface
   void addBreakpoint(uint16_t address);
@@ -91,6 +93,12 @@ public:
 
   // Soft switch state (64-bit packed state)
   uint64_t getSoftSwitchState() const;
+
+  // State serialization for save/restore
+  // Returns pointer to state data and sets size. Caller does not own the pointer.
+  const uint8_t *exportState(size_t *size);
+  // Restores state from data. Returns true on success.
+  bool importState(const uint8_t *data, size_t size);
 
   // Components access
   MMU &getMMU() { return *mmu_; }
@@ -143,6 +151,9 @@ private:
 
   // Disassembly buffer
   mutable std::string disasmBuffer_;
+
+  // State serialization buffer
+  mutable std::vector<uint8_t> stateBuffer_;
 };
 
 } // namespace a2e

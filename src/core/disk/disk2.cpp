@@ -338,6 +338,13 @@ const DiskImage *Disk2Controller::getDiskImage(int drive) const {
   return disk_images_[drive].get();
 }
 
+DiskImage *Disk2Controller::getMutableDiskImage(int drive) {
+  if (drive < 0 || drive > 1) {
+    return nullptr;
+  }
+  return disk_images_[drive].get();
+}
+
 int Disk2Controller::getCurrentTrack() const {
   if (hasDisk(selected_drive_)) {
     return disk_images_[selected_drive_]->getTrack();

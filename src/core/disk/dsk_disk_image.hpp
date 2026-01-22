@@ -47,6 +47,9 @@ public:
   void setPhase(int phase, bool on) override;
   int getQuarterTrack() const override { return quarter_track_; }
   int getTrack() const override { return quarter_track_ / 4; }
+  void setQuarterTrack(int quarter_track) override {
+    quarter_track_ = std::max(0, std::min(quarter_track, (TRACKS - 1) * 4));
+  }
 
   // ===== Geometry =====
   int getTrackCount() const override { return TRACKS; }
