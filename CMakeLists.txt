@@ -20,6 +20,7 @@ set(CORE_SOURCES
     src/core/disk/woz_disk_image.cpp
     src/core/disk/gcr_encoding.cpp
     src/core/input/keyboard.cpp
+    src/core/disassembler/disassembler.cpp
     src/bindings/wasm_interface.cpp
 )
 
@@ -112,6 +113,8 @@ if(EMSCRIPTEN)
                 \"_importState\", \
                 \"_setMonochrome\", \
                 \"_isMonochrome\", \
+                \"_disassembleRawData\", \
+                \"_getDisasmInstructionLength\", \
                 \"_malloc\", \
                 \"_free\" \
             ]' \
