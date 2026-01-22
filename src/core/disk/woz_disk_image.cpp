@@ -1,7 +1,30 @@
 #include "woz_disk_image.hpp"
+#include "gcr_encoding.hpp"
 #include <cstring>
 
 namespace a2e {
+
+// 6-and-2 decoding table (reverse of GCR::ENCODE_6_AND_2)
+static constexpr std::array<int8_t, 256> DECODE_6_AND_2 = []() {
+  std::array<int8_t, 256> table{};
+  for (int i = 0; i < 256; i++) {
+    table[i] = -1; // Invalid nibble
+  }
+  // Build reverse lookup from encode table
+  for (int i = 0; i < 64; i++) {
+    table[GCR::ENCODE_6_AND_2[i]] = static_cast<int8_t>(i);
+  }
+  return table;
+}();
+
+// DOS 3.3 physical to logical sector mapping
+// Physical sector order on disk -> logical sector in file
+static constexpr std::array<int, 16> DOS_PHYSICAL_TO_LOGICAL = {
+    0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15};
+
+// ProDOS physical to logical sector mapping
+static constexpr std::array<int, 16> PRODOS_PHYSICAL_TO_LOGICAL = {
+    0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15};
 
 WozDiskImage::WozDiskImage() { reset(); }
 
@@ -19,6 +42,10 @@ void WozDiskImage::reset() {
   current_phase_ = 0;
   bit_position_ = 0;
   last_cycle_count_ = 0;
+
+  // Clear decoded sector cache
+  decoded_sectors_.clear();
+  sectors_decoded_ = false;
 }
 
 bool WozDiskImage::load(const uint8_t *data, size_t size,
@@ -553,10 +580,21 @@ void WozDiskImage::writeNibble(uint8_t nibble) {
 }
 
 const uint8_t *WozDiskImage::getSectorData(size_t *size) const {
-  // WOZ format doesn't store raw sector data - it stores bit-level data
-  // We would need to decode the entire disk to provide sector data
-  *size = 0;
-  return nullptr;
+  if (!loaded_) {
+    *size = 0;
+    return nullptr;
+  }
+
+  // Try to decode sectors if not already done
+  if (!sectors_decoded_) {
+    if (!decodeSectors()) {
+      *size = 0;
+      return nullptr;
+    }
+  }
+
+  *size = decoded_sectors_.size();
+  return decoded_sectors_.data();
 }
 
 uint8_t WozDiskImage::getNibbleAt(int track, int position) const {
@@ -697,6 +735,282 @@ const uint8_t *WozDiskImage::exportData(size_t *size) {
 
   *size = export_buffer_.size();
   return export_buffer_.data();
+}
+
+// ===== Sector Decoding Implementation =====
+
+uint8_t WozDiskImage::decode4and4(uint8_t odd, uint8_t even) {
+  // 4-and-4 encoding: odd bits in first nibble, even bits in second
+  // Decode by combining the low bits of each
+  return ((odd << 1) | 0x01) & even;
+}
+
+bool WozDiskImage::decode6and2(const uint8_t *nibbles, uint8_t *output) {
+  // 6-and-2 decoding: 343 nibbles -> 256 bytes
+  // This reverses the encoding done in gcr_encoding.cpp:
+  //
+  // Encoding creates a 342-byte buffer:
+  //   buffer[0..85]: auxiliary buffer - 2 bits from each of 3 data bytes
+  //   buffer[86..341]: primary buffer - 6 high bits from each of 256 data bytes
+  // Then XOR encodes: each byte XOR'd with previous byte's value
+  // Final nibble (343rd) is the checksum (last pre-XOR value)
+
+  std::array<uint8_t, 342> buffer;
+
+  // Step 1: Decode nibbles and reverse XOR encoding
+  // The encoder does: nibble[i] = encode(buffer[i] ^ prev), prev = buffer[i]
+  // To decode: buffer[i] = decode(nibble[i]) ^ prev_decoded
+  uint8_t prev = 0;
+  for (int i = 0; i < 342; i++) {
+    int8_t val = DECODE_6_AND_2[nibbles[i]];
+    if (val < 0) {
+      return false; // Invalid nibble
+    }
+    buffer[i] = static_cast<uint8_t>(val) ^ prev;
+    prev = buffer[i];
+  }
+
+  // Step 2: Verify checksum
+  // The checksum nibble encodes the last buffer value (before XOR was applied)
+  int8_t chk_val = DECODE_6_AND_2[nibbles[342]];
+  if (chk_val < 0 || prev != static_cast<uint8_t>(chk_val)) {
+    return false; // Checksum mismatch
+  }
+
+  // Step 3: Reassemble 256 bytes from the buffer
+  // Primary buffer (86-341) contains bits 2-7 of each byte
+  // Auxiliary buffer (0-85) contains bits 0-1 from groups of 3 bytes:
+  //   buffer[i] bits 0,1 -> data[i] bits 1,0 (swapped)
+  //   buffer[i] bits 2,3 -> data[i+86] bits 1,0 (swapped)
+  //   buffer[i] bits 4,5 -> data[i+172] bits 1,0 (swapped)
+
+  for (int i = 0; i < 256; i++) {
+    // Get the 6 high bits from primary buffer
+    uint8_t high = buffer[86 + i] << 2;
+
+    // Get the 2 low bits from auxiliary buffer
+    // The aux index for byte i depends on which group of 86 it's in
+    int aux_idx = i % 86;
+    int group = i / 86; // 0, 1, or 2
+
+    uint8_t aux = buffer[aux_idx];
+    uint8_t low_bits;
+
+    // Extract the 2 bits for this group and unswap them
+    // Encoding did: ((data[i] & 0x01) << 1) | ((data[i] & 0x02) >> 1)
+    // So bit 0 of aux = bit 1 of data, bit 1 of aux = bit 0 of data
+    switch (group) {
+      case 0:
+        // Bits 0,1 of aux -> bits 0,1 of data (with swap)
+        low_bits = ((aux & 0x02) >> 1) | ((aux & 0x01) << 1);
+        break;
+      case 1:
+        // Bits 2,3 of aux -> bits 0,1 of data (with swap)
+        low_bits = ((aux & 0x08) >> 3) | ((aux & 0x04) >> 1);
+        break;
+      case 2:
+      default:
+        // Bits 4,5 of aux -> bits 0,1 of data (with swap)
+        low_bits = ((aux & 0x20) >> 5) | ((aux & 0x10) >> 3);
+        break;
+    }
+
+    output[i] = high | low_bits;
+  }
+
+  return true;
+}
+
+std::vector<uint8_t> WozDiskImage::readTrackNibbles(size_t track_index) const {
+  std::vector<uint8_t> nibbles;
+
+  if (track_index >= tracks_.size() || !tracks_[track_index].valid) {
+    return nibbles;
+  }
+
+  const TrackData &track = tracks_[track_index];
+  if (track.bit_count == 0) {
+    return nibbles;
+  }
+
+  nibbles.reserve(track.bit_count / 8); // Approximate
+
+  // Read nibbles by scanning through bit stream
+  uint32_t bit_pos = 0;
+  uint8_t value = 0;
+  int bits_read = 0;
+
+  // Read through entire track twice to ensure we get all sectors
+  // (sectors may wrap around the track boundary)
+  uint32_t total_bits = track.bit_count * 2;
+
+  while (bit_pos < total_bits) {
+    // Read a bit
+    uint32_t actual_pos = bit_pos % track.bit_count;
+    uint32_t byte_offset = actual_pos / 8;
+    uint8_t bit_offset = 7 - (actual_pos % 8);
+
+    if (byte_offset >= track.bits.size()) {
+      break;
+    }
+
+    uint8_t bit = (track.bits[byte_offset] >> bit_offset) & 1;
+    bit_pos++;
+
+    if (bit) {
+      // Got a 1 bit - start/continue building nibble
+      value = (value << 1) | 1;
+      bits_read++;
+    } else if (value != 0) {
+      // Got a 0 bit after a 1 - continue building nibble
+      value = value << 1;
+      bits_read++;
+    }
+    // If value is 0 and bit is 0, we're in sync - skip
+
+    // Check if we have a complete nibble (bit 7 set)
+    if (value & 0x80) {
+      nibbles.push_back(value);
+      value = 0;
+      bits_read = 0;
+
+      // Limit total nibbles to prevent runaway
+      if (nibbles.size() > 8192) {
+        break;
+      }
+    }
+
+    // Timeout - reset if too many bits without a valid nibble
+    if (bits_read > 16) {
+      value = 0;
+      bits_read = 0;
+    }
+  }
+
+  return nibbles;
+}
+
+int WozDiskImage::decodeSectorsFromNibbles(
+    const std::vector<uint8_t> &nibbles, int expected_track,
+    std::array<std::array<uint8_t, 256>, 16> &sectors) const {
+
+  // Track which sectors we've successfully decoded
+  std::array<bool, 16> sector_found{};
+  int sectors_decoded = 0;
+
+  // Search for address field prologues: D5 AA 96
+  for (size_t i = 0; i + 350 < nibbles.size(); i++) {
+    // Look for address field prologue
+    if (nibbles[i] != 0xD5 || nibbles[i + 1] != 0xAA || nibbles[i + 2] != 0x96) {
+      continue;
+    }
+
+    // Decode address field (4-and-4 encoded)
+    uint8_t volume = decode4and4(nibbles[i + 3], nibbles[i + 4]);
+    uint8_t track = decode4and4(nibbles[i + 5], nibbles[i + 6]);
+    uint8_t sector = decode4and4(nibbles[i + 7], nibbles[i + 8]);
+    uint8_t checksum = decode4and4(nibbles[i + 9], nibbles[i + 10]);
+
+    // Verify address checksum
+    if ((volume ^ track ^ sector) != checksum) {
+      continue;
+    }
+
+    // Verify track number matches (allow some tolerance for copy protection)
+    if (track != expected_track && track != expected_track + 1 &&
+        track != expected_track - 1) {
+      continue;
+    }
+
+    // Verify sector number is valid
+    if (sector >= 16) {
+      continue;
+    }
+
+    // Skip if we already have this sector
+    if (sector_found[sector]) {
+      continue;
+    }
+
+    // Search for data field prologue: D5 AA AD
+    // It should be within ~50 nibbles after address field
+    size_t data_start = 0;
+    for (size_t j = i + 11; j < i + 60 && j + 2 < nibbles.size(); j++) {
+      if (nibbles[j] == 0xD5 && nibbles[j + 1] == 0xAA && nibbles[j + 2] == 0xAD) {
+        data_start = j + 3;
+        break;
+      }
+    }
+
+    if (data_start == 0 || data_start + 343 > nibbles.size()) {
+      continue;
+    }
+
+    // Decode 6-and-2 data (343 nibbles: 342 data + 1 checksum)
+    if (decode6and2(&nibbles[data_start], sectors[sector].data())) {
+      sector_found[sector] = true;
+      sectors_decoded++;
+
+      // If we have all 16 sectors, we're done
+      if (sectors_decoded == 16) {
+        break;
+      }
+    }
+  }
+
+  return sectors_decoded;
+}
+
+bool WozDiskImage::decodeSectors() const {
+  if (!loaded_) {
+    return false;
+  }
+
+  // Standard DOS 3.3 disk: 35 tracks, 16 sectors, 256 bytes = 143,360 bytes
+  static constexpr size_t DISK_SIZE = 35 * 16 * 256;
+  decoded_sectors_.resize(DISK_SIZE);
+  std::fill(decoded_sectors_.begin(), decoded_sectors_.end(), 0);
+
+  int total_sectors_decoded = 0;
+
+  // Decode each track
+  for (int track = 0; track < 35; track++) {
+    // Find the track index from TMAP (use whole track position)
+    int quarter_track = track * 4;
+    if (quarter_track >= QUARTER_TRACK_COUNT) {
+      continue;
+    }
+
+    uint8_t track_index = tmap_[quarter_track];
+    if (track_index == NO_TRACK || track_index >= tracks_.size()) {
+      continue;
+    }
+
+    // Read nibbles from track
+    std::vector<uint8_t> nibbles = readTrackNibbles(track_index);
+    if (nibbles.empty()) {
+      continue;
+    }
+
+    // Decode sectors from nibbles
+    std::array<std::array<uint8_t, 256>, 16> track_sectors{};
+    int decoded = decodeSectorsFromNibbles(nibbles, track, track_sectors);
+    total_sectors_decoded += decoded;
+
+    // Copy decoded sectors to output buffer
+    // Use DOS 3.3 physical-to-logical mapping (most common for WOZ files)
+    for (int phys_sector = 0; phys_sector < 16; phys_sector++) {
+      int logical_sector = DOS_PHYSICAL_TO_LOGICAL[phys_sector];
+      size_t offset = (track * 16 + logical_sector) * 256;
+      std::memcpy(&decoded_sectors_[offset], track_sectors[phys_sector].data(), 256);
+    }
+  }
+
+  // Consider decoding successful if we got at least 50% of sectors
+  // This allows for some bad sectors while still enabling catalog reading
+  sectors_decoded_ = (total_sectors_decoded >= 35 * 8);
+
+  return sectors_decoded_;
 }
 
 } // namespace a2e

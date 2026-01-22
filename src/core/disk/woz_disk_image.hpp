@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -174,6 +175,10 @@ private:
   // Export buffer for saving
   mutable std::vector<uint8_t> export_buffer_;
 
+  // Decoded sector data cache (for file explorer support)
+  mutable std::vector<uint8_t> decoded_sectors_;
+  mutable bool sectors_decoded_ = false;
+
   // INFO chunk data
   InfoChunk info_{};
 
@@ -266,6 +271,59 @@ private:
    * @param bit The bit value (0 or 1)
    */
   void writeBitInternal(uint8_t bit);
+
+  // ===== Sector Decoding (for file explorer support) =====
+
+  /**
+   * Decode all sectors from the WOZ bit stream.
+   * This converts the flux-level data back into standard sector data,
+   * enabling file explorer support for standard DOS 3.3 and ProDOS disks.
+   * Copy-protected disks may not decode successfully.
+   *
+   * @return true if decoding succeeded, false otherwise
+   */
+  bool decodeSectors() const;
+
+  /**
+   * Read nibbles from a track's bit stream.
+   * Handles the bit-to-nibble conversion including sync byte detection.
+   *
+   * @param track_index Index of track in tracks_ array
+   * @return Vector of nibbles read from the track
+   */
+  std::vector<uint8_t> readTrackNibbles(size_t track_index) const;
+
+  /**
+   * Find and decode sectors from a nibble stream.
+   * Searches for address and data field markers, decodes the 6-and-2 data.
+   *
+   * @param nibbles Nibble stream from a track
+   * @param track Expected track number
+   * @param sectors Output: 16 decoded sectors (256 bytes each)
+   * @return Number of sectors successfully decoded (0-16)
+   */
+  int decodeSectorsFromNibbles(const std::vector<uint8_t> &nibbles, int track,
+                               std::array<std::array<uint8_t, 256>, 16> &sectors) const;
+
+  /**
+   * Decode 4-and-4 encoded byte.
+   * Used for address field values (volume, track, sector, checksum).
+   *
+   * @param odd First nibble (odd bits)
+   * @param even Second nibble (even bits)
+   * @return Decoded byte value
+   */
+  static uint8_t decode4and4(uint8_t odd, uint8_t even);
+
+  /**
+   * Decode 6-and-2 encoded sector data.
+   * Converts 342 disk nibbles back into 256 data bytes.
+   *
+   * @param nibbles Pointer to 343 nibbles (342 data + 1 checksum)
+   * @param output Output buffer for 256 decoded bytes
+   * @return true if checksum valid, false otherwise
+   */
+  static bool decode6and2(const uint8_t *nibbles, uint8_t *output);
 };
 
 } // namespace a2e
