@@ -93,9 +93,55 @@ DisasmInstruction disassembleInstruction(const uint8_t *data, size_t size,
                                           uint16_t address);
 
 /**
- * Disassemble a block of raw binary data
+ * Disassemble a block of raw binary data (linear)
  */
 DisasmResult disassembleBlock(const uint8_t *data, size_t size,
                               uint16_t baseAddress);
+
+/**
+ * Instruction flow classification
+ */
+enum class FlowType : uint8_t {
+  SEQUENTIAL = 0,     // Continue to next instruction
+  CONDITIONAL = 1,    // Branch may or may not be taken (Bxx, BBRx, BBSx)
+  UNCONDITIONAL = 2,  // Always transfers control (JMP abs, BRA)
+  CALL = 3,           // Subroutine call (JSR) - returns to next instruction
+  RETURN = 4,         // Returns via stack (RTS, RTI)
+  INDIRECT = 5,       // Indirect jump - target unknown (JMP indirect)
+  HALT = 6            // Stops execution (BRK, STP, WAI)
+};
+
+/**
+ * Get the flow type of an instruction
+ */
+FlowType getFlowType(uint8_t opcode);
+
+/**
+ * Disassemble using recursive descent / control flow analysis
+ *
+ * This approach traces execution paths from entry points to better
+ * distinguish code from data:
+ * 1. Decode instruction at entry point
+ * 2. If sequential, continue to next instruction
+ * 3. If branch/jump, add target to visit list
+ * 4. If JSR, add target AND return address
+ * 5. If RTS/RTI/indirect jump, stop this path
+ * 6. Repeat until no more addresses to visit
+ *
+ * @param data Raw binary data
+ * @param size Size of data in bytes
+ * @param baseAddress Memory address of first byte
+ * @param entryPoints List of known entry points to start tracing from
+ * @return Disassembly result with instructions sorted by address
+ */
+DisasmResult disassembleWithFlowAnalysis(const uint8_t *data, size_t size,
+                                          uint16_t baseAddress,
+                                          const std::vector<uint16_t> &entryPoints);
+
+/**
+ * Convenience overload with single entry point (defaults to baseAddress)
+ */
+DisasmResult disassembleWithFlowAnalysis(const uint8_t *data, size_t size,
+                                          uint16_t baseAddress);
 
 } // namespace a2e

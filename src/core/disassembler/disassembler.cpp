@@ -1,4 +1,7 @@
 #include "disassembler.hpp"
+#include <algorithm>
+#include <queue>
+#include <unordered_set>
 
 namespace a2e {
 
@@ -368,6 +371,172 @@ DisasmResult disassembleBlock(const uint8_t *data, size_t size,
   }
 
   return result;
+}
+
+FlowType getFlowType(uint8_t opcode) {
+  const OpcodeInfo &info = opcodes[opcode];
+  uint8_t mnem = info.mnemonicIndex;
+
+  // Return instructions - stop tracing this path
+  if (mnem == M_RTS || mnem == M_RTI) {
+    return FlowType::RETURN;
+  }
+
+  // Halt instructions - stop tracing
+  if (mnem == M_BRK || mnem == M_STP || mnem == M_WAI) {
+    return FlowType::HALT;
+  }
+
+  // JSR - subroutine call, will return
+  if (mnem == M_JSR) {
+    return FlowType::CALL;
+  }
+
+  // JMP - depends on addressing mode
+  if (mnem == M_JMP) {
+    // Indirect jumps can't be traced statically
+    if (info.mode == IND || info.mode == AIX) {
+      return FlowType::INDIRECT;
+    }
+    // Absolute JMP is unconditional
+    return FlowType::UNCONDITIONAL;
+  }
+
+  // BRA (65C02) - unconditional branch
+  if (mnem == M_BRA) {
+    return FlowType::UNCONDITIONAL;
+  }
+
+  // Conditional branches - Bxx instructions
+  if (mnem == M_BPL || mnem == M_BMI || mnem == M_BVC || mnem == M_BVS ||
+      mnem == M_BCC || mnem == M_BCS || mnem == M_BEQ || mnem == M_BNE) {
+    return FlowType::CONDITIONAL;
+  }
+
+  // BBR/BBS (65C02) - conditional branches
+  if ((mnem >= M_BBR0 && mnem <= M_BBR7) ||
+      (mnem >= M_BBS0 && mnem <= M_BBS7)) {
+    return FlowType::CONDITIONAL;
+  }
+
+  // Everything else is sequential
+  return FlowType::SEQUENTIAL;
+}
+
+DisasmResult disassembleWithFlowAnalysis(const uint8_t *data, size_t size,
+                                          uint16_t baseAddress,
+                                          const std::vector<uint16_t> &entryPoints) {
+  DisasmResult result;
+
+  if (size == 0 || data == nullptr || entryPoints.empty()) {
+    return result;
+  }
+
+  // Calculate valid address range
+  uint16_t endAddress = static_cast<uint16_t>(baseAddress + size);
+
+  // Track visited addresses to avoid re-processing
+  std::unordered_set<uint16_t> visited;
+
+  // Work queue of addresses to visit
+  std::queue<uint16_t> toVisit;
+
+  // Initialize with entry points
+  for (uint16_t entry : entryPoints) {
+    if (entry >= baseAddress && entry < endAddress) {
+      toVisit.push(entry);
+    }
+  }
+
+  // Reserve approximate space
+  result.instructions.reserve(size / 2);
+
+  // Process addresses until queue is empty
+  while (!toVisit.empty()) {
+    uint16_t addr = toVisit.front();
+    toVisit.pop();
+
+    // Skip if already visited or out of range
+    if (visited.count(addr) || addr < baseAddress || addr >= endAddress) {
+      continue;
+    }
+
+    // Mark as visited
+    visited.insert(addr);
+
+    // Calculate offset into data buffer
+    size_t offset = addr - baseAddress;
+
+    // Disassemble instruction at this address
+    DisasmInstruction instr = disassembleInstruction(
+      data + offset, size - offset, addr);
+
+    if (instr.length == 0) {
+      continue;
+    }
+
+    result.instructions.push_back(instr);
+
+    // Determine what addresses to visit next based on flow type
+    FlowType flow = getFlowType(instr.opcode);
+    uint16_t nextAddr = static_cast<uint16_t>(addr + instr.length);
+
+    switch (flow) {
+      case FlowType::SEQUENTIAL:
+        // Continue to next instruction
+        if (nextAddr >= baseAddress && nextAddr < endAddress) {
+          toVisit.push(nextAddr);
+        }
+        break;
+
+      case FlowType::CONDITIONAL:
+        // Add both target and fall-through
+        if (nextAddr >= baseAddress && nextAddr < endAddress) {
+          toVisit.push(nextAddr);
+        }
+        if (instr.target >= baseAddress && instr.target < endAddress) {
+          toVisit.push(instr.target);
+        }
+        break;
+
+      case FlowType::CALL:
+        // JSR: add target AND return address (next instruction)
+        if (nextAddr >= baseAddress && nextAddr < endAddress) {
+          toVisit.push(nextAddr);
+        }
+        if (instr.target >= baseAddress && instr.target < endAddress) {
+          toVisit.push(instr.target);
+        }
+        break;
+
+      case FlowType::UNCONDITIONAL:
+        // JMP/BRA: only add target, don't fall through
+        if (instr.target >= baseAddress && instr.target < endAddress) {
+          toVisit.push(instr.target);
+        }
+        break;
+
+      case FlowType::RETURN:
+      case FlowType::INDIRECT:
+      case FlowType::HALT:
+        // Stop tracing this path
+        break;
+    }
+  }
+
+  // Sort instructions by address for consistent output
+  std::sort(result.instructions.begin(), result.instructions.end(),
+            [](const DisasmInstruction &a, const DisasmInstruction &b) {
+              return a.address < b.address;
+            });
+
+  return result;
+}
+
+DisasmResult disassembleWithFlowAnalysis(const uint8_t *data, size_t size,
+                                          uint16_t baseAddress) {
+  std::vector<uint16_t> entryPoints = {baseAddress};
+  return disassembleWithFlowAnalysis(data, size, baseAddress, entryPoints);
 }
 
 } // namespace a2e
