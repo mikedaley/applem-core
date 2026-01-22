@@ -1,142 +1,235 @@
 #include "disassembler.hpp"
-#include <iomanip>
-#include <sstream>
 
 namespace a2e {
 
-// Addressing mode enumeration
-enum AddrMode {
-  IMP,  // Implied
-  ACC,  // Accumulator
-  IMM,  // Immediate #$nn
-  ZP,   // Zero Page $nn
-  ZPX,  // Zero Page,X $nn,X
-  ZPY,  // Zero Page,Y $nn,Y
-  ABS,  // Absolute $nnnn
-  ABX,  // Absolute,X $nnnn,X
-  ABY,  // Absolute,Y $nnnn,Y
-  IND,  // Indirect ($nnnn)
-  IZX,  // Indexed Indirect ($nn,X)
-  IZY,  // Indirect Indexed ($nn),Y
-  REL,  // Relative (branches)
-  ZPI,  // Zero Page Indirect ($nn) - 65C02
-  AIX,  // Absolute Indexed Indirect ($nnnn,X) - 65C02
-  ZPR   // Zero Page Relative (BBR/BBS) - 65C02
+// Internal addressing mode enum for opcode table
+enum AddrModeInt {
+  IMP = 0, ACC, IMM, ZP, ZPX, ZPY, ABS, ABX, ABY, IND, IZX, IZY, REL, ZPI, AIX, ZPR
 };
 
-// Instruction category for syntax highlighting
-enum InstrCategory {
-  CAT_BRANCH,  // Jumps and branches
-  CAT_LOAD,    // Load/store
-  CAT_MATH,    // Math and logic
-  CAT_STACK,   // Stack and register operations
-  CAT_FLAG,    // Flag operations
-  CAT_UNKNOWN  // Unknown/illegal opcodes
+// Internal category enum for opcode table
+enum CategoryInt {
+  CAT_BRANCH = 0, CAT_LOAD, CAT_MATH, CAT_STACK, CAT_FLAG, CAT_UNKNOWN
 };
 
-// Opcode info: mnemonic, addressing mode, and category
+// Opcode info structure
 struct OpcodeInfo {
-  const char *mnemonic;
-  AddrMode mode;
-  InstrCategory category;
+  uint8_t mnemonicIndex;
+  uint8_t mode;
+  uint8_t category;
 };
 
-// Full 65C02 opcode table
+// Mnemonic table - index corresponds to mnemonicIndex in DisasmInstruction
+static const char* MNEMONICS[] = {
+  "???",  // 0 - unknown
+  "ADC",  // 1
+  "AND",  // 2
+  "ASL",  // 3
+  "BBR0", // 4
+  "BBR1", // 5
+  "BBR2", // 6
+  "BBR3", // 7
+  "BBR4", // 8
+  "BBR5", // 9
+  "BBR6", // 10
+  "BBR7", // 11
+  "BBS0", // 12
+  "BBS1", // 13
+  "BBS2", // 14
+  "BBS3", // 15
+  "BBS4", // 16
+  "BBS5", // 17
+  "BBS6", // 18
+  "BBS7", // 19
+  "BCC",  // 20
+  "BCS",  // 21
+  "BEQ",  // 22
+  "BIT",  // 23
+  "BMI",  // 24
+  "BNE",  // 25
+  "BPL",  // 26
+  "BRA",  // 27
+  "BRK",  // 28
+  "BVC",  // 29
+  "BVS",  // 30
+  "CLC",  // 31
+  "CLD",  // 32
+  "CLI",  // 33
+  "CLV",  // 34
+  "CMP",  // 35
+  "CPX",  // 36
+  "CPY",  // 37
+  "DEC",  // 38
+  "DEX",  // 39
+  "DEY",  // 40
+  "EOR",  // 41
+  "INC",  // 42
+  "INX",  // 43
+  "INY",  // 44
+  "JMP",  // 45
+  "JSR",  // 46
+  "LDA",  // 47
+  "LDX",  // 48
+  "LDY",  // 49
+  "LSR",  // 50
+  "NOP",  // 51
+  "ORA",  // 52
+  "PHA",  // 53
+  "PHP",  // 54
+  "PHX",  // 55
+  "PHY",  // 56
+  "PLA",  // 57
+  "PLP",  // 58
+  "PLX",  // 59
+  "PLY",  // 60
+  "RMB0", // 61
+  "RMB1", // 62
+  "RMB2", // 63
+  "RMB3", // 64
+  "RMB4", // 65
+  "RMB5", // 66
+  "RMB6", // 67
+  "RMB7", // 68
+  "ROL",  // 69
+  "ROR",  // 70
+  "RTI",  // 71
+  "RTS",  // 72
+  "SBC",  // 73
+  "SEC",  // 74
+  "SED",  // 75
+  "SEI",  // 76
+  "SMB0", // 77
+  "SMB1", // 78
+  "SMB2", // 79
+  "SMB3", // 80
+  "SMB4", // 81
+  "SMB5", // 82
+  "SMB6", // 83
+  "SMB7", // 84
+  "STA",  // 85
+  "STP",  // 86
+  "STX",  // 87
+  "STY",  // 88
+  "STZ",  // 89
+  "TAX",  // 90
+  "TAY",  // 91
+  "TRB",  // 92
+  "TSB",  // 93
+  "TSX",  // 94
+  "TXA",  // 95
+  "TXS",  // 96
+  "TYA",  // 97
+  "WAI",  // 98
+};
+
+// Mnemonic indices
+enum MnemIdx {
+  M_UNK = 0,
+  M_ADC = 1, M_AND, M_ASL,
+  M_BBR0, M_BBR1, M_BBR2, M_BBR3, M_BBR4, M_BBR5, M_BBR6, M_BBR7,
+  M_BBS0, M_BBS1, M_BBS2, M_BBS3, M_BBS4, M_BBS5, M_BBS6, M_BBS7,
+  M_BCC, M_BCS, M_BEQ, M_BIT, M_BMI, M_BNE, M_BPL, M_BRA, M_BRK, M_BVC, M_BVS,
+  M_CLC, M_CLD, M_CLI, M_CLV, M_CMP, M_CPX, M_CPY,
+  M_DEC, M_DEX, M_DEY,
+  M_EOR,
+  M_INC, M_INX, M_INY,
+  M_JMP, M_JSR,
+  M_LDA, M_LDX, M_LDY, M_LSR,
+  M_NOP,
+  M_ORA,
+  M_PHA, M_PHP, M_PHX, M_PHY, M_PLA, M_PLP, M_PLX, M_PLY,
+  M_RMB0, M_RMB1, M_RMB2, M_RMB3, M_RMB4, M_RMB5, M_RMB6, M_RMB7,
+  M_ROL, M_ROR, M_RTI, M_RTS,
+  M_SBC, M_SEC, M_SED, M_SEI,
+  M_SMB0, M_SMB1, M_SMB2, M_SMB3, M_SMB4, M_SMB5, M_SMB6, M_SMB7,
+  M_STA, M_STP, M_STX, M_STY, M_STZ,
+  M_TAX, M_TAY, M_TRB, M_TSB, M_TSX, M_TXA, M_TXS, M_TYA,
+  M_WAI
+};
+
+// Full 65C02 opcode table: {mnemonicIndex, mode, category}
 static const OpcodeInfo opcodes[256] = {
-    // 0x00-0x0F
-    {"BRK", IMP, CAT_STACK}, {"ORA", IZX, CAT_MATH},   {"???", IMP, CAT_UNKNOWN}, {"???", IMP, CAT_UNKNOWN},
-    {"TSB", ZP, CAT_MATH},   {"ORA", ZP, CAT_MATH},    {"ASL", ZP, CAT_MATH},     {"RMB0", ZP, CAT_MATH},
-    {"PHP", IMP, CAT_STACK}, {"ORA", IMM, CAT_MATH},   {"ASL", ACC, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"TSB", ABS, CAT_MATH},  {"ORA", ABS, CAT_MATH},   {"ASL", ABS, CAT_MATH},    {"BBR0", ZPR, CAT_BRANCH},
-    // 0x10-0x1F
-    {"BPL", REL, CAT_BRANCH}, {"ORA", IZY, CAT_MATH},   {"ORA", ZPI, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"TRB", ZP, CAT_MATH},    {"ORA", ZPX, CAT_MATH},   {"ASL", ZPX, CAT_MATH},    {"RMB1", ZP, CAT_MATH},
-    {"CLC", IMP, CAT_FLAG},   {"ORA", ABY, CAT_MATH},   {"INC", ACC, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"TRB", ABS, CAT_MATH},   {"ORA", ABX, CAT_MATH},   {"ASL", ABX, CAT_MATH},    {"BBR1", ZPR, CAT_BRANCH},
-    // 0x20-0x2F
-    {"JSR", ABS, CAT_BRANCH}, {"AND", IZX, CAT_MATH},   {"???", IMP, CAT_UNKNOWN}, {"???", IMP, CAT_UNKNOWN},
-    {"BIT", ZP, CAT_MATH},    {"AND", ZP, CAT_MATH},    {"ROL", ZP, CAT_MATH},     {"RMB2", ZP, CAT_MATH},
-    {"PLP", IMP, CAT_STACK},  {"AND", IMM, CAT_MATH},   {"ROL", ACC, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"BIT", ABS, CAT_MATH},   {"AND", ABS, CAT_MATH},   {"ROL", ABS, CAT_MATH},    {"BBR2", ZPR, CAT_BRANCH},
-    // 0x30-0x3F
-    {"BMI", REL, CAT_BRANCH}, {"AND", IZY, CAT_MATH},   {"AND", ZPI, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"BIT", ZPX, CAT_MATH},   {"AND", ZPX, CAT_MATH},   {"ROL", ZPX, CAT_MATH},    {"RMB3", ZP, CAT_MATH},
-    {"SEC", IMP, CAT_FLAG},   {"AND", ABY, CAT_MATH},   {"DEC", ACC, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"BIT", ABX, CAT_MATH},   {"AND", ABX, CAT_MATH},   {"ROL", ABX, CAT_MATH},    {"BBR3", ZPR, CAT_BRANCH},
-    // 0x40-0x4F
-    {"RTI", IMP, CAT_BRANCH}, {"EOR", IZX, CAT_MATH},   {"???", IMP, CAT_UNKNOWN}, {"???", IMP, CAT_UNKNOWN},
-    {"???", IMP, CAT_UNKNOWN},{"EOR", ZP, CAT_MATH},    {"LSR", ZP, CAT_MATH},     {"RMB4", ZP, CAT_MATH},
-    {"PHA", IMP, CAT_STACK},  {"EOR", IMM, CAT_MATH},   {"LSR", ACC, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"JMP", ABS, CAT_BRANCH}, {"EOR", ABS, CAT_MATH},   {"LSR", ABS, CAT_MATH},    {"BBR4", ZPR, CAT_BRANCH},
-    // 0x50-0x5F
-    {"BVC", REL, CAT_BRANCH}, {"EOR", IZY, CAT_MATH},   {"EOR", ZPI, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"???", IMP, CAT_UNKNOWN},{"EOR", ZPX, CAT_MATH},   {"LSR", ZPX, CAT_MATH},    {"RMB5", ZP, CAT_MATH},
-    {"CLI", IMP, CAT_FLAG},   {"EOR", ABY, CAT_MATH},   {"PHY", IMP, CAT_STACK},   {"???", IMP, CAT_UNKNOWN},
-    {"???", IMP, CAT_UNKNOWN},{"EOR", ABX, CAT_MATH},   {"LSR", ABX, CAT_MATH},    {"BBR5", ZPR, CAT_BRANCH},
-    // 0x60-0x6F
-    {"RTS", IMP, CAT_BRANCH}, {"ADC", IZX, CAT_MATH},   {"???", IMP, CAT_UNKNOWN}, {"???", IMP, CAT_UNKNOWN},
-    {"STZ", ZP, CAT_LOAD},    {"ADC", ZP, CAT_MATH},    {"ROR", ZP, CAT_MATH},     {"RMB6", ZP, CAT_MATH},
-    {"PLA", IMP, CAT_STACK},  {"ADC", IMM, CAT_MATH},   {"ROR", ACC, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"JMP", IND, CAT_BRANCH}, {"ADC", ABS, CAT_MATH},   {"ROR", ABS, CAT_MATH},    {"BBR6", ZPR, CAT_BRANCH},
-    // 0x70-0x7F
-    {"BVS", REL, CAT_BRANCH}, {"ADC", IZY, CAT_MATH},   {"ADC", ZPI, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"STZ", ZPX, CAT_LOAD},   {"ADC", ZPX, CAT_MATH},   {"ROR", ZPX, CAT_MATH},    {"RMB7", ZP, CAT_MATH},
-    {"SEI", IMP, CAT_FLAG},   {"ADC", ABY, CAT_MATH},   {"PLY", IMP, CAT_STACK},   {"???", IMP, CAT_UNKNOWN},
-    {"JMP", AIX, CAT_BRANCH}, {"ADC", ABX, CAT_MATH},   {"ROR", ABX, CAT_MATH},    {"BBR7", ZPR, CAT_BRANCH},
-    // 0x80-0x8F
-    {"BRA", REL, CAT_BRANCH}, {"STA", IZX, CAT_LOAD},   {"???", IMP, CAT_UNKNOWN}, {"???", IMP, CAT_UNKNOWN},
-    {"STY", ZP, CAT_LOAD},    {"STA", ZP, CAT_LOAD},    {"STX", ZP, CAT_LOAD},     {"SMB0", ZP, CAT_MATH},
-    {"DEY", IMP, CAT_STACK},  {"BIT", IMM, CAT_MATH},   {"TXA", IMP, CAT_STACK},   {"???", IMP, CAT_UNKNOWN},
-    {"STY", ABS, CAT_LOAD},   {"STA", ABS, CAT_LOAD},   {"STX", ABS, CAT_LOAD},    {"BBS0", ZPR, CAT_BRANCH},
-    // 0x90-0x9F
-    {"BCC", REL, CAT_BRANCH}, {"STA", IZY, CAT_LOAD},   {"STA", ZPI, CAT_LOAD},    {"???", IMP, CAT_UNKNOWN},
-    {"STY", ZPX, CAT_LOAD},   {"STA", ZPX, CAT_LOAD},   {"STX", ZPY, CAT_LOAD},    {"SMB1", ZP, CAT_MATH},
-    {"TYA", IMP, CAT_STACK},  {"STA", ABY, CAT_LOAD},   {"TXS", IMP, CAT_STACK},   {"???", IMP, CAT_UNKNOWN},
-    {"STZ", ABS, CAT_LOAD},   {"STA", ABX, CAT_LOAD},   {"STZ", ABX, CAT_LOAD},    {"BBS1", ZPR, CAT_BRANCH},
-    // 0xA0-0xAF
-    {"LDY", IMM, CAT_LOAD},   {"LDA", IZX, CAT_LOAD},   {"LDX", IMM, CAT_LOAD},    {"???", IMP, CAT_UNKNOWN},
-    {"LDY", ZP, CAT_LOAD},    {"LDA", ZP, CAT_LOAD},    {"LDX", ZP, CAT_LOAD},     {"SMB2", ZP, CAT_MATH},
-    {"TAY", IMP, CAT_STACK},  {"LDA", IMM, CAT_LOAD},   {"TAX", IMP, CAT_STACK},   {"???", IMP, CAT_UNKNOWN},
-    {"LDY", ABS, CAT_LOAD},   {"LDA", ABS, CAT_LOAD},   {"LDX", ABS, CAT_LOAD},    {"BBS2", ZPR, CAT_BRANCH},
-    // 0xB0-0xBF
-    {"BCS", REL, CAT_BRANCH}, {"LDA", IZY, CAT_LOAD},   {"LDA", ZPI, CAT_LOAD},    {"???", IMP, CAT_UNKNOWN},
-    {"LDY", ZPX, CAT_LOAD},   {"LDA", ZPX, CAT_LOAD},   {"LDX", ZPY, CAT_LOAD},    {"SMB3", ZP, CAT_MATH},
-    {"CLV", IMP, CAT_FLAG},   {"LDA", ABY, CAT_LOAD},   {"TSX", IMP, CAT_STACK},   {"???", IMP, CAT_UNKNOWN},
-    {"LDY", ABX, CAT_LOAD},   {"LDA", ABX, CAT_LOAD},   {"LDX", ABY, CAT_LOAD},    {"BBS3", ZPR, CAT_BRANCH},
-    // 0xC0-0xCF
-    {"CPY", IMM, CAT_MATH},   {"CMP", IZX, CAT_MATH},   {"???", IMP, CAT_UNKNOWN}, {"???", IMP, CAT_UNKNOWN},
-    {"CPY", ZP, CAT_MATH},    {"CMP", ZP, CAT_MATH},    {"DEC", ZP, CAT_MATH},     {"SMB4", ZP, CAT_MATH},
-    {"INY", IMP, CAT_STACK},  {"CMP", IMM, CAT_MATH},   {"DEX", IMP, CAT_STACK},   {"WAI", IMP, CAT_STACK},
-    {"CPY", ABS, CAT_MATH},   {"CMP", ABS, CAT_MATH},   {"DEC", ABS, CAT_MATH},    {"BBS4", ZPR, CAT_BRANCH},
-    // 0xD0-0xDF
-    {"BNE", REL, CAT_BRANCH}, {"CMP", IZY, CAT_MATH},   {"CMP", ZPI, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"???", IMP, CAT_UNKNOWN},{"CMP", ZPX, CAT_MATH},   {"DEC", ZPX, CAT_MATH},    {"SMB5", ZP, CAT_MATH},
-    {"CLD", IMP, CAT_FLAG},   {"CMP", ABY, CAT_MATH},   {"PHX", IMP, CAT_STACK},   {"STP", IMP, CAT_STACK},
-    {"???", IMP, CAT_UNKNOWN},{"CMP", ABX, CAT_MATH},   {"DEC", ABX, CAT_MATH},    {"BBS5", ZPR, CAT_BRANCH},
-    // 0xE0-0xEF
-    {"CPX", IMM, CAT_MATH},   {"SBC", IZX, CAT_MATH},   {"???", IMP, CAT_UNKNOWN}, {"???", IMP, CAT_UNKNOWN},
-    {"CPX", ZP, CAT_MATH},    {"SBC", ZP, CAT_MATH},    {"INC", ZP, CAT_MATH},     {"SMB6", ZP, CAT_MATH},
-    {"INX", IMP, CAT_STACK},  {"SBC", IMM, CAT_MATH},   {"NOP", IMP, CAT_FLAG},    {"???", IMP, CAT_UNKNOWN},
-    {"CPX", ABS, CAT_MATH},   {"SBC", ABS, CAT_MATH},   {"INC", ABS, CAT_MATH},    {"BBS6", ZPR, CAT_BRANCH},
-    // 0xF0-0xFF
-    {"BEQ", REL, CAT_BRANCH}, {"SBC", IZY, CAT_MATH},   {"SBC", ZPI, CAT_MATH},    {"???", IMP, CAT_UNKNOWN},
-    {"???", IMP, CAT_UNKNOWN},{"SBC", ZPX, CAT_MATH},   {"INC", ZPX, CAT_MATH},    {"SMB7", ZP, CAT_MATH},
-    {"SED", IMP, CAT_FLAG},   {"SBC", ABY, CAT_MATH},   {"PLX", IMP, CAT_STACK},   {"???", IMP, CAT_UNKNOWN},
-    {"???", IMP, CAT_UNKNOWN},{"SBC", ABX, CAT_MATH},   {"INC", ABX, CAT_MATH},    {"BBS7", ZPR, CAT_BRANCH}
+  // 0x00-0x0F
+  {M_BRK, IMP, CAT_STACK},  {M_ORA, IZX, CAT_MATH},   {M_UNK, IMP, CAT_UNKNOWN}, {M_UNK, IMP, CAT_UNKNOWN},
+  {M_TSB, ZP, CAT_MATH},    {M_ORA, ZP, CAT_MATH},    {M_ASL, ZP, CAT_MATH},     {M_RMB0, ZP, CAT_MATH},
+  {M_PHP, IMP, CAT_STACK},  {M_ORA, IMM, CAT_MATH},   {M_ASL, ACC, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_TSB, ABS, CAT_MATH},   {M_ORA, ABS, CAT_MATH},   {M_ASL, ABS, CAT_MATH},    {M_BBR0, ZPR, CAT_BRANCH},
+  // 0x10-0x1F
+  {M_BPL, REL, CAT_BRANCH}, {M_ORA, IZY, CAT_MATH},   {M_ORA, ZPI, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_TRB, ZP, CAT_MATH},    {M_ORA, ZPX, CAT_MATH},   {M_ASL, ZPX, CAT_MATH},    {M_RMB1, ZP, CAT_MATH},
+  {M_CLC, IMP, CAT_FLAG},   {M_ORA, ABY, CAT_MATH},   {M_INC, ACC, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_TRB, ABS, CAT_MATH},   {M_ORA, ABX, CAT_MATH},   {M_ASL, ABX, CAT_MATH},    {M_BBR1, ZPR, CAT_BRANCH},
+  // 0x20-0x2F
+  {M_JSR, ABS, CAT_BRANCH}, {M_AND, IZX, CAT_MATH},   {M_UNK, IMP, CAT_UNKNOWN}, {M_UNK, IMP, CAT_UNKNOWN},
+  {M_BIT, ZP, CAT_MATH},    {M_AND, ZP, CAT_MATH},    {M_ROL, ZP, CAT_MATH},     {M_RMB2, ZP, CAT_MATH},
+  {M_PLP, IMP, CAT_STACK},  {M_AND, IMM, CAT_MATH},   {M_ROL, ACC, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_BIT, ABS, CAT_MATH},   {M_AND, ABS, CAT_MATH},   {M_ROL, ABS, CAT_MATH},    {M_BBR2, ZPR, CAT_BRANCH},
+  // 0x30-0x3F
+  {M_BMI, REL, CAT_BRANCH}, {M_AND, IZY, CAT_MATH},   {M_AND, ZPI, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_BIT, ZPX, CAT_MATH},   {M_AND, ZPX, CAT_MATH},   {M_ROL, ZPX, CAT_MATH},    {M_RMB3, ZP, CAT_MATH},
+  {M_SEC, IMP, CAT_FLAG},   {M_AND, ABY, CAT_MATH},   {M_DEC, ACC, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_BIT, ABX, CAT_MATH},   {M_AND, ABX, CAT_MATH},   {M_ROL, ABX, CAT_MATH},    {M_BBR3, ZPR, CAT_BRANCH},
+  // 0x40-0x4F
+  {M_RTI, IMP, CAT_BRANCH}, {M_EOR, IZX, CAT_MATH},   {M_UNK, IMP, CAT_UNKNOWN}, {M_UNK, IMP, CAT_UNKNOWN},
+  {M_UNK, IMP, CAT_UNKNOWN},{M_EOR, ZP, CAT_MATH},    {M_LSR, ZP, CAT_MATH},     {M_RMB4, ZP, CAT_MATH},
+  {M_PHA, IMP, CAT_STACK},  {M_EOR, IMM, CAT_MATH},   {M_LSR, ACC, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_JMP, ABS, CAT_BRANCH}, {M_EOR, ABS, CAT_MATH},   {M_LSR, ABS, CAT_MATH},    {M_BBR4, ZPR, CAT_BRANCH},
+  // 0x50-0x5F
+  {M_BVC, REL, CAT_BRANCH}, {M_EOR, IZY, CAT_MATH},   {M_EOR, ZPI, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_UNK, IMP, CAT_UNKNOWN},{M_EOR, ZPX, CAT_MATH},   {M_LSR, ZPX, CAT_MATH},    {M_RMB5, ZP, CAT_MATH},
+  {M_CLI, IMP, CAT_FLAG},   {M_EOR, ABY, CAT_MATH},   {M_PHY, IMP, CAT_STACK},   {M_UNK, IMP, CAT_UNKNOWN},
+  {M_UNK, IMP, CAT_UNKNOWN},{M_EOR, ABX, CAT_MATH},   {M_LSR, ABX, CAT_MATH},    {M_BBR5, ZPR, CAT_BRANCH},
+  // 0x60-0x6F
+  {M_RTS, IMP, CAT_BRANCH}, {M_ADC, IZX, CAT_MATH},   {M_UNK, IMP, CAT_UNKNOWN}, {M_UNK, IMP, CAT_UNKNOWN},
+  {M_STZ, ZP, CAT_LOAD},    {M_ADC, ZP, CAT_MATH},    {M_ROR, ZP, CAT_MATH},     {M_RMB6, ZP, CAT_MATH},
+  {M_PLA, IMP, CAT_STACK},  {M_ADC, IMM, CAT_MATH},   {M_ROR, ACC, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_JMP, IND, CAT_BRANCH}, {M_ADC, ABS, CAT_MATH},   {M_ROR, ABS, CAT_MATH},    {M_BBR6, ZPR, CAT_BRANCH},
+  // 0x70-0x7F
+  {M_BVS, REL, CAT_BRANCH}, {M_ADC, IZY, CAT_MATH},   {M_ADC, ZPI, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_STZ, ZPX, CAT_LOAD},   {M_ADC, ZPX, CAT_MATH},   {M_ROR, ZPX, CAT_MATH},    {M_RMB7, ZP, CAT_MATH},
+  {M_SEI, IMP, CAT_FLAG},   {M_ADC, ABY, CAT_MATH},   {M_PLY, IMP, CAT_STACK},   {M_UNK, IMP, CAT_UNKNOWN},
+  {M_JMP, AIX, CAT_BRANCH}, {M_ADC, ABX, CAT_MATH},   {M_ROR, ABX, CAT_MATH},    {M_BBR7, ZPR, CAT_BRANCH},
+  // 0x80-0x8F
+  {M_BRA, REL, CAT_BRANCH}, {M_STA, IZX, CAT_LOAD},   {M_UNK, IMP, CAT_UNKNOWN}, {M_UNK, IMP, CAT_UNKNOWN},
+  {M_STY, ZP, CAT_LOAD},    {M_STA, ZP, CAT_LOAD},    {M_STX, ZP, CAT_LOAD},     {M_SMB0, ZP, CAT_MATH},
+  {M_DEY, IMP, CAT_STACK},  {M_BIT, IMM, CAT_MATH},   {M_TXA, IMP, CAT_STACK},   {M_UNK, IMP, CAT_UNKNOWN},
+  {M_STY, ABS, CAT_LOAD},   {M_STA, ABS, CAT_LOAD},   {M_STX, ABS, CAT_LOAD},    {M_BBS0, ZPR, CAT_BRANCH},
+  // 0x90-0x9F
+  {M_BCC, REL, CAT_BRANCH}, {M_STA, IZY, CAT_LOAD},   {M_STA, ZPI, CAT_LOAD},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_STY, ZPX, CAT_LOAD},   {M_STA, ZPX, CAT_LOAD},   {M_STX, ZPY, CAT_LOAD},    {M_SMB1, ZP, CAT_MATH},
+  {M_TYA, IMP, CAT_STACK},  {M_STA, ABY, CAT_LOAD},   {M_TXS, IMP, CAT_STACK},   {M_UNK, IMP, CAT_UNKNOWN},
+  {M_STZ, ABS, CAT_LOAD},   {M_STA, ABX, CAT_LOAD},   {M_STZ, ABX, CAT_LOAD},    {M_BBS1, ZPR, CAT_BRANCH},
+  // 0xA0-0xAF
+  {M_LDY, IMM, CAT_LOAD},   {M_LDA, IZX, CAT_LOAD},   {M_LDX, IMM, CAT_LOAD},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_LDY, ZP, CAT_LOAD},    {M_LDA, ZP, CAT_LOAD},    {M_LDX, ZP, CAT_LOAD},     {M_SMB2, ZP, CAT_MATH},
+  {M_TAY, IMP, CAT_STACK},  {M_LDA, IMM, CAT_LOAD},   {M_TAX, IMP, CAT_STACK},   {M_UNK, IMP, CAT_UNKNOWN},
+  {M_LDY, ABS, CAT_LOAD},   {M_LDA, ABS, CAT_LOAD},   {M_LDX, ABS, CAT_LOAD},    {M_BBS2, ZPR, CAT_BRANCH},
+  // 0xB0-0xBF
+  {M_BCS, REL, CAT_BRANCH}, {M_LDA, IZY, CAT_LOAD},   {M_LDA, ZPI, CAT_LOAD},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_LDY, ZPX, CAT_LOAD},   {M_LDA, ZPX, CAT_LOAD},   {M_LDX, ZPY, CAT_LOAD},    {M_SMB3, ZP, CAT_MATH},
+  {M_CLV, IMP, CAT_FLAG},   {M_LDA, ABY, CAT_LOAD},   {M_TSX, IMP, CAT_STACK},   {M_UNK, IMP, CAT_UNKNOWN},
+  {M_LDY, ABX, CAT_LOAD},   {M_LDA, ABX, CAT_LOAD},   {M_LDX, ABY, CAT_LOAD},    {M_BBS3, ZPR, CAT_BRANCH},
+  // 0xC0-0xCF
+  {M_CPY, IMM, CAT_MATH},   {M_CMP, IZX, CAT_MATH},   {M_UNK, IMP, CAT_UNKNOWN}, {M_UNK, IMP, CAT_UNKNOWN},
+  {M_CPY, ZP, CAT_MATH},    {M_CMP, ZP, CAT_MATH},    {M_DEC, ZP, CAT_MATH},     {M_SMB4, ZP, CAT_MATH},
+  {M_INY, IMP, CAT_STACK},  {M_CMP, IMM, CAT_MATH},   {M_DEX, IMP, CAT_STACK},   {M_WAI, IMP, CAT_STACK},
+  {M_CPY, ABS, CAT_MATH},   {M_CMP, ABS, CAT_MATH},   {M_DEC, ABS, CAT_MATH},    {M_BBS4, ZPR, CAT_BRANCH},
+  // 0xD0-0xDF
+  {M_BNE, REL, CAT_BRANCH}, {M_CMP, IZY, CAT_MATH},   {M_CMP, ZPI, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_UNK, IMP, CAT_UNKNOWN},{M_CMP, ZPX, CAT_MATH},   {M_DEC, ZPX, CAT_MATH},    {M_SMB5, ZP, CAT_MATH},
+  {M_CLD, IMP, CAT_FLAG},   {M_CMP, ABY, CAT_MATH},   {M_PHX, IMP, CAT_STACK},   {M_STP, IMP, CAT_STACK},
+  {M_UNK, IMP, CAT_UNKNOWN},{M_CMP, ABX, CAT_MATH},   {M_DEC, ABX, CAT_MATH},    {M_BBS5, ZPR, CAT_BRANCH},
+  // 0xE0-0xEF
+  {M_CPX, IMM, CAT_MATH},   {M_SBC, IZX, CAT_MATH},   {M_UNK, IMP, CAT_UNKNOWN}, {M_UNK, IMP, CAT_UNKNOWN},
+  {M_CPX, ZP, CAT_MATH},    {M_SBC, ZP, CAT_MATH},    {M_INC, ZP, CAT_MATH},     {M_SMB6, ZP, CAT_MATH},
+  {M_INX, IMP, CAT_STACK},  {M_SBC, IMM, CAT_MATH},   {M_NOP, IMP, CAT_FLAG},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_CPX, ABS, CAT_MATH},   {M_SBC, ABS, CAT_MATH},   {M_INC, ABS, CAT_MATH},    {M_BBS6, ZPR, CAT_BRANCH},
+  // 0xF0-0xFF
+  {M_BEQ, REL, CAT_BRANCH}, {M_SBC, IZY, CAT_MATH},   {M_SBC, ZPI, CAT_MATH},    {M_UNK, IMP, CAT_UNKNOWN},
+  {M_UNK, IMP, CAT_UNKNOWN},{M_SBC, ZPX, CAT_MATH},   {M_INC, ZPX, CAT_MATH},    {M_SMB7, ZP, CAT_MATH},
+  {M_SED, IMP, CAT_FLAG},   {M_SBC, ABY, CAT_MATH},   {M_PLX, IMP, CAT_STACK},   {M_UNK, IMP, CAT_UNKNOWN},
+  {M_UNK, IMP, CAT_UNKNOWN},{M_SBC, ABX, CAT_MATH},   {M_INC, ABX, CAT_MATH},    {M_BBS7, ZPR, CAT_BRANCH}
 };
-
-// Get CSS class for instruction category
-static const char *getCategoryClass(InstrCategory cat) {
-  switch (cat) {
-    case CAT_BRANCH:  return "dis-branch";
-    case CAT_LOAD:    return "dis-load";
-    case CAT_MATH:    return "dis-math";
-    case CAT_STACK:   return "dis-stack";
-    case CAT_FLAG:    return "dis-flag";
-    case CAT_UNKNOWN: return "dis-unknown";
-    default:          return "dis-mnemonic";
-  }
-}
 
 int getInstructionLength(uint8_t opcode) {
   switch (opcodes[opcode].mode) {
@@ -163,230 +256,118 @@ int getInstructionLength(uint8_t opcode) {
   return 1;
 }
 
-std::string disassembleInstruction(const uint8_t *data, size_t size,
-                                   uint16_t baseAddress, bool html) {
-  if (size == 0 || data == nullptr) {
-    return "";
-  }
+const char* getMnemonic(uint8_t opcode) {
+  return MNEMONICS[opcodes[opcode].mnemonicIndex];
+}
 
-  std::ostringstream ss;
-  ss << std::hex << std::uppercase << std::setfill('0');
+const char* getMnemonicByIndex(uint8_t index) {
+  if (index >= sizeof(MNEMONICS) / sizeof(MNEMONICS[0])) {
+    return "???";
+  }
+  return MNEMONICS[index];
+}
+
+AddrMode getAddressingMode(uint8_t opcode) {
+  return static_cast<AddrMode>(opcodes[opcode].mode);
+}
+
+InstrCategory getInstructionCategory(uint8_t opcode) {
+  return static_cast<InstrCategory>(opcodes[opcode].category);
+}
+
+DisasmInstruction disassembleInstruction(const uint8_t *data, size_t size,
+                                          uint16_t address) {
+  DisasmInstruction instr = {};
+  instr.address = address;
+
+  if (size == 0 || data == nullptr) {
+    instr.length = 0;
+    instr.mnemonic[0] = '?';
+    instr.mnemonic[1] = '?';
+    instr.mnemonic[2] = '?';
+    instr.mnemonic[3] = '\0';
+    return instr;
+  }
 
   uint8_t opcode = data[0];
   const OpcodeInfo &info = opcodes[opcode];
   int instrLen = getInstructionLength(opcode);
 
+  instr.opcode = opcode;
+  instr.length = static_cast<uint8_t>(instrLen);
+  instr.mode = info.mode;
+  instr.category = info.category;
+
   // Read operand bytes (if available)
-  uint8_t lo = (size > 1 && instrLen >= 2) ? data[1] : 0;
-  uint8_t hi = (size > 2 && instrLen >= 3) ? data[2] : 0;
+  instr.operand1 = (size > 1 && instrLen >= 2) ? data[1] : 0;
+  instr.operand2 = (size > 2 && instrLen >= 3) ? data[2] : 0;
 
-  // Format address
-  if (html) {
-    ss << "<span class=\"dis-addr\">" << std::setw(4) << baseAddress << ":</span> ";
-  } else {
-    ss << std::setw(4) << baseAddress << ": ";
-  }
-
-  // Format instruction bytes
-  if (html) {
-    ss << "<span class=\"dis-bytes\">";
-  }
-  ss << std::setw(2) << static_cast<int>(opcode);
-  if (instrLen >= 2 && size > 1) {
-    ss << " " << std::setw(2) << static_cast<int>(lo);
-  } else {
-    ss << "   ";
-  }
-  if (instrLen >= 3 && size > 2) {
-    ss << " " << std::setw(2) << static_cast<int>(hi);
-  } else {
-    ss << "   ";
-  }
-  if (html) {
-    ss << "</span>";
-  }
-
-  // Mnemonic with category coloring
-  if (html) {
-    ss << "  <span class=\"" << getCategoryClass(info.category) << "\">"
-       << info.mnemonic << "</span>";
-  } else {
-    ss << "  " << info.mnemonic;
-  }
-
-  // Format operand based on addressing mode
+  // Calculate target address for branches and jumps
+  instr.target = 0;
   switch (info.mode) {
-    case IMP:
-      break;
-    case ACC:
-      if (html) {
-        ss << " <span class=\"dis-register\">A</span>";
-      } else {
-        ss << " A";
-      }
-      break;
-    case IMM:
-      if (html) {
-        ss << " <span class=\"dis-punct\">#$</span><span class=\"dis-immediate\">"
-           << std::setw(2) << static_cast<int>(lo) << "</span>";
-      } else {
-        ss << " #$" << std::setw(2) << static_cast<int>(lo);
-      }
-      break;
-    case ZP:
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-address\">"
-           << std::setw(2) << static_cast<int>(lo) << "</span>";
-      } else {
-        ss << " $" << std::setw(2) << static_cast<int>(lo);
-      }
-      break;
-    case ZPX:
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-address\">"
-           << std::setw(2) << static_cast<int>(lo)
-           << "</span><span class=\"dis-punct\">,</span><span class=\"dis-register\">X</span>";
-      } else {
-        ss << " $" << std::setw(2) << static_cast<int>(lo) << ",X";
-      }
-      break;
-    case ZPY:
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-address\">"
-           << std::setw(2) << static_cast<int>(lo)
-           << "</span><span class=\"dis-punct\">,</span><span class=\"dis-register\">Y</span>";
-      } else {
-        ss << " $" << std::setw(2) << static_cast<int>(lo) << ",Y";
-      }
-      break;
-    case ABS:
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-address\">"
-           << std::setw(4) << static_cast<int>((hi << 8) | lo) << "</span>";
-      } else {
-        ss << " $" << std::setw(4) << static_cast<int>((hi << 8) | lo);
-      }
-      break;
-    case ABX:
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-address\">"
-           << std::setw(4) << static_cast<int>((hi << 8) | lo)
-           << "</span><span class=\"dis-punct\">,</span><span class=\"dis-register\">X</span>";
-      } else {
-        ss << " $" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ",X";
-      }
-      break;
-    case ABY:
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-address\">"
-           << std::setw(4) << static_cast<int>((hi << 8) | lo)
-           << "</span><span class=\"dis-punct\">,</span><span class=\"dis-register\">Y</span>";
-      } else {
-        ss << " $" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ",Y";
-      }
-      break;
-    case IND:
-      if (html) {
-        ss << " <span class=\"dis-punct\">($</span><span class=\"dis-address\">"
-           << std::setw(4) << static_cast<int>((hi << 8) | lo)
-           << "</span><span class=\"dis-punct\">)</span>";
-      } else {
-        ss << " ($" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ")";
-      }
-      break;
-    case IZX:
-      if (html) {
-        ss << " <span class=\"dis-punct\">($</span><span class=\"dis-address\">"
-           << std::setw(2) << static_cast<int>(lo)
-           << "</span><span class=\"dis-punct\">,</span><span class=\"dis-register\">X</span>"
-           << "<span class=\"dis-punct\">)</span>";
-      } else {
-        ss << " ($" << std::setw(2) << static_cast<int>(lo) << ",X)";
-      }
-      break;
-    case IZY:
-      if (html) {
-        ss << " <span class=\"dis-punct\">($</span><span class=\"dis-address\">"
-           << std::setw(2) << static_cast<int>(lo)
-           << "</span><span class=\"dis-punct\">),</span><span class=\"dis-register\">Y</span>";
-      } else {
-        ss << " ($" << std::setw(2) << static_cast<int>(lo) << "),Y";
-      }
-      break;
-    case ZPI:
-      if (html) {
-        ss << " <span class=\"dis-punct\">($</span><span class=\"dis-address\">"
-           << std::setw(2) << static_cast<int>(lo)
-           << "</span><span class=\"dis-punct\">)</span>";
-      } else {
-        ss << " ($" << std::setw(2) << static_cast<int>(lo) << ")";
-      }
-      break;
-    case AIX:
-      if (html) {
-        ss << " <span class=\"dis-punct\">($</span><span class=\"dis-address\">"
-           << std::setw(4) << static_cast<int>((hi << 8) | lo)
-           << "</span><span class=\"dis-punct\">,</span><span class=\"dis-register\">X</span>"
-           << "<span class=\"dis-punct\">)</span>";
-      } else {
-        ss << " ($" << std::setw(4) << static_cast<int>((hi << 8) | lo) << ",X)";
-      }
-      break;
     case REL: {
-      // Calculate branch target
-      int8_t offset = static_cast<int8_t>(lo);
-      uint16_t target = baseAddress + 2 + offset;
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-target\">"
-           << std::setw(4) << static_cast<int>(target) << "</span>";
-      } else {
-        ss << " $" << std::setw(4) << static_cast<int>(target);
-      }
+      int8_t offset = static_cast<int8_t>(instr.operand1);
+      instr.target = static_cast<uint16_t>(address + 2 + offset);
       break;
     }
     case ZPR: {
-      // BBR/BBS: zero page address and relative branch
-      int8_t offset = static_cast<int8_t>(hi);
-      uint16_t target = baseAddress + 3 + offset;
-      if (html) {
-        ss << " <span class=\"dis-punct\">$</span><span class=\"dis-address\">"
-           << std::setw(2) << static_cast<int>(lo)
-           << "</span><span class=\"dis-punct\">,$</span><span class=\"dis-target\">"
-           << std::setw(4) << static_cast<int>(target) << "</span>";
-      } else {
-        ss << " $" << std::setw(2) << static_cast<int>(lo)
-           << ",$" << std::setw(4) << static_cast<int>(target);
+      int8_t offset = static_cast<int8_t>(instr.operand2);
+      instr.target = static_cast<uint16_t>(address + 3 + offset);
+      break;
+    }
+    case ABS:
+    case ABX:
+    case ABY:
+    case IND:
+    case AIX:
+      instr.target = static_cast<uint16_t>(instr.operand1 | (instr.operand2 << 8));
+      break;
+    default:
+      break;
+  }
+
+  // Copy mnemonic string (max 4 chars, null-padded)
+  const char* mnem = MNEMONICS[info.mnemonicIndex];
+  for (int i = 0; i < 4; i++) {
+    instr.mnemonic[i] = mnem[i];
+    if (mnem[i] == '\0') {
+      // Null-pad remainder
+      for (int j = i + 1; j < 4; j++) {
+        instr.mnemonic[j] = '\0';
       }
       break;
     }
   }
 
-  return ss.str();
+  return instr;
 }
 
-std::string disassembleBlock(const uint8_t *data, size_t size,
-                             uint16_t baseAddress, bool html) {
+DisasmResult disassembleBlock(const uint8_t *data, size_t size,
+                              uint16_t baseAddress) {
+  DisasmResult result;
+
   if (size == 0 || data == nullptr) {
-    return "";
+    return result;
   }
 
-  std::ostringstream result;
+  // Reserve approximate space
+  result.instructions.reserve(size / 2);
+
   size_t offset = 0;
-
   while (offset < size) {
-    uint8_t opcode = data[offset];
-    int instrLen = getInstructionLength(opcode);
+    DisasmInstruction instr = disassembleInstruction(
+      data + offset, size - offset,
+      static_cast<uint16_t>(baseAddress + offset));
 
-    // Disassemble this instruction
-    result << disassembleInstruction(data + offset, size - offset,
-                                     static_cast<uint16_t>(baseAddress + offset),
-                                     html);
-    result << "\n";
+    if (instr.length == 0) {
+      break;
+    }
 
-    offset += instrLen;
+    result.instructions.push_back(instr);
+    offset += instr.length;
   }
 
-  return result.str();
+  return result;
 }
 
 } // namespace a2e

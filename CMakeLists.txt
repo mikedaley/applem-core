@@ -114,6 +114,7 @@ if(EMSCRIPTEN)
                 \"_setMonochrome\", \
                 \"_isMonochrome\", \
                 \"_disassembleRawData\", \
+                \"_getDisasmInstructions\", \
                 \"_getDisasmInstructionLength\", \
                 \"_malloc\", \
                 \"_free\" \
