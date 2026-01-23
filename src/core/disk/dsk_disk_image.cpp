@@ -87,14 +87,16 @@ DiskImage::Format DskDiskImage::detectFormat(const std::string &filename) const 
       int name_len = storage_type & 0x0F;
       if (name_len > 0 && name_len <= 15) {
         // Verify the name contains valid ProDOS characters (letters, digits,
-        // periods)
+        // periods). ProDOS stores characters with high bit set (0x80 OR'd),
+        // so we mask it off before checking.
         bool valid_name = true;
         for (int i = 0; i < name_len && valid_name; i++) {
           uint8_t c = sector_data_[PRODOS_BLOCK2_OFFSET + 5 + i];
-          // ProDOS names: A-Z (0x41-0x5A or 0xC1-0xDA), 0-9, period
-          bool is_letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-          bool is_digit = (c >= '0' && c <= '9');
-          bool is_period = (c == '.');
+          uint8_t ch = c & 0x7F;  // Strip high bit
+          // ProDOS names: A-Z, 0-9, period
+          bool is_letter = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+          bool is_digit = (ch >= '0' && ch <= '9');
+          bool is_period = (ch == '.');
           if (!is_letter && !is_digit && !is_period) {
             valid_name = false;
           }
@@ -288,9 +290,12 @@ bool DskDiskImage::decode6and2(const uint8_t *encoded, uint8_t *output) {
     uint8_t high = buffer[86 + i] << 2;
 
     // Low 2 bits from auxiliary buffer
+    // The encoder swaps bits 0 and 1, so we need to swap them back
     uint8_t aux_byte = buffer[i % 86];
     int shift = (i / 86) * 2;
     uint8_t low = (aux_byte >> shift) & 0x03;
+    // Reverse the bit swap: ((low & 0x01) << 1) | ((low & 0x02) >> 1)
+    low = ((low & 0x01) << 1) | ((low & 0x02) >> 1);
 
     output[i] = high | low;
   }
@@ -306,9 +311,19 @@ void DskDiskImage::denibblizeTrack(int track) {
   if (!nt.valid || !nt.dirty)
     return;
 
-  const auto &nibbles = nt.nibbles;
+  // Create an extended buffer that handles wrap-around at track boundary.
+  // When ProDOS writes near the end of a track, data can wrap to the beginning.
+  // We append a copy of the first ~500 nibbles to handle this case.
+  std::vector<uint8_t> nibbles = nt.nibbles;  // Make a copy
+  const size_t original_size = nibbles.size();
+  const size_t wrap_extension = 500;  // Enough for one full sector
+  if (original_size > wrap_extension) {
+    nibbles.insert(nibbles.end(), nt.nibbles.begin(),
+                   nt.nibbles.begin() + wrap_extension);
+  }
+
   size_t pos = 0;
-  size_t size = nibbles.size();
+  size_t size = original_size;  // Only search within one revolution
 
   // Find and decode each sector
   while (pos < size) {
@@ -328,7 +343,8 @@ void DskDiskImage::denibblizeTrack(int track) {
       break;
 
     // Read address field (4-and-4 encoded: volume, track, sector, checksum)
-    if (pos + 8 > size)
+    // Use extended buffer size in case address field wraps around
+    if (pos + 8 > nibbles.size())
       break;
 
     uint8_t volume = decode4and4(nibbles[pos], nibbles[pos + 1]);
@@ -340,10 +356,9 @@ void DskDiskImage::denibblizeTrack(int track) {
     uint8_t checksum = decode4and4(nibbles[pos], nibbles[pos + 1]);
     pos += 2;
 
-    (void)volume; // Unused
-
-    // Verify address checksum
-    if ((volume_number_ ^ addr_track ^ sector) != checksum) {
+    // Verify address checksum using the volume read from the disk,
+    // not volume_number_ which may be different
+    if ((volume ^ addr_track ^ sector) != checksum) {
       continue; // Invalid address field
     }
 
@@ -353,9 +368,11 @@ void DskDiskImage::denibblizeTrack(int track) {
     }
 
     // Skip address epilogue and look for data prologue: D5 AA AD
+    // Use nibbles.size() (extended buffer) to allow finding data prologue
+    // that wraps around the track boundary
     bool found_data = false;
     size_t search_limit = pos + 50; // Don't search too far
-    while (pos + 3 < size && pos < search_limit) {
+    while (pos + 3 <= nibbles.size() && pos < search_limit) {
       if (nibbles[pos] == 0xD5 && nibbles[pos + 1] == 0xAA &&
           nibbles[pos + 2] == 0xAD) {
         found_data = true;
@@ -369,12 +386,13 @@ void DskDiskImage::denibblizeTrack(int track) {
       continue;
 
     // Read 343 nibbles of data field
-    if (pos + 343 > size)
+    // Use nibbles.size() (extended buffer) instead of size (original) for bounds check
+    if (pos + 343 > nibbles.size())
       break;
 
     // Decode the sector data
     uint8_t decoded[256];
-    if (decode6and2(&nibbles[pos], decoded)) {
+    if (decode6and2(nibbles.data() + pos, decoded)) {
       // Write to sector data array
       int log_sector = getLogicalSector(sector);
       int offset = (track * SECTORS_PER_TRACK + log_sector) * BYTES_PER_SECTOR;
