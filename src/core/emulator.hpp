@@ -4,6 +4,7 @@
 #include "cpu/cpu6502.hpp"
 #include "disk/disk2.hpp"
 #include "input/keyboard.hpp"
+#include "mockingboard/mockingboard.hpp"
 #include "mmu/mmu.hpp"
 #include "types.hpp"
 #include "video/video.hpp"
@@ -107,6 +108,7 @@ public:
   Video &getVideo() { return *video_; }
   Audio &getAudio() { return *audio_; }
   Disk2Controller &getDisk() { return *disk_; }
+  Mockingboard &getMockingboard() { return *mockingboard_; }
 
 private:
   // Memory callbacks for CPU
@@ -127,6 +129,7 @@ private:
   std::unique_ptr<Audio> audio_;
   std::unique_ptr<Disk2Controller> disk_;
   std::unique_ptr<Keyboard> keyboard_;
+  std::unique_ptr<Mockingboard> mockingboard_;
 
   // Keyboard state
   uint8_t keyboardLatch_ = 0;

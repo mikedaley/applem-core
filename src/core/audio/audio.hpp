@@ -7,6 +7,9 @@
 
 namespace a2e {
 
+// Forward declaration
+class Mockingboard;
+
 class Audio {
 public:
   static constexpr int BUFFER_SIZE = 4096;
@@ -35,6 +38,9 @@ public:
   // Speaker state (for state serialization)
   bool getSpeakerState() const { return speakerState_; }
 
+  // Mockingboard connection
+  void setMockingboard(Mockingboard* mb) { mockingboard_ = mb; }
+
 private:
   // Speaker state
   bool speakerState_ = false;
@@ -57,6 +63,9 @@ private:
   // DC offset removal
   float dcOffset_ = 0.0f;
   static constexpr float DC_ALPHA = 0.995f;
+
+  // Mockingboard
+  Mockingboard* mockingboard_ = nullptr;
 };
 
 } // namespace a2e

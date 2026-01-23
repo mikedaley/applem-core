@@ -21,6 +21,9 @@ set(CORE_SOURCES
     src/core/disk/gcr_encoding.cpp
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
+    src/core/mockingboard/ay8910.cpp
+    src/core/mockingboard/via6522.cpp
+    src/core/mockingboard/mockingboard.cpp
     src/bindings/wasm_interface.cpp
 )
 

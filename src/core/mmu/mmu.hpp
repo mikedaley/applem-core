@@ -9,6 +9,7 @@ namespace a2e {
 
 // Forward declarations
 class Disk2Controller;
+class Mockingboard;
 
 class MMU {
 public:
@@ -97,6 +98,7 @@ public:
 
   // Peripheral connections
   void setDiskController(Disk2Controller *disk) { diskController_ = disk; }
+  void setMockingboard(Mockingboard *mb) { mockingboard_ = mb; }
 
   // Reset
   void reset();
@@ -169,6 +171,7 @@ private:
 
   // Peripherals
   Disk2Controller *diskController_ = nullptr;
+  Mockingboard *mockingboard_ = nullptr;
 
   // Memory access tracking for debugger heat map
   bool trackingEnabled_ = false;

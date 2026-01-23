@@ -1,4 +1,5 @@
 #include "audio.hpp"
+#include "../mockingboard/mockingboard.hpp"
 #include <cmath>
 
 namespace a2e {
@@ -126,6 +127,22 @@ int Audio::generateSamples(float *buffer, int sampleCount,
   }
 
   lastSampleCycle_ = currentCycle;
+
+  // Mix in Mockingboard audio if present
+  if (mockingboard_) {
+    std::vector<float> mbBuffer(sampleCount);
+    mockingboard_->generateSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE);
+    for (int i = 0; i < sampleCount; i++) {
+      // Mix speaker and Mockingboard
+      // Mockingboard output is normalized per-PSG (~0.33 max per channel after /3)
+      // Boost Mockingboard by 3x to match speaker levels, then mix
+      float mbSample = mbBuffer[i] * 3.0f * volume_;
+      // Additive mix - speaker clicks are transient, MB is sustained
+      buffer[i] = buffer[i] + mbSample;
+      // Clamp to valid range
+      buffer[i] = std::max(-1.0f, std::min(1.0f, buffer[i]));
+    }
+  }
 
   return sampleCount;
 }

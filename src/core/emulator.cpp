@@ -12,6 +12,7 @@ Emulator::Emulator() {
   video_ = std::make_unique<Video>(*mmu_);
   audio_ = std::make_unique<Audio>();
   keyboard_ = std::make_unique<Keyboard>();
+  mockingboard_ = std::make_unique<Mockingboard>();
 
   // Create CPU with memory callbacks
   cpu_ = std::make_unique<CPU6502>(
@@ -32,6 +33,14 @@ Emulator::Emulator() {
 
   // Connect disk controller to MMU
   mmu_->setDiskController(disk_.get());
+
+  // Connect Mockingboard to MMU and audio
+  mmu_->setMockingboard(mockingboard_.get());
+  audio_->setMockingboard(mockingboard_.get());
+
+  // Set up Mockingboard callbacks
+  mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
+  mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
 
   // Set up disk timing callback - allows disk reads to get accurate cycle count
   // during instruction execution (before disk_->update() is called)
@@ -55,6 +64,7 @@ void Emulator::reset() {
   audio_->reset();
   disk_->reset();
   keyboard_->reset();
+  mockingboard_->reset();
 
   // Clear Apple button states
   setButton(0, false);
@@ -115,6 +125,9 @@ void Emulator::runCycles(int cycles) {
     // Update disk controller with actual instruction cycles
     uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
     disk_->update(static_cast<int>(cyclesUsed));
+
+    // Update Mockingboard timers
+    mockingboard_->update(static_cast<int>(cyclesUsed));
 
     // Check for frame boundary
     uint64_t currentCycle = cpu_->getTotalCycles();
@@ -260,6 +273,9 @@ void Emulator::stepInstruction() {
   // Update disk controller with actual instruction cycles
   uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
   disk_->update(static_cast<int>(cyclesUsed));
+
+  // Update Mockingboard timers
+  mockingboard_->update(static_cast<int>(cyclesUsed));
 
   // Check for frame boundary
   uint64_t currentCycle = cpu_->getTotalCycles();

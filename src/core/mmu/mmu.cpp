@@ -1,5 +1,6 @@
 #include "mmu.hpp"
 #include "../disk/disk2.hpp"
+#include "../mockingboard/mockingboard.hpp"
 #include <cstring>
 
 namespace a2e {
@@ -398,6 +399,14 @@ uint8_t MMU::read(uint16_t address) {
       return diskROM_[address - 0xC600];
     }
 
+    // Slot 4 (Mockingboard): $C400-$C4FF
+    if (address >= 0xC400 && address < 0xC500) {
+      if (mockingboard_ && mockingboard_->isEnabled()) {
+        return mockingboard_->read(address);
+      }
+      return getFloatingBusValue();
+    }
+
     // $C800-$CFFF: Expansion ROM space
     if (address >= 0xC800) {
       // Access to $CFFF clears the $C800 ROM select
@@ -412,7 +421,7 @@ uint8_t MMU::read(uint16_t address) {
       return getFloatingBusValue();
     }
 
-    // Other slot ROM space ($C100-$C2FF, $C400-$C5FF, $C700-$C7FF)
+    // Other slot ROM space ($C100-$C2FF, $C500-$C5FF, $C700-$C7FF)
     // No cards installed, return floating bus
     return getFloatingBusValue();
   }
@@ -514,11 +523,18 @@ void MMU::write(uint16_t address, uint8_t value) {
     return;
   }
 
-  // Slot ROM space: $C100-$CFFF - writes are ignored
+  // Slot ROM space: $C100-$CFFF - writes are generally ignored
   // BUT access to $CFFF (read or write) clears the $C800 ROM select
+  // Slot 4 (Mockingboard) handles writes
   if (address < 0xD000) {
     if (address == 0xCFFF) {
       switches_.intc8rom = false;
+    }
+    // Slot 4 (Mockingboard): $C400-$C4FF
+    if (address >= 0xC400 && address < 0xC500) {
+      if (mockingboard_ && mockingboard_->isEnabled()) {
+        mockingboard_->write(address, value);
+      }
     }
     return;
   }
