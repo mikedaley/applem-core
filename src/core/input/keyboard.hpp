@@ -58,6 +58,14 @@ public:
    */
   bool isClosedApplePressed() const { return closedApplePressed_; }
 
+  /**
+   * Reset keyboard state (clears modifier key states)
+   */
+  void reset() {
+    openApplePressed_ = false;
+    closedApplePressed_ = false;
+  }
+
 private:
   /**
    * Translate a browser keycode to base Apple II ASCII

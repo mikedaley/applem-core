@@ -27,7 +27,12 @@ void Disk2Controller::reset() {
   // Reset write state
   write_latch_ = 0;
 
-  // Don't reset disk images - preserve loaded disks across reset
+  // Reset disk image track positions (but preserve loaded disks)
+  for (int i = 0; i < 2; i++) {
+    if (disk_images_[i]) {
+      disk_images_[i]->setQuarterTrack(0);
+    }
+  }
 }
 
 void Disk2Controller::stopMotor() {

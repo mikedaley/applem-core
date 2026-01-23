@@ -54,6 +54,11 @@ void Emulator::reset() {
   cpu_->reset();
   audio_->reset();
   disk_->reset();
+  keyboard_->reset();
+
+  // Clear Apple button states
+  setButton(0, false);
+  setButton(1, false);
 
   keyboardLatch_ = 0;
   keyDown_ = false;
@@ -69,6 +74,11 @@ void Emulator::warmReset() {
 
   // Clear keyboard strobe
   keyboardLatch_ &= 0x7F;
+
+  // Reset keyboard modifier states
+  keyboard_->reset();
+  setButton(0, false);
+  setButton(1, false);
 
   // Stop disk motor (real Apple II behavior on Ctrl+Reset)
   disk_->stopMotor();
