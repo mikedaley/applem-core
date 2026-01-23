@@ -470,11 +470,14 @@ void Video::renderDoubleHiRes() {
     0xFFF1F1F1  // 15 = 1111 = White
   };
 
+  // Page 2 offset: when 80STORE is off and PAGE2 is on, display from $4000
+  uint16_t pageOffset = (sw.page2 && !sw.store80) ? 0x2000 : 0;
+
   for (int row = 0; row < maxRow; row++) {
     // Build interleaved byte array: aux0, main0, aux1, main1, ...
     uint8_t line[80];
     for (int col = 0; col < 40; col++) {
-      uint16_t addr = getHiResAddress(row, col);
+      uint16_t addr = getHiResAddress(row, col) + pageOffset;
       line[col * 2] = mmu_.readRAM(addr, true);      // aux byte
       line[col * 2 + 1] = mmu_.readRAM(addr, false); // main byte
     }

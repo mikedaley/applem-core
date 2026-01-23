@@ -25,6 +25,7 @@ Emulator::Emulator() {
   // Set up MMU callbacks
   mmu_->setKeyboardCallback([this]() { return getKeyboardData(); });
   mmu_->setKeyStrobeCallback([this]() { clearKeyboardStrobe(); });
+  mmu_->setAnyKeyDownCallback([this]() { return keyDown_; });
   mmu_->setSpeakerCallback([this]() { toggleSpeaker(); });
   mmu_->setButtonCallback([this](int btn) { return getButtonState(btn); });
   mmu_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
