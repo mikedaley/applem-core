@@ -49,6 +49,8 @@ public:
   void keyDown(int keycode);
   void keyUp(int keycode);
   void setButton(int button, bool pressed);  // Set button state (0=Open Apple, 1=Closed Apple, 2=Button2)
+  void setPaddleValue(int paddle, int value);  // Set paddle value (0-3, value 0-255)
+  int getPaddleValue(int paddle) const;  // Get paddle value (0-3)
   bool isKeyboardReady() const { return (keyboardLatch_ & 0x80) == 0; }  // True if strobe cleared
 
   // Disk management

@@ -85,6 +85,16 @@ public:
   void setButtonCallback(ButtonCallback cb) { buttonCallback_ = std::move(cb); }
   void setCycleCallback(CycleCallback cb) { cycleCallback_ = std::move(cb); }
 
+  // Paddle/joystick input
+  void setPaddleValue(int paddle, uint8_t value) {
+    if (paddle >= 0 && paddle < 4) {
+      paddleValues_[paddle] = value;
+    }
+  }
+  uint8_t getPaddleValue(int paddle) const {
+    return (paddle >= 0 && paddle < 4) ? paddleValues_[paddle] : 128;
+  }
+
   // Peripheral connections
   void setDiskController(Disk2Controller *disk) { diskController_ = disk; }
 

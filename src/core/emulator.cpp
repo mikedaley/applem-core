@@ -190,6 +190,14 @@ void Emulator::setButton(int button, bool pressed) {
   }
 }
 
+void Emulator::setPaddleValue(int paddle, int value) {
+  mmu_->setPaddleValue(paddle, static_cast<uint8_t>(value & 0xFF));
+}
+
+int Emulator::getPaddleValue(int paddle) const {
+  return mmu_->getPaddleValue(paddle);
+}
+
 uint8_t Emulator::getButtonState(int button) {
   if (button >= 0 && button < 3 && buttonState_[button]) {
     return 0x80; // Bit 7 set = button pressed
