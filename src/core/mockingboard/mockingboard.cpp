@@ -3,11 +3,22 @@
 namespace a2e {
 
 Mockingboard::Mockingboard() {
+    // Set IDs for debug logging
+    psg1_.setPsgId(1);
+    psg2_.setPsgId(2);
+    via1_.setViaId(1);
+    via2_.setViaId(2);
+
     // Connect PSGs to VIAs
     via1_.connectPSG(&psg1_);
     via2_.connectPSG(&psg2_);
 
     reset();
+}
+
+void Mockingboard::setDebugLogging(bool enabled) {
+    AY8910::setDebugLogging(enabled);
+    VIA6522::setDebugLogging(enabled);
 }
 
 void Mockingboard::reset() {
@@ -21,22 +32,19 @@ uint8_t Mockingboard::read(uint16_t address) {
     if (!enabled_) return 0xFF;
 
     // Address decoding for slot 4
-    // $C400-$C40F: VIA 1
-    // $C480-$C48F: VIA 2
-    // $C4xx where bit 7 determines which VIA
+    // VIA 1 is mirrored at $C400-$C47F (active when bit 7 = 0)
+    // VIA 2 is mirrored at $C480-$C4FF (active when bit 7 = 1)
+    // Register is determined by bits 0-3
 
     uint8_t reg = address & 0x0F;
 
-    if (address >= 0xC400 && address < 0xC410) {
-        // VIA 1
+    if ((address & 0x80) == 0) {
+        // VIA 1 ($C400-$C47F)
         return via1_.read(reg);
-    } else if (address >= 0xC480 && address < 0xC490) {
-        // VIA 2
+    } else {
+        // VIA 2 ($C480-$C4FF)
         return via2_.read(reg);
     }
-
-    // Unmapped addresses return floating bus value
-    return 0xFF;
 }
 
 void Mockingboard::write(uint16_t address, uint8_t value) {
@@ -44,11 +52,11 @@ void Mockingboard::write(uint16_t address, uint8_t value) {
 
     uint8_t reg = address & 0x0F;
 
-    if (address >= 0xC400 && address < 0xC410) {
-        // VIA 1
+    if ((address & 0x80) == 0) {
+        // VIA 1 ($C400-$C47F)
         via1_.write(reg, value);
-    } else if (address >= 0xC480 && address < 0xC490) {
-        // VIA 2
+    } else {
+        // VIA 2 ($C480-$C4FF)
         via2_.write(reg, value);
     }
 }
@@ -88,6 +96,48 @@ void Mockingboard::setIRQCallback(IRQCallback cb) {
     // Both VIAs can trigger IRQ
     via1_.setIRQCallback(cb);
     via2_.setIRQCallback(cb);
+}
+
+size_t Mockingboard::exportState(uint8_t* buffer, size_t maxSize) const {
+    if (maxSize < STATE_SIZE) return 0;
+
+    size_t offset = 0;
+
+    // Enabled flag
+    buffer[offset++] = enabled_ ? 1 : 0;
+
+    // VIA1 and PSG1
+    offset += via1_.exportState(buffer + offset);
+    offset += psg1_.exportState(buffer + offset);
+
+    // VIA2 and PSG2
+    offset += via2_.exportState(buffer + offset);
+    offset += psg2_.exportState(buffer + offset);
+
+    return offset;
+}
+
+size_t Mockingboard::importState(const uint8_t* buffer, size_t size) {
+    if (size < STATE_SIZE) return 0;
+
+    size_t offset = 0;
+
+    // Enabled flag
+    enabled_ = buffer[offset++] != 0;
+
+    // VIA1 and PSG1
+    via1_.importState(buffer + offset);
+    offset += VIA6522::STATE_SIZE;
+    psg1_.importState(buffer + offset);
+    offset += AY8910::STATE_SIZE;
+
+    // VIA2 and PSG2
+    via2_.importState(buffer + offset);
+    offset += VIA6522::STATE_SIZE;
+    psg2_.importState(buffer + offset);
+    offset += AY8910::STATE_SIZE;
+
+    return offset;
 }
 
 } // namespace a2e

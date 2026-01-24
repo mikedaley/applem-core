@@ -1,7 +1,21 @@
 #include "via6522.hpp"
 #include "ay8910.hpp"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 namespace a2e {
+
+// Debug logging flag
+static bool viaDebugLogging_ = false;
+
+void VIA6522::setDebugLogging(bool enabled) {
+    viaDebugLogging_ = enabled;
+}
+
+void VIA6522::setViaId(int id) {
+    viaId_ = id;
+}
 
 VIA6522::VIA6522() {
     reset();
@@ -32,6 +46,8 @@ void VIA6522::reset() {
     ier_ = 0;
 
     prevPsgControl_ = 0;
+    psgAddressLatched_ = false;
+    prevIrqActive_ = false;
 }
 
 uint8_t VIA6522::read(uint8_t reg) {
@@ -207,10 +223,16 @@ void VIA6522::write(uint8_t reg, uint8_t value) {
 }
 
 void VIA6522::update(int cycles) {
+    if (cycles <= 0) return;
+
+    uint32_t cyclesToProcess = static_cast<uint32_t>(cycles);
+
     // Update Timer 1
     if (t1Running_) {
-        if (cycles >= t1Counter_) {
+        if (cyclesToProcess > t1Counter_) {
             // Timer 1 underflowed
+            uint32_t overflow = cyclesToProcess - t1Counter_ - 1;
+
             if (!t1Fired_) {
                 ifr_ |= IRQ_T1;
                 checkIRQ();
@@ -219,23 +241,22 @@ void VIA6522::update(int cycles) {
 
             // Check ACR for timer mode
             if (acr_ & 0x40) {
-                // Free-running mode - reload from latch
-                int remaining = cycles - t1Counter_ - 1;
-                t1Counter_ = t1Latch_;
-                // Handle multiple wraparounds
-                while (remaining > t1Latch_ && t1Latch_ > 0) {
-                    remaining -= (t1Latch_ + 1);
+                // Free-running mode - reload from latch and continue
+                if (t1Latch_ > 0) {
+                    // Handle potential multiple wraparounds
+                    overflow = overflow % (static_cast<uint32_t>(t1Latch_) + 1);
+                    t1Counter_ = t1Latch_ - static_cast<uint16_t>(overflow);
+                } else {
+                    t1Counter_ = 0;
                 }
-                t1Counter_ = t1Latch_ - remaining;
-                t1Fired_ = false;  // Can fire again
+                t1Fired_ = false;  // Can fire again next time
             } else {
-                // One-shot mode - counter keeps running but no more interrupts
-                t1Counter_ = 0xFFFF - (cycles - t1Counter_ - 1);
-                // In one-shot mode, timer continues to count down but doesn't
-                // generate more interrupts until T1CH is written again
+                // One-shot mode - counter wraps but doesn't reload or re-fire
+                // Timer continues running (wraps around) but no more interrupts
+                t1Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
             }
         } else {
-            t1Counter_ -= cycles;
+            t1Counter_ -= static_cast<uint16_t>(cyclesToProcess);
         }
     }
 
@@ -243,17 +264,19 @@ void VIA6522::update(int cycles) {
     if (t2Running_) {
         // Timer 2 only operates in timed mode (pulse counting not implemented)
         if (!(acr_ & 0x20)) {  // Timed mode
-            if (cycles >= t2Counter_) {
+            if (cyclesToProcess > t2Counter_) {
                 // Timer 2 underflowed
+                uint32_t overflow = cyclesToProcess - t2Counter_ - 1;
+
                 if (!t2Fired_) {
                     ifr_ |= IRQ_T2;
                     checkIRQ();
                     t2Fired_ = true;
                 }
-                // Timer 2 is one-shot only, continues counting but no reload
-                t2Counter_ = 0xFFFF - (cycles - t2Counter_ - 1);
+                // Timer 2 is one-shot only - wraps but doesn't reload or re-fire
+                t2Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
             } else {
-                t2Counter_ -= cycles;
+                t2Counter_ -= static_cast<uint16_t>(cyclesToProcess);
             }
         }
     }
@@ -262,13 +285,29 @@ void VIA6522::update(int cycles) {
 void VIA6522::updatePSG() {
     if (!psg_) return;
 
-    // Port B controls the PSG via BC1 and BDIR lines
-    // BC1 = bit 0, BDIR = bit 1 of ORB
+    // Port B controls the PSG via BC1, BDIR, and RESET lines
+    // BC1 = bit 0, BDIR = bit 1, ~RESET = bit 2 (active low)
     // Note: Only look at bits that are configured as outputs
     uint8_t control = orb_ & ddrb_ & 0x07;
 
-    // Only perform PSG operations on TRANSITIONS to active states
-    // This prevents spurious writes when ORA is changed while control is held
+    // Check for PSG reset - bit 2 going low resets the PSG
+    // This is used by software to silence the PSG when done playing
+    bool resetActive = (control & 0x04) == 0;  // Bit 2 = 0 means reset active
+    bool wasResetActive = (prevPsgControl_ & 0x04) == 0;
+
+    if (resetActive && !wasResetActive) {
+        // Reset just became active - reset the PSG
+        psg_->reset();
+#ifdef __EMSCRIPTEN__
+        if (viaDebugLogging_) {
+            EM_ASM({
+                console.log("VIA" + $0 + ": PSG RESET asserted");
+            }, viaId_);
+        }
+#endif
+    }
+
+    // Only perform PSG operations on state TRANSITIONS
     if (control == prevPsgControl_) {
         return;  // No change in control state
     }
@@ -276,36 +315,166 @@ void VIA6522::updatePSG() {
     uint8_t prevControl = prevPsgControl_;
     prevPsgControl_ = control;
 
-    // PSG control modes (accent on transitions):
-    // BC1=0, BDIR=0 (0x00/0x04): Inactive
-    // BC1=1, BDIR=0 (0x01/0x05): Read from PSG
-    // BC1=0, BDIR=1 (0x02/0x06): Write to PSG register
-    // BC1=1, BDIR=1 (0x03/0x07): Latch address
+#ifdef __EMSCRIPTEN__
+    if (viaDebugLogging_) {
+        EM_ASM({
+            console.log("VIA" + $4 + ": ctrl " + $0 + "->" + $1 + " ORA=0x" + $2.toString(16) + " DDRA=0x" + $3.toString(16));
+        }, prevControl, control, ora_, ddra_, viaId_);
+    }
+#endif
 
-    // Latch address: transition TO 0x03 or 0x07
-    if ((control == 0x03 || control == 0x07) &&
-        (prevControl != 0x03 && prevControl != 0x07)) {
-        psg_->setRegisterAddress(ora_ & ddra_);
+    // PSG control modes:
+    // 0x00/0x04: Inactive (BDIR=0, BC1=0)
+    // 0x01/0x05: Read from PSG (BDIR=0, BC1=1)
+    // 0x02/0x06: Write to PSG register (BDIR=1, BC1=0)
+    // 0x03/0x07: Latch address (BDIR=1, BC1=1)
+
+    bool isInactive = (control == 0x00 || control == 0x04);
+
+    // Transitioning to inactive - no operation needed
+    if (isInactive) {
+        return;
     }
-    // Write data: transition TO 0x02 or 0x06
-    else if ((control == 0x02 || control == 0x06) &&
-             (prevControl != 0x02 && prevControl != 0x06)) {
-        psg_->writeRegister(ora_ & ddra_);
+
+    // Latch address - trigger on ANY transition to latch state
+    // Software may do rapid latch→write→latch→write sequences without
+    // going to inactive between operations
+    if (control == 0x03 || control == 0x07) {
+        uint8_t addr = ora_ & ddra_;
+        if (addr <= 0x0F) {
+            psg_->setRegisterAddress(addr);
+            psgAddressLatched_ = true;  // Mark that a valid address was latched
+        } else {
+            psgAddressLatched_ = false;  // Invalid address - reject subsequent writes
+#ifdef __EMSCRIPTEN__
+            if (viaDebugLogging_) {
+                EM_ASM({
+                    console.log("VIA: Rejected invalid address 0x" + $0.toString(16).toUpperCase());
+                }, addr);
+            }
+#endif
+        }
+        return;
     }
-    // Read: transition TO 0x01 or 0x05
-    else if ((control == 0x01 || control == 0x05) &&
-             (prevControl != 0x01 && prevControl != 0x05)) {
-        ira_ = psg_->readRegister();
+
+    // Write data - trigger on ANY transition to write state
+    // Only write if a valid address was previously latched (AppleWin behavior)
+    if (control == 0x02 || control == 0x06) {
+        if (psgAddressLatched_) {
+            psg_->writeRegister(ora_ & ddra_);
+        } else {
+#ifdef __EMSCRIPTEN__
+            if (viaDebugLogging_) {
+                EM_ASM({
+                    console.log("VIA: Write rejected - no address latched, data=0x" + $0.toString(16).toUpperCase());
+                }, ora_ & ddra_);
+            }
+#endif
+        }
+        return;
+    }
+
+    // Read data - trigger on ANY transition to read state
+    if (control == 0x01 || control == 0x05) {
+        if (psgAddressLatched_) {
+            ira_ = psg_->readRegister();
+        }
     }
 }
 
 void VIA6522::checkIRQ() {
-    if ((ifr_ & ier_ & 0x7F) != 0) {
-        // IRQ is active
+    bool irqActive = (ifr_ & ier_ & 0x7F) != 0;
+
+    // Only trigger callback on transition from inactive to active
+    // This prevents multiple IRQ assertions during a single interrupt handler
+    if (irqActive && !prevIrqActive_) {
         if (irqCallback_) {
             irqCallback_();
         }
     }
+
+    prevIrqActive_ = irqActive;
+}
+
+size_t VIA6522::exportState(uint8_t* buffer) const {
+    size_t offset = 0;
+
+    // Port registers
+    buffer[offset++] = ora_;
+    buffer[offset++] = orb_;
+    buffer[offset++] = ddra_;
+    buffer[offset++] = ddrb_;
+    buffer[offset++] = ira_;
+    buffer[offset++] = irb_;
+
+    // Timer 1
+    buffer[offset++] = t1Counter_ & 0xFF;
+    buffer[offset++] = (t1Counter_ >> 8) & 0xFF;
+    buffer[offset++] = t1Latch_ & 0xFF;
+    buffer[offset++] = (t1Latch_ >> 8) & 0xFF;
+    buffer[offset++] = (t1Running_ ? 1 : 0) | (t1Fired_ ? 2 : 0);
+
+    // Timer 2
+    buffer[offset++] = t2Counter_ & 0xFF;
+    buffer[offset++] = (t2Counter_ >> 8) & 0xFF;
+    buffer[offset++] = t2LatchLow_;
+    buffer[offset++] = (t2Running_ ? 1 : 0) | (t2Fired_ ? 2 : 0);
+
+    // Control registers
+    buffer[offset++] = sr_;
+    buffer[offset++] = acr_;
+    buffer[offset++] = pcr_;
+    buffer[offset++] = ifr_;
+    buffer[offset++] = ier_;
+
+    // PSG control state
+    buffer[offset++] = prevPsgControl_;
+    buffer[offset++] = psgAddressLatched_ ? 1 : 0;
+
+    return offset;  // Should be ~23 bytes
+}
+
+void VIA6522::importState(const uint8_t* buffer) {
+    size_t offset = 0;
+
+    // Port registers
+    ora_ = buffer[offset++];
+    orb_ = buffer[offset++];
+    ddra_ = buffer[offset++];
+    ddrb_ = buffer[offset++];
+    ira_ = buffer[offset++];
+    irb_ = buffer[offset++];
+
+    // Timer 1
+    t1Counter_ = buffer[offset] | (buffer[offset + 1] << 8);
+    offset += 2;
+    t1Latch_ = buffer[offset] | (buffer[offset + 1] << 8);
+    offset += 2;
+    uint8_t t1Flags = buffer[offset++];
+    t1Running_ = (t1Flags & 1) != 0;
+    t1Fired_ = (t1Flags & 2) != 0;
+
+    // Timer 2
+    t2Counter_ = buffer[offset] | (buffer[offset + 1] << 8);
+    offset += 2;
+    t2LatchLow_ = buffer[offset++];
+    uint8_t t2Flags = buffer[offset++];
+    t2Running_ = (t2Flags & 1) != 0;
+    t2Fired_ = (t2Flags & 2) != 0;
+
+    // Control registers
+    sr_ = buffer[offset++];
+    acr_ = buffer[offset++];
+    pcr_ = buffer[offset++];
+    ifr_ = buffer[offset++];
+    ier_ = buffer[offset++];
+
+    // PSG control state
+    prevPsgControl_ = buffer[offset++];
+    psgAddressLatched_ = buffer[offset++] != 0;
+
+    // Restore IRQ state
+    prevIrqActive_ = (ifr_ & ier_ & 0x7F) != 0;
 }
 
 } // namespace a2e

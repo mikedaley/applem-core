@@ -38,8 +38,16 @@ public:
     bool isEnabled() const { return enabled_; }
     void setEnabled(bool enabled) { enabled_ = enabled; }
 
+    // Debug logging
+    void setDebugLogging(bool enabled);
+
     // Reset
     void reset();
+
+    // State serialization (returns size written/read)
+    size_t exportState(uint8_t* buffer, size_t maxSize) const;
+    size_t importState(const uint8_t* buffer, size_t size);
+    static constexpr size_t STATE_SIZE = 128;  // VIA1+PSG1+VIA2+PSG2
 
     // State access for debugging
     const VIA6522& getVIA1() const { return via1_; }

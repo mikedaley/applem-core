@@ -10,9 +10,17 @@ namespace a2e {
 class AY8910 {
 public:
     static constexpr int NUM_CHANNELS = 3;
-    static constexpr int PSG_CLOCK = 1000000;  // 1 MHz clock for Mockingboard
+    // Mockingboard uses the Apple II CPU clock divided down
+    // Apple IIe runs at 1.023 MHz (actually 1.0227272... MHz from 14.31818 MHz / 14)
+    static constexpr int PSG_CLOCK = 1023000;  // ~1.023 MHz for accuracy
 
     AY8910();
+
+    // Set PSG ID for debug logging (1 or 2)
+    void setPsgId(int id);
+
+    // Enable/disable console debug logging
+    static void setDebugLogging(bool enabled);
 
     // Register access via 6522 VIA
     void setRegisterAddress(uint8_t address);
@@ -29,6 +37,17 @@ public:
     uint8_t getRegister(int reg) const {
         return (reg >= 0 && reg < 16) ? registers_[reg] : 0;
     }
+
+    // Debug: track writes
+    uint32_t getWriteCount() const { return writeCount_; }
+    uint8_t getLastWriteReg() const { return lastWriteReg_; }
+    uint8_t getLastWriteVal() const { return lastWriteVal_; }
+    uint8_t getCurrentRegister() const { return currentRegister_; }
+
+    // State serialization
+    size_t exportState(uint8_t* buffer) const;
+    void importState(const uint8_t* buffer);
+    static constexpr size_t STATE_SIZE = 32;
 
 private:
     // Registers
@@ -66,15 +85,22 @@ private:
     uint32_t envCounter_ = 0;
     uint8_t envVolume_ = 0;
     bool envHolding_ = false;
-    bool envAttack_ = false;
-    bool envAlternate_ = false;
-    bool envHold_ = false;
+    bool envContinue_ = false;   // Bit 3: Continue after first cycle
+    bool envAttack_ = false;     // Bit 2: Attack direction (1=up, 0=down)
+    bool envAlternate_ = false;  // Bit 1: Alternate direction each cycle
+    bool envHold_ = false;       // Bit 0: Hold final value
 
     // Fractional accumulator for sample rate conversion
     double phaseAccumulator_ = 0.0;
 
     // Volume table (4-bit to amplitude)
     static const float volumeTable_[16];
+
+    // Debug counters
+    uint32_t writeCount_ = 0;
+    uint8_t lastWriteReg_ = 0;
+    uint8_t lastWriteVal_ = 0;
+    int psgId_ = 1;  // PSG identifier for logging
 
     // Helper methods
     uint16_t getTonePeriod(int channel) const;
@@ -83,6 +109,7 @@ private:
     void updateToneGenerator(int channel);
     void updateNoiseGenerator();
     void updateEnvelopeGenerator();
+    void handleEnvelopeCycleEnd();
     float getChannelOutput(int channel) const;
 };
 

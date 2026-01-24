@@ -16,6 +16,12 @@ public:
 
     VIA6522();
 
+    // Set VIA ID for debug logging (1 or 2)
+    void setViaId(int id);
+
+    // Enable/disable console debug logging
+    static void setDebugLogging(bool enabled);
+
     // Register access
     uint8_t read(uint8_t reg);
     void write(uint8_t reg, uint8_t value);
@@ -34,6 +40,26 @@ public:
 
     // Check if IRQ is active
     bool isIRQActive() const { return (ifr_ & ier_ & 0x7F) != 0; }
+
+    // Debug accessors
+    uint8_t getORA() const { return ora_; }
+    uint8_t getORB() const { return orb_; }
+    uint8_t getDDRA() const { return ddra_; }
+    uint8_t getDDRB() const { return ddrb_; }
+
+    // State serialization
+    size_t exportState(uint8_t* buffer) const;
+    void importState(const uint8_t* buffer);
+    static constexpr size_t STATE_SIZE = 32;
+
+    // Timer debug accessors
+    uint16_t getT1Counter() const { return t1Counter_; }
+    uint16_t getT1Latch() const { return t1Latch_; }
+    bool isT1Running() const { return t1Running_; }
+    bool hasT1Fired() const { return t1Fired_; }
+    uint8_t getACR() const { return acr_; }
+    uint8_t getIFR() const { return ifr_; }
+    uint8_t getIER() const { return ier_; }
 
 private:
     // Register addresses
@@ -105,6 +131,15 @@ private:
 
     // Previous PSG control state for edge detection
     uint8_t prevPsgControl_ = 0;
+
+    // Track if a valid PSG address was latched (AppleWin-style)
+    bool psgAddressLatched_ = false;
+
+    // Previous IRQ state for edge detection (only trigger on 0->1 transition)
+    bool prevIrqActive_ = false;
+
+    // VIA identifier for debug logging
+    int viaId_ = 1;
 };
 
 } // namespace a2e
