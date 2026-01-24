@@ -126,7 +126,8 @@ void Emulator::runCycles(int cycles) {
     uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
     disk_->update(static_cast<int>(cyclesUsed));
 
-    // Update Mockingboard timers
+    // Update Mockingboard timers BEFORE next instruction
+    // This ensures timer IRQs fire before the CPU can disable them
     mockingboard_->update(static_cast<int>(cyclesUsed));
 
     // Check for frame boundary
@@ -411,7 +412,7 @@ void Emulator::toggleSpeaker() {
 // ============================================================================
 
 // State format version - increment when format changes
-static constexpr uint32_t STATE_VERSION = 3;
+static constexpr uint32_t STATE_VERSION = 4;  // Added Mockingboard state
 static constexpr uint32_t STATE_MAGIC = 0x53324541; // "A2ES" in little-endian
 
 // Helper to write little-endian values
@@ -575,6 +576,12 @@ const uint8_t *Emulator::exportState(size_t *size) {
 
   // Audio state (speaker)
   stateBuffer_.push_back(audio_->getSpeakerState() ? 1 : 0);
+
+  // Mockingboard state
+  uint8_t mbState[Mockingboard::STATE_SIZE];
+  size_t mbSize = mockingboard_->exportState(mbState, sizeof(mbState));
+  writeLE16(stateBuffer_, static_cast<uint16_t>(mbSize));
+  stateBuffer_.insert(stateBuffer_.end(), mbState, mbState + mbSize);
 
   *size = stateBuffer_.size();
   return stateBuffer_.data();
@@ -811,6 +818,16 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
   if (offset + 1 > size) return false;
   bool speakerState = data[offset++] != 0;
   (void)speakerState;
+
+  // Mockingboard state
+  if (offset + 2 <= size) {
+    uint16_t mbSize = readLE16(data + offset);
+    offset += 2;
+    if (mbSize > 0 && offset + mbSize <= size) {
+      mockingboard_->importState(data + offset, mbSize);
+      offset += mbSize;
+    }
+  }
 
   frameReady_ = true;
   breakpointHit_ = false;

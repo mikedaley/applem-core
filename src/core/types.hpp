@@ -43,10 +43,10 @@ enum class VideoMode : uint8_t {
 // Soft switch state - comprehensive Apple IIe soft switches
 struct SoftSwitches {
   // Display switches ($C050-$C057)
-  bool text = true;        // $C050/$C051: TEXT/GRAPHICS mode
-  bool mixed = false;      // $C052/$C053: Mixed mode (4 lines text at bottom)
-  bool page2 = false;      // $C054/$C055: PAGE1/PAGE2
-  bool hires = false;      // $C056/$C057: LORES/HIRES
+  bool text = true;   // $C050/$C051: TEXT/GRAPHICS mode
+  bool mixed = false; // $C052/$C053: Mixed mode (4 lines text at bottom)
+  bool page2 = false; // $C054/$C055: PAGE1/PAGE2
+  bool hires = false; // $C056/$C057: LORES/HIRES
 
   // 80-column switches ($C00C-$C00F)
   bool col80 = false;      // $C00C/$C00D: 40/80 column mode
@@ -68,36 +68,36 @@ struct SoftSwitches {
   bool lcprewrite = false; // LC pre-write state
 
   // Annunciators ($C058-$C05F)
-  bool an0 = false;        // $C058/$C059: Annunciator 0
-  bool an1 = false;        // $C05A/$C05B: Annunciator 1
-  bool an2 = false;        // $C05C/$C05D: Annunciator 2
-  bool an3 = false;        // $C05E/$C05F: Annunciator 3 (DHIRES control)
+  bool an0 = false; // $C058/$C059: Annunciator 0
+  bool an1 = false; // $C05A/$C05B: Annunciator 1
+  bool an2 = false; // $C05C/$C05D: Annunciator 2
+  bool an3 = false; // $C05E/$C05F: Annunciator 3 (DHIRES control)
 
   // I/O state (read-only status)
-  bool vblBar = false;     // $C019: Vertical blank (true = in VBL)
+  bool vblBar = false; // $C019: Vertical blank (true = in VBL)
 
   // Button states ($C061-$C063)
-  bool button0 = false;    // $C061: Open Apple / Button 0
-  bool button1 = false;    // $C062: Closed Apple / Button 1
-  bool button2 = false;    // $C063: Button 2 / Shift key state
+  bool button0 = false; // $C061: Open Apple / Button 0
+  bool button1 = false; // $C062: Closed Apple / Button 1
+  bool button2 = false; // $C063: Button 2 / Shift key state
 
   // Keyboard
-  uint8_t keyLatch = 0;    // $C000: Keyboard latch (bit 7 = key available)
-  bool keyStrobe = false;  // $C010: Keyboard strobe (key available)
+  uint8_t keyLatch = 0;   // $C000: Keyboard latch (bit 7 = key available)
+  bool keyStrobe = false; // $C010: Keyboard strobe (key available)
 
   // Paddle/Joystick
-  uint8_t paddle0 = 128;   // $C064: PDL0 value (0-255, 128 = center)
-  uint8_t paddle1 = 128;   // $C065: PDL1 value
-  uint8_t paddle2 = 128;   // $C066: PDL2 value
-  uint8_t paddle3 = 128;   // $C067: PDL3 value
+  uint8_t paddle0 = 128; // $C064: PDL0 value (0-255, 128 = center)
+  uint8_t paddle1 = 128; // $C065: PDL1 value
+  uint8_t paddle2 = 128; // $C066: PDL2 value
+  uint8_t paddle3 = 128; // $C067: PDL3 value
 
   // Cassette (stub)
   bool cassetteOut = false; // $C020: Cassette output
   bool cassetteIn = false;  // $C060: Cassette input
 
   // IOU / DHIRES
-  bool ioudis = false;      // $C07E/$C07F: IOU disable (IIc specific)
-  bool dhires = false;      // Double hi-res mode (AN3 off + 80COL + HIRES)
+  bool ioudis = false; // $C07E/$C07F: IOU disable (IIc specific)
+  bool dhires = false; // Double hi-res mode (AN3 off + 80COL + HIRES)
 };
 
 // Disk drive state
@@ -146,9 +146,9 @@ constexpr std::array<uint32_t, 6> HIRES_COLORS = {{
 }};
 
 // Double Lo-Res / Double Hi-Res color palette
-// Different from Lo-Res due to 14MHz dot rate vs 7MHz (changes NTSC phase relationship)
-// Based on AppleWin's DoubleHiresPalIndex mapping
-// See: https://github.com/AppleWin/AppleWin/blob/master/source/RGBMonitor.cpp
+// Different from Lo-Res due to 14MHz dot rate vs 7MHz (changes NTSC phase
+// relationship) Based on AppleWin's DoubleHiresPalIndex mapping See:
+// https://github.com/AppleWin/AppleWin/blob/master/source/RGBMonitor.cpp
 constexpr std::array<uint32_t, 16> DLGR_COLORS = {{
     0xFF000000, // 0: Black        (LORES[0])
     0xFF4832EB, // 1: Dark Blue    (LORES[2])
