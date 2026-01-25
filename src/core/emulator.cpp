@@ -158,6 +158,20 @@ int Emulator::generateAudioSamples(float *buffer, int sampleCount) {
   return audio_->generateSamples(buffer, sampleCount, cpu_->getTotalCycles());
 }
 
+int Emulator::generateStereoAudioSamples(float *buffer, int sampleCount) {
+  // Calculate cycles needed for this audio buffer
+  int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE);
+
+  // Run emulation for the required cycles
+  runCycles(cyclesToRun);
+
+  // Track samples for frame synchronization
+  samplesGenerated_ += sampleCount;
+
+  // Generate stereo audio samples (interleaved L/R)
+  return audio_->generateStereoSamples(buffer, sampleCount, cpu_->getTotalCycles());
+}
+
 int Emulator::consumeFrameSamples() {
   // Returns number of complete frames worth of samples generated
   // 48000 Hz / 60 Hz = 800 samples per frame

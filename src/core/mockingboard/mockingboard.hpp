@@ -27,8 +27,13 @@ public:
     // Update timers (call with CPU cycles elapsed)
     void update(int cycles);
 
-    // Generate audio samples (call from audio callback)
+    // Generate mono audio samples (call from audio callback)
     void generateSamples(float* buffer, int count, int sampleRate);
+
+    // Generate stereo samples - PSG1 on left, PSG2 on right
+    // Buffer is interleaved: [L0, R0, L1, R1, ...]
+    // count is the number of sample FRAMES (not total samples)
+    void generateStereoSamples(float* buffer, int count, int sampleRate);
 
     // Callbacks
     void setIRQCallback(IRQCallback cb);

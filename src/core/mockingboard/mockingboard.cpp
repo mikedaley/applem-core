@@ -92,6 +92,29 @@ void Mockingboard::generateSamples(float* buffer, int count, int sampleRate) {
     }
 }
 
+void Mockingboard::generateStereoSamples(float* buffer, int count, int sampleRate) {
+    if (!enabled_ || count <= 0) {
+        // Fill with silence (interleaved stereo)
+        for (int i = 0; i < count * 2; i++) {
+            buffer[i] = 0.0f;
+        }
+        return;
+    }
+
+    // Generate samples from both PSGs into separate buffers
+    std::vector<float> psg1Buffer(count);
+    std::vector<float> psg2Buffer(count);
+
+    psg1_.generateSamples(psg1Buffer.data(), count, sampleRate);
+    psg2_.generateSamples(psg2Buffer.data(), count, sampleRate);
+
+    // Interleave: PSG1 on left channel, PSG2 on right channel
+    for (int i = 0; i < count; i++) {
+        buffer[i * 2] = psg1Buffer[i];      // Left channel
+        buffer[i * 2 + 1] = psg2Buffer[i];  // Right channel
+    }
+}
+
 void Mockingboard::setIRQCallback(IRQCallback cb) {
     // Both VIAs can trigger IRQ
     via1_.setIRQCallback(cb);

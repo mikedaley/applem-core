@@ -147,4 +147,119 @@ int Audio::generateSamples(float *buffer, int sampleCount,
   return sampleCount;
 }
 
+int Audio::generateStereoSamples(float *buffer, int sampleCount,
+                                  uint64_t currentCycle) {
+  if (muted_ || sampleCount <= 0) {
+    // Fill with silence (interleaved stereo)
+    for (int i = 0; i < sampleCount * 2; i++) {
+      buffer[i] = 0.0f;
+    }
+    toggleCycles_.clear();
+    toggleReadIndex_ = 0;
+    lastSampleCycle_ = currentCycle;
+    return sampleCount;
+  }
+
+  // First generate mono speaker samples into a temp buffer
+  std::vector<float> speakerBuffer(sampleCount);
+
+  uint64_t startCycle = lastSampleCycle_;
+  uint64_t endCycle = currentCycle;
+  uint64_t totalCycles = endCycle - startCycle;
+
+  if (totalCycles == 0) {
+    totalCycles = static_cast<uint64_t>(sampleCount * CYCLES_PER_SAMPLE);
+    startCycle = endCycle - totalCycles;
+  }
+
+  double cyclesPerSample = static_cast<double>(totalCycles) / sampleCount;
+
+  // Process each sample for speaker
+  for (int i = 0; i < sampleCount; i++) {
+    uint64_t sampleCycleStart =
+        startCycle + static_cast<uint64_t>(i * cyclesPerSample);
+    uint64_t sampleCycleEnd =
+        startCycle + static_cast<uint64_t>((i + 1) * cyclesPerSample);
+
+    float highTime = 0.0f;
+    float lowTime = 0.0f;
+    uint64_t lastCycle = sampleCycleStart;
+    bool currentState = speakerState_;
+
+    while (toggleReadIndex_ < toggleCycles_.size() &&
+           toggleCycles_[toggleReadIndex_] < sampleCycleEnd) {
+      uint64_t toggleCycle = toggleCycles_[toggleReadIndex_];
+
+      if (toggleCycle >= sampleCycleStart) {
+        float cycles = static_cast<float>(toggleCycle - lastCycle);
+        if (currentState) {
+          highTime += cycles;
+        } else {
+          lowTime += cycles;
+        }
+        lastCycle = toggleCycle;
+      }
+
+      currentState = !currentState;
+      toggleReadIndex_++;
+    }
+
+    float cycles = static_cast<float>(sampleCycleEnd - lastCycle);
+    if (currentState) {
+      highTime += cycles;
+    } else {
+      lowTime += cycles;
+    }
+
+    speakerState_ = currentState;
+
+    float totalTime = highTime + lowTime;
+    float rawValue = 0.0f;
+    if (totalTime > 0) {
+      rawValue = (highTime - lowTime) / totalTime;
+    }
+
+    filterState_ = filterState_ + FILTER_ALPHA * (rawValue - filterState_);
+    dcOffset_ = DC_ALPHA * dcOffset_ + (1.0f - DC_ALPHA) * filterState_;
+    float dcCorrected = filterState_ - dcOffset_;
+    float sample = dcCorrected * volume_;
+    sample = std::max(-1.0f, std::min(1.0f, sample));
+
+    speakerBuffer[i] = sample;
+  }
+
+  if (toggleReadIndex_ > 0) {
+    toggleCycles_.erase(toggleCycles_.begin(),
+                        toggleCycles_.begin() + toggleReadIndex_);
+    toggleReadIndex_ = 0;
+  }
+
+  lastSampleCycle_ = currentCycle;
+
+  // Get stereo Mockingboard samples
+  std::vector<float> mbBuffer(sampleCount * 2);
+  if (mockingboard_) {
+    mockingboard_->generateStereoSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE);
+  }
+
+  // Mix speaker (center) with Mockingboard stereo
+  for (int i = 0; i < sampleCount; i++) {
+    float speakerSample = speakerBuffer[i];
+
+    // Mockingboard: PSG1 left, PSG2 right with 1.5x boost
+    float mbLeft = mbBuffer[i * 2] * 1.5f * volume_;
+    float mbRight = mbBuffer[i * 2 + 1] * 1.5f * volume_;
+
+    // Mix: speaker goes to both channels
+    float left = speakerSample + mbLeft;
+    float right = speakerSample + mbRight;
+
+    // Clamp to valid range
+    buffer[i * 2] = std::max(-1.0f, std::min(1.0f, left));
+    buffer[i * 2 + 1] = std::max(-1.0f, std::min(1.0f, right));
+  }
+
+  return sampleCount;
+}
+
 } // namespace a2e

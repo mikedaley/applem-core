@@ -20,9 +20,15 @@ public:
   // Speaker toggle (called when $C030 is accessed)
   void toggleSpeaker(uint64_t cycleCount);
 
-  // Generate audio samples
+  // Generate mono audio samples
   // Returns the number of samples generated
   int generateSamples(float *buffer, int sampleCount, uint64_t currentCycle);
+
+  // Generate stereo audio samples (interleaved L/R)
+  // Mockingboard: PSG1 on left, PSG2 on right
+  // Speaker: centered (both channels)
+  // Returns the number of sample frames generated
+  int generateStereoSamples(float *buffer, int sampleCount, uint64_t currentCycle);
 
   // Reset
   void reset();

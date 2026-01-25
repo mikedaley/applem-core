@@ -28,6 +28,7 @@ public:
   // Execution
   void runCycles(int cycles);
   int generateAudioSamples(float *buffer, int sampleCount);
+  int generateStereoAudioSamples(float *buffer, int sampleCount);
 
   // Audio-driven frame synchronization
   // Returns number of complete frames worth of samples generated since last
