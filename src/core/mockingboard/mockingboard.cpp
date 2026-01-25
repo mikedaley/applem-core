@@ -77,18 +77,20 @@ void Mockingboard::generateSamples(float* buffer, int count, int sampleRate) {
         return;
     }
 
-    // Generate samples from both PSGs
-    // We use a temporary buffer for PSG2 and mix with PSG1
-    std::vector<float> psg2Buffer(count);
+    // Ensure buffer is large enough (only reallocates if needed)
+    if (static_cast<int>(audioBuffer1_.size()) < count) {
+        audioBuffer1_.resize(count);
+    }
 
+    // Generate samples from both PSGs
     psg1_.generateSamples(buffer, count, sampleRate);
-    psg2_.generateSamples(psg2Buffer.data(), count, sampleRate);
+    psg2_.generateSamples(audioBuffer1_.data(), count, sampleRate);
 
     // Mix both PSGs together (stereo would put them in L/R channels,
     // but for mono output we sum them)
     // Don't attenuate here - let the final mixer handle levels
     for (int i = 0; i < count; i++) {
-        buffer[i] = buffer[i] + psg2Buffer[i];
+        buffer[i] = buffer[i] + audioBuffer1_[i];
     }
 }
 
@@ -101,17 +103,22 @@ void Mockingboard::generateStereoSamples(float* buffer, int count, int sampleRat
         return;
     }
 
-    // Generate samples from both PSGs into separate buffers
-    std::vector<float> psg1Buffer(count);
-    std::vector<float> psg2Buffer(count);
+    // Ensure buffers are large enough (only reallocates if needed)
+    if (static_cast<int>(audioBuffer1_.size()) < count) {
+        audioBuffer1_.resize(count);
+    }
+    if (static_cast<int>(audioBuffer2_.size()) < count) {
+        audioBuffer2_.resize(count);
+    }
 
-    psg1_.generateSamples(psg1Buffer.data(), count, sampleRate);
-    psg2_.generateSamples(psg2Buffer.data(), count, sampleRate);
+    // Generate samples from both PSGs into preallocated buffers
+    psg1_.generateSamples(audioBuffer1_.data(), count, sampleRate);
+    psg2_.generateSamples(audioBuffer2_.data(), count, sampleRate);
 
     // Interleave: PSG1 on left channel, PSG2 on right channel
     for (int i = 0; i < count; i++) {
-        buffer[i * 2] = psg1Buffer[i];      // Left channel
-        buffer[i * 2 + 1] = psg2Buffer[i];  // Right channel
+        buffer[i * 2] = audioBuffer1_[i];      // Left channel
+        buffer[i * 2 + 1] = audioBuffer2_[i];  // Right channel
     }
 }
 

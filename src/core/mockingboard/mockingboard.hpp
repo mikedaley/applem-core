@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace a2e {
 
@@ -80,6 +81,10 @@ private:
 
     // Callbacks
     CycleCallback cycleCallback_;
+
+    // Preallocated audio buffers to avoid heap allocations in audio hot path
+    mutable std::vector<float> audioBuffer1_;
+    mutable std::vector<float> audioBuffer2_;
 };
 
 } // namespace a2e
