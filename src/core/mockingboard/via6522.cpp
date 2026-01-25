@@ -228,34 +228,36 @@ void VIA6522::update(int cycles) {
     uint32_t cyclesToProcess = static_cast<uint32_t>(cycles);
 
     // Update Timer 1
-    // On a real 6522, the timer counter ALWAYS decrements - there's no "stopped" state
-    // The counter is a free-running 16-bit down counter that wraps from $0000 to $FFFF
+    // Counter always decrements (needed for detection to verify card presence)
+    // But interrupts and proper reload only happen when timer is "armed" (T1CH written)
     if (cyclesToProcess > t1Counter_) {
         // Timer 1 underflowed
         uint32_t overflow = cyclesToProcess - t1Counter_ - 1;
 
-        // Only generate interrupt if timer was "armed" by writing to T1CH
-        // and hasn't already fired (in one-shot mode)
-        if (t1Running_ && !t1Fired_) {
-            ifr_ |= IRQ_T1;
-            checkIRQ();
-            t1Fired_ = true;
-        }
-
-        // Check ACR for timer mode
-        if ((acr_ & 0x40) && t1Running_) {
-            // Free-running mode - reload from latch and continue
-            if (t1Latch_ > 0) {
-                // Handle potential multiple wraparounds
-                overflow = overflow % (static_cast<uint32_t>(t1Latch_) + 1);
-                t1Counter_ = t1Latch_ - static_cast<uint16_t>(overflow);
-            } else {
-                t1Counter_ = 0;
+        if (t1Running_) {
+            // Timer is armed - generate interrupt and handle reload
+            if (!t1Fired_) {
+                ifr_ |= IRQ_T1;
+                checkIRQ();
+                t1Fired_ = true;
             }
-            t1Fired_ = false;  // Can fire again next time
+
+            // Check ACR for timer mode
+            if (acr_ & 0x40) {
+                // Free-running mode - reload from latch and continue
+                if (t1Latch_ > 0) {
+                    overflow = overflow % (static_cast<uint32_t>(t1Latch_) + 1);
+                    t1Counter_ = t1Latch_ - static_cast<uint16_t>(overflow);
+                } else {
+                    t1Counter_ = 0;
+                }
+                t1Fired_ = false;  // Can fire again next time
+            } else {
+                // One-shot mode - counter wraps but doesn't reload or re-fire
+                t1Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
+            }
         } else {
-            // One-shot mode or not armed - counter wraps naturally
-            // Timer continues counting (wraps around) but no more interrupts
+            // Timer not armed - just wrap counter naturally (for detection)
             t1Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
         }
     } else {

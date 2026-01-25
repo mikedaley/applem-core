@@ -135,8 +135,8 @@ int Audio::generateSamples(float *buffer, int sampleCount,
     for (int i = 0; i < sampleCount; i++) {
       // Mix speaker and Mockingboard
       // Mockingboard output is normalized per-PSG (~0.33 max per channel after /3)
-      // Boost Mockingboard by 3x to match speaker levels, then mix
-      float mbSample = mbBuffer[i] * 3.0f * volume_;
+      // Use 1.5x boost to avoid clipping while still being audible
+      float mbSample = mbBuffer[i] * 1.5f * volume_;
       // Additive mix - speaker clicks are transient, MB is sustained
       buffer[i] = buffer[i] + mbSample;
       // Clamp to valid range
