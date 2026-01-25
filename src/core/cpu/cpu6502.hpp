@@ -25,6 +25,7 @@ class CPU6502 {
 public:
   using ReadCallback = std::function<uint8_t(uint16_t)>;
   using WriteCallback = std::function<void(uint16_t, uint8_t)>;
+  using IRQStatusCallback = std::function<bool()>;
 
   CPU6502(ReadCallback read, WriteCallback write,
           CPUVariant variant = CPUVariant::CMOS_65C02);
@@ -38,6 +39,9 @@ public:
   // Interrupts
   void irq();
   void nmi();
+
+  // Set callback for polling IRQ status (level-triggered IRQs like VIA)
+  void setIRQStatusCallback(IRQStatusCallback cb) { irqStatusCallback_ = std::move(cb); }
 
   // Register access
   uint8_t getA() const { return a_; }
@@ -150,6 +154,9 @@ private:
   // Memory callbacks
   ReadCallback read_;
   WriteCallback write_;
+
+  // IRQ status callback for level-triggered IRQs (VIA)
+  IRQStatusCallback irqStatusCallback_;
 
   // CPU variant
   CPUVariant variant_;

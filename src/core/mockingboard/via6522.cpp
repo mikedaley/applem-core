@@ -228,56 +228,56 @@ void VIA6522::update(int cycles) {
     uint32_t cyclesToProcess = static_cast<uint32_t>(cycles);
 
     // Update Timer 1
-    if (t1Running_) {
-        if (cyclesToProcess > t1Counter_) {
-            // Timer 1 underflowed
-            uint32_t overflow = cyclesToProcess - t1Counter_ - 1;
+    // On a real 6522, the timer counter ALWAYS decrements - there's no "stopped" state
+    // The counter is a free-running 16-bit down counter that wraps from $0000 to $FFFF
+    if (cyclesToProcess > t1Counter_) {
+        // Timer 1 underflowed
+        uint32_t overflow = cyclesToProcess - t1Counter_ - 1;
 
-            if (!t1Fired_) {
-                ifr_ |= IRQ_T1;
-                checkIRQ();
-                t1Fired_ = true;
-            }
-
-            // Check ACR for timer mode
-            if (acr_ & 0x40) {
-                // Free-running mode - reload from latch and continue
-                if (t1Latch_ > 0) {
-                    // Handle potential multiple wraparounds
-                    overflow = overflow % (static_cast<uint32_t>(t1Latch_) + 1);
-                    t1Counter_ = t1Latch_ - static_cast<uint16_t>(overflow);
-                } else {
-                    t1Counter_ = 0;
-                }
-                t1Fired_ = false;  // Can fire again next time
-            } else {
-                // One-shot mode - counter wraps but doesn't reload or re-fire
-                // Timer continues running (wraps around) but no more interrupts
-                t1Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
-            }
-        } else {
-            t1Counter_ -= static_cast<uint16_t>(cyclesToProcess);
+        // Only generate interrupt if timer was "armed" by writing to T1CH
+        // and hasn't already fired (in one-shot mode)
+        if (t1Running_ && !t1Fired_) {
+            ifr_ |= IRQ_T1;
+            checkIRQ();
+            t1Fired_ = true;
         }
+
+        // Check ACR for timer mode
+        if ((acr_ & 0x40) && t1Running_) {
+            // Free-running mode - reload from latch and continue
+            if (t1Latch_ > 0) {
+                // Handle potential multiple wraparounds
+                overflow = overflow % (static_cast<uint32_t>(t1Latch_) + 1);
+                t1Counter_ = t1Latch_ - static_cast<uint16_t>(overflow);
+            } else {
+                t1Counter_ = 0;
+            }
+            t1Fired_ = false;  // Can fire again next time
+        } else {
+            // One-shot mode or not armed - counter wraps naturally
+            // Timer continues counting (wraps around) but no more interrupts
+            t1Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
+        }
+    } else {
+        t1Counter_ -= static_cast<uint16_t>(cyclesToProcess);
     }
 
     // Update Timer 2
-    if (t2Running_) {
-        // Timer 2 only operates in timed mode (pulse counting not implemented)
-        if (!(acr_ & 0x20)) {  // Timed mode
-            if (cyclesToProcess > t2Counter_) {
-                // Timer 2 underflowed
-                uint32_t overflow = cyclesToProcess - t2Counter_ - 1;
+    // Timer 2 also always decrements (in timed mode)
+    if (!(acr_ & 0x20)) {  // Timed mode (not pulse counting)
+        if (cyclesToProcess > t2Counter_) {
+            // Timer 2 underflowed
+            uint32_t overflow = cyclesToProcess - t2Counter_ - 1;
 
-                if (!t2Fired_) {
-                    ifr_ |= IRQ_T2;
-                    checkIRQ();
-                    t2Fired_ = true;
-                }
-                // Timer 2 is one-shot only - wraps but doesn't reload or re-fire
-                t2Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
-            } else {
-                t2Counter_ -= static_cast<uint16_t>(cyclesToProcess);
+            if (t2Running_ && !t2Fired_) {
+                ifr_ |= IRQ_T2;
+                checkIRQ();
+                t2Fired_ = true;
             }
+            // Timer 2 is one-shot only - wraps but doesn't reload or re-fire
+            t2Counter_ = static_cast<uint16_t>(0xFFFF - (overflow % 0x10000));
+        } else {
+            t2Counter_ -= static_cast<uint16_t>(cyclesToProcess);
         }
     }
 }

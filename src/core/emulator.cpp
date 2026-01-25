@@ -42,6 +42,10 @@ Emulator::Emulator() {
   mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
 
+  // Set up level-triggered IRQ polling for VIA interrupts
+  // VIA IRQs stay asserted until acknowledged by reading T1CL
+  cpu_->setIRQStatusCallback([this]() { return mockingboard_->isIRQActive(); });
+
   // Set up disk timing callback - allows disk reads to get accurate cycle count
   // during instruction execution (before disk_->update() is called)
   disk_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });

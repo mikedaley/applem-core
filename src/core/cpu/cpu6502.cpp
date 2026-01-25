@@ -28,6 +28,12 @@ void CPU6502::reset() {
 }
 
 void CPU6502::executeInstruction() {
+  // Poll IRQ status for level-triggered behavior (VIA interrupts)
+  // The VIA IRQ stays asserted until acknowledged by reading T1CL
+  if (irqStatusCallback_ && irqStatusCallback_()) {
+    irqPending_ = true;
+  }
+
   // Handle pending interrupts
   if (nmiPending_) {
     nmiPending_ = false;

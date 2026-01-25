@@ -49,6 +49,12 @@ public:
     size_t importState(const uint8_t* buffer, size_t size);
     static constexpr size_t STATE_SIZE = 128;  // VIA1+PSG1+VIA2+PSG2
 
+    // Check if IRQ is active (for level-triggered IRQ polling)
+    // VIA interrupts are level-triggered - they stay asserted until acknowledged
+    bool isIRQActive() const {
+        return enabled_ && (via1_.isIRQActive() || via2_.isIRQActive());
+    }
+
     // State access for debugging
     const VIA6522& getVIA1() const { return via1_; }
     const VIA6522& getVIA2() const { return via2_; }
