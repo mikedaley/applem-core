@@ -1,7 +1,7 @@
 #pragma once
 
 #include "expansion_card.hpp"
-#include "../disk/disk2.hpp"
+#include "../disk-image/disk2.hpp"
 #include <memory>
 #include <array>
 

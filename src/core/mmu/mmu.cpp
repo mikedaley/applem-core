@@ -1,6 +1,6 @@
 #include "mmu.hpp"
 #include "../cards/expansion_card.hpp"
-#include "../disk/disk2.hpp"
+#include "../disk-image/disk2.hpp"
 #include "../mockingboard/mockingboard.hpp"
 #include <cstring>
 

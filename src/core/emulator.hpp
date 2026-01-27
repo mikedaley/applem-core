@@ -2,7 +2,7 @@
 
 #include "audio/audio.hpp"
 #include "cpu/cpu6502.hpp"
-#include "disk/disk2.hpp"
+#include "disk-image/disk2.hpp"
 #include "input/keyboard.hpp"
 #include "mockingboard/mockingboard.hpp"
 #include "mmu/mmu.hpp"

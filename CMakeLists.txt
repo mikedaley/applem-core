@@ -15,10 +15,10 @@ set(CORE_SOURCES
     src/core/mmu/mmu.cpp
     src/core/video/video.cpp
     src/core/audio/audio.cpp
-    src/core/disk/disk2.cpp
-    src/core/disk/dsk_disk_image.cpp
-    src/core/disk/woz_disk_image.cpp
-    src/core/disk/gcr_encoding.cpp
+    src/core/disk-image/disk2.cpp
+    src/core/disk-image/dsk_disk_image.cpp
+    src/core/disk-image/woz_disk_image.cpp
+    src/core/disk-image/gcr_encoding.cpp
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
     src/core/mockingboard/ay8910.cpp
