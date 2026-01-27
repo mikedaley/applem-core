@@ -20,9 +20,8 @@ set(CORE_SOURCES
     src/core/disk-image/gcr_encoding.cpp
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
-    src/core/mockingboard/ay8910.cpp
-    src/core/mockingboard/via6522.cpp
-    src/core/mockingboard/mockingboard.cpp
+    src/core/cards/mockingboard/ay8910.cpp
+    src/core/cards/mockingboard/via6522.cpp
     src/core/cards/disk2_card.cpp
     src/core/cards/mockingboard_card.cpp
     src/core/cards/thunderclock_card.cpp

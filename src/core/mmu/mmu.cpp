@@ -1,7 +1,7 @@
 #include "mmu.hpp"
 #include "../cards/disk2_card.hpp"
 #include "../cards/expansion_card.hpp"
-#include "../mockingboard/mockingboard.hpp"
+#include "../cards/mockingboard_card.hpp"
 #include <cstring>
 
 namespace a2e {
@@ -487,7 +487,7 @@ uint8_t MMU::read(uint16_t address) {
         // Legacy fallback for Mockingboard (slot 4)
         if (slot == 4 && mockingboard_ && mockingboard_->isEnabled()) {
           activeExpansionSlot_ = 0; // Mockingboard has no expansion ROM
-          return mockingboard_->read(address);
+          return mockingboard_->readROM(address & 0xFF);
         }
       }
 
@@ -651,7 +651,7 @@ void MMU::write(uint16_t address, uint8_t value) {
 
         // Legacy fallback for Mockingboard (slot 4)
         if (slot == 4 && mockingboard_ && mockingboard_->isEnabled()) {
-          mockingboard_->write(address, value);
+          mockingboard_->writeROM(address & 0xFF, value);
         }
       }
     }

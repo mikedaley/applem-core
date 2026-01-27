@@ -8,7 +8,7 @@
 namespace a2e {
 
 // Forward declaration
-class Mockingboard;
+class MockingboardCard;
 
 class Audio {
 public:
@@ -45,7 +45,7 @@ public:
   bool getSpeakerState() const { return speakerState_; }
 
   // Mockingboard connection
-  void setMockingboard(Mockingboard* mb) { mockingboard_ = mb; }
+  void setMockingboard(MockingboardCard* mb) { mockingboard_ = mb; }
 
 private:
   // Speaker state
@@ -71,7 +71,7 @@ private:
   static constexpr float DC_ALPHA = 0.995f;
 
   // Mockingboard
-  Mockingboard* mockingboard_ = nullptr;
+  MockingboardCard* mockingboard_ = nullptr;
 };
 
 } // namespace a2e

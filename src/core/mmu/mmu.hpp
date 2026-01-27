@@ -10,7 +10,7 @@ namespace a2e {
 
 // Forward declarations
 class Disk2Card;
-class Mockingboard;
+class MockingboardCard;
 class ExpansionCard;
 
 class MMU {
@@ -101,7 +101,7 @@ public:
 
   // Legacy peripheral connections (deprecated - use slots instead)
   void setDiskController(Disk2Card *disk) { diskController_ = disk; }
-  void setMockingboard(Mockingboard *mb) { mockingboard_ = mb; }
+  void setMockingboard(MockingboardCard *mb) { mockingboard_ = mb; }
 
   // ===== Expansion Slot Management =====
 
@@ -211,7 +211,7 @@ private:
 
   // Legacy peripherals (deprecated - use slots_)
   Disk2Card *diskController_ = nullptr;
-  Mockingboard *mockingboard_ = nullptr;
+  MockingboardCard *mockingboard_ = nullptr;
 
   // Expansion slots (1-7, index 0-6)
   std::array<std::unique_ptr<ExpansionCard>, 7> slots_;

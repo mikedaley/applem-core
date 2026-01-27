@@ -4,7 +4,7 @@
 #include "cpu/cpu6502.hpp"
 #include "cards/disk2_card.hpp"
 #include "input/keyboard.hpp"
-#include "mockingboard/mockingboard.hpp"
+#include "cards/mockingboard_card.hpp"
 #include "mmu/mmu.hpp"
 #include "types.hpp"
 #include "video/video.hpp"
@@ -109,7 +109,7 @@ public:
   Video &getVideo() { return *video_; }
   Audio &getAudio() { return *audio_; }
   Disk2Card &getDisk() { return *disk_; }
-  Mockingboard &getMockingboard() { return *mockingboard_; }
+  MockingboardCard &getMockingboard() { return *mockingboard_; }
 
   // Slot management
   const char* getSlotCardName(uint8_t slot) const;
@@ -135,7 +135,7 @@ private:
   std::unique_ptr<Audio> audio_;
   std::unique_ptr<Disk2Card> disk_;
   std::unique_ptr<Keyboard> keyboard_;
-  std::unique_ptr<Mockingboard> mockingboard_;
+  std::unique_ptr<MockingboardCard> mockingboard_;
 
   // Keyboard state
   uint8_t keyboardLatch_ = 0;

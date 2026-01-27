@@ -15,7 +15,7 @@ Emulator::Emulator() {
   video_ = std::make_unique<Video>(*mmu_);
   audio_ = std::make_unique<Audio>();
   keyboard_ = std::make_unique<Keyboard>();
-  mockingboard_ = std::make_unique<Mockingboard>();
+  mockingboard_ = std::make_unique<MockingboardCard>();
 
   // Create CPU with memory callbacks
   cpu_ = std::make_unique<CPU6502>(
@@ -742,8 +742,8 @@ const uint8_t *Emulator::exportState(size_t *size) {
   stateBuffer_.push_back(audio_->getSpeakerState() ? 1 : 0);
 
   // Mockingboard state
-  uint8_t mbState[Mockingboard::STATE_SIZE];
-  size_t mbSize = mockingboard_->exportState(mbState, sizeof(mbState));
+  uint8_t mbState[MockingboardCard::STATE_SIZE];
+  size_t mbSize = mockingboard_->serialize(mbState, sizeof(mbState));
   writeLE16(stateBuffer_, static_cast<uint16_t>(mbSize));
   stateBuffer_.insert(stateBuffer_.end(), mbState, mbState + mbSize);
 
@@ -988,7 +988,7 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
     uint16_t mbSize = readLE16(data + offset);
     offset += 2;
     if (mbSize > 0 && offset + mbSize <= size) {
-      mockingboard_->importState(data + offset, mbSize);
+      mockingboard_->deserialize(data + offset, mbSize);
       offset += mbSize;
     }
   }

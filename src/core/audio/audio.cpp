@@ -1,5 +1,5 @@
 #include "audio.hpp"
-#include "../mockingboard/mockingboard.hpp"
+#include "../cards/mockingboard_card.hpp"
 #include <cmath>
 
 namespace a2e {
