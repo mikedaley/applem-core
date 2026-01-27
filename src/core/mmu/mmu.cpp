@@ -495,14 +495,16 @@ uint8_t MMU::read(uint16_t address) {
     }
 
     // $C800-$CFFF: Expansion ROM space
-    // Access to $CFFF clears the expansion ROM select
-    if (address == 0xCFFF) {
-      switches_.intc8rom = false;
-      activeExpansionSlot_ = 0;
-    }
 
     // Return internal ROM if slot 3 internal ROM was accessed
     if (switches_.intc8rom) {
+      // Access to $CFFF clears the internal ROM select AFTER the read
+      if (address == 0xCFFF) {
+        uint8_t value = systemROM_[address - 0xC000];
+        switches_.intc8rom = false;
+        activeExpansionSlot_ = 0;
+        return value;
+      }
       return systemROM_[address - 0xC000];
     }
 
@@ -510,8 +512,19 @@ uint8_t MMU::read(uint16_t address) {
     if (activeExpansionSlot_ >= 1 && activeExpansionSlot_ <= 7) {
       auto& card = slots_[activeExpansionSlot_ - 1];
       if (card && card->hasExpansionROM()) {
-        return card->readExpansionROM(address - 0xC800);
+        uint8_t value = card->readExpansionROM(address - 0xC800);
+        // Access to $CFFF clears the expansion ROM select AFTER the read
+        if (address == 0xCFFF) {
+          activeExpansionSlot_ = 0;
+        }
+        return value;
       }
+    }
+
+    // Access to $CFFF with no active expansion ROM still clears the select
+    if (address == 0xCFFF) {
+      switches_.intc8rom = false;
+      activeExpansionSlot_ = 0;
     }
 
     // No expansion ROM active, return floating bus

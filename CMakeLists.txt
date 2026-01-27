@@ -25,6 +25,7 @@ set(CORE_SOURCES
     src/core/mockingboard/mockingboard.cpp
     src/core/cards/disk2_card.cpp
     src/core/cards/mockingboard_card.cpp
+    src/core/cards/thunderclock_card.cpp
     src/bindings/wasm_interface.cpp
 )
 

@@ -1,6 +1,7 @@
 #include "emulator.hpp"
 #include "cards/disk2_card.hpp"
 #include "cards/mockingboard_card.hpp"
+#include "cards/thunderclock_card.hpp"
 #include <cstring>
 
 // Include generated ROM data directly
@@ -468,6 +469,9 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
   if (strcmp(name, "Mockingboard") == 0) {
     return "mockingboard";
   }
+  if (strcmp(name, "Thunderclock") == 0) {
+    return "thunderclock";
+  }
 
   return "empty";
 }
@@ -530,6 +534,14 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     mmu_->setMockingboard(mockingboard_.get());
     audio_->setMockingboard(mockingboard_.get());
     mockingboard_->setEnabled(true);
+    return true;
+  }
+
+  // Handle Thunderclock card
+  if (strcmp(cardId, "thunderclock") == 0) {
+    // Create and insert Thunderclock card
+    auto card = std::make_unique<ThunderclockCard>();
+    mmu_->insertCard(slot, std::move(card));
     return true;
   }
 
