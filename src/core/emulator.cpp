@@ -1,4 +1,6 @@
 #include "emulator.hpp"
+#include "cards/disk2_card.hpp"
+#include "cards/mockingboard_card.hpp"
 #include <cstring>
 
 // Include generated ROM data directly
@@ -423,6 +425,138 @@ void Emulator::clearKeyboardStrobe() {
 
 void Emulator::toggleSpeaker() {
   audio_->toggleSpeaker(cpu_->getTotalCycles());
+}
+
+// ============================================================================
+// Slot Management
+// ============================================================================
+
+const char* Emulator::getSlotCardName(uint8_t slot) const {
+  if (slot < 1 || slot > 7) {
+    return "invalid";
+  }
+
+  // Slot 3 is built-in 80-column
+  if (slot == 3) {
+    return "80col";
+  }
+
+  // Slot 6: Disk II (always present for now, TODO: make configurable)
+  if (slot == 6) {
+    return "disk2";
+  }
+
+  // Slot 4: Mockingboard - check if enabled
+  if (slot == 4) {
+    if (mockingboard_ && mockingboard_->isEnabled()) {
+      return "mockingboard";
+    }
+    return "empty";
+  }
+
+  // Check the slot array for other cards
+  ExpansionCard* card = mmu_->getCard(slot);
+  if (!card) {
+    return "empty";
+  }
+
+  // Identify card type by name
+  const char* name = card->getName();
+  if (strcmp(name, "Disk II") == 0) {
+    return "disk2";
+  }
+  if (strcmp(name, "Mockingboard") == 0) {
+    return "mockingboard";
+  }
+
+  return "empty";
+}
+
+bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
+  if (slot < 1 || slot > 7) {
+    return false;
+  }
+
+  // Slot 3 is built-in 80-column and cannot be changed
+  if (slot == 3) {
+    return false;
+  }
+
+  // Handle empty slot
+  if (strcmp(cardId, "empty") == 0) {
+    // Remove peripherals from this slot
+    if (slot == 6 && disk_) {
+      mmu_->setDiskController(nullptr);
+    }
+    if (slot == 4 && mockingboard_) {
+      // Disconnect from MMU and Audio
+      mmu_->setMockingboard(nullptr);
+      audio_->setMockingboard(nullptr);
+      // Disable the Mockingboard so isEnabled() returns false
+      mockingboard_->setEnabled(false);
+    }
+    mmu_->removeCard(slot);
+    return true;
+  }
+
+  // Handle Disk II card
+  if (strcmp(cardId, "disk2") == 0) {
+    // If moving from legacy slot 6, first disconnect
+    if (slot != 6 && disk_) {
+      mmu_->setDiskController(nullptr);
+    }
+
+    // For now, we continue using legacy mode for disk controller
+    // because the disk controller needs to share state with DiskManager
+    if (slot == 6) {
+      mmu_->setDiskController(disk_.get());
+    } else {
+      // Create a new Disk2Card for non-default slots
+      // Note: This would create a separate controller, not shared with DiskManager
+      // For MVP, we only support slot 6 for disk
+      return false;
+    }
+    return true;
+  }
+
+  // Handle Mockingboard card
+  if (strcmp(cardId, "mockingboard") == 0) {
+    // Only slot 4 is supported for Mockingboard
+    if (slot != 4) {
+      return false;
+    }
+
+    // Connect Mockingboard to slot 4
+    mmu_->setMockingboard(mockingboard_.get());
+    audio_->setMockingboard(mockingboard_.get());
+    mockingboard_->setEnabled(true);
+    return true;
+  }
+
+  return false;
+}
+
+bool Emulator::isSlotEmpty(uint8_t slot) const {
+  if (slot < 1 || slot > 7) {
+    return true;
+  }
+
+  // Slot 3 is never empty (built-in 80-column)
+  if (slot == 3) {
+    return false;
+  }
+
+  // Slot 6: Disk II is always present for now
+  if (slot == 6) {
+    return false;
+  }
+
+  // Slot 4: Check if Mockingboard is enabled
+  if (slot == 4) {
+    return !(mockingboard_ && mockingboard_->isEnabled());
+  }
+
+  return mmu_->isSlotEmpty(slot);
 }
 
 // ============================================================================

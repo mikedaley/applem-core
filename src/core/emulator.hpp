@@ -111,6 +111,11 @@ public:
   Disk2Controller &getDisk() { return *disk_; }
   Mockingboard &getMockingboard() { return *mockingboard_; }
 
+  // Slot management
+  const char* getSlotCardName(uint8_t slot) const;
+  bool setSlotCard(uint8_t slot, const char* cardId);
+  bool isSlotEmpty(uint8_t slot) const;
+
 private:
   // Memory callbacks for CPU
   uint8_t cpuRead(uint16_t address);

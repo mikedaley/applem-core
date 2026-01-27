@@ -122,7 +122,10 @@ if(EMSCRIPTEN)
                 \"_getDisasmInstructions\", \
                 \"_getDisasmInstructionLength\", \
                 \"_malloc\", \
-                \"_free\" \
+                \"_free\", \
+                \"_getSlotCard\", \
+                \"_setSlotCard\", \
+                \"_isSlotEmpty\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
