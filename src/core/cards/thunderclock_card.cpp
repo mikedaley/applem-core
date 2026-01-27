@@ -2,10 +2,6 @@
 #include "roms.cpp" // For embedded ROM data
 #include <ctime>
 #include <cstring>
-#include <cstdio>
-
-// Enable debug output for Thunderclock I/O
-#define THUNDERCLOCK_DEBUG 0
 
 namespace a2e {
 
@@ -85,41 +81,12 @@ void ThunderclockCard::updateLatches() {
 
     // Total: 10 * 4 = 40 bits
     currentBitIndex_ = 0;
-
-#if THUNDERCLOCK_DEBUG
-    printf("TC === TIME DATA ===\n");
-    printf("TC System time: %04d-%02d-%02d %02d:%02d:%02d (dow=%d)\n",
-           tm->tm_year + 1900, month, dayOfMonth, hour, minute, second, dayOfWeek);
-    printf("TC Want ProDOS: %02d-%s-%02d\n",
-           dayOfMonth,
-           (const char*[]){"???","JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"}[month],
-           year);
-    printf("TC Sending: mon=%d dowField=%d day=%d (adjusted from %d)\n",
-           month, dowForYear, adjustedDay, dayOfMonth);
-    printf("TC Nibbles: ");
-    for (int n = 0; n < 10; n++) {
-        int val = 0;
-        for (int b = 0; b < 4; b++) {
-            val |= (bits_[n*4 + b] << (3-b));
-        }
-        printf("%X ", val);
-    }
-    printf("(mon,dow,day,hr,min,sec)\n");
-#endif
 }
 
 uint8_t ThunderclockCard::readIO(uint8_t offset) {
     // The Thunderclock uses offset 0 ($C0n0) for the control/data register
     // All 16 I/O addresses appear to return the same register value
     (void)offset;
-
-#if THUNDERCLOCK_DEBUG
-    static int readCount = 0;
-    if (readCount < 50) {
-        printf("TC readIO: returning $%02X (bit7=%d)\n", register_, (register_ >> 7) & 1);
-        readCount++;
-    }
-#endif
 
     // Return current register value
     // Bit 7 contains the current data bit
@@ -134,14 +101,6 @@ void ThunderclockCard::writeIO(uint8_t offset, uint8_t value) {
     // Extract control signals
     bool strobe = (value & FLAG_STROBE) != 0;
     bool clock = (value & FLAG_CLOCK) != 0;
-
-#if THUNDERCLOCK_DEBUG
-    static int debugCount = 0;
-    if (debugCount < 100) {
-        printf("TC writeIO: val=$%02X strobe=%d->%d clock=%d->%d cmd=$%02X\n",
-               value, strobe_ ? 1 : 0, strobe ? 1 : 0, clock_ ? 1 : 0, clock ? 1 : 0, command_);
-    }
-#endif
 
     // Check for strobe rising edge
     if (strobe && !strobe_) {
@@ -171,24 +130,6 @@ void ThunderclockCard::writeIO(uint8_t offset, uint8_t value) {
                 } else {
                     register_ &= ~0x80;
                 }
-#if THUNDERCLOCK_DEBUG
-                if (readBitCount_ < 64) {
-                    readBitLog_[readBitCount_++] = bits_[currentBitIndex_];
-                }
-                // When we've read all 40 bits, print summary
-                if (currentBitIndex_ == 39) {
-                    printf("TC === BITS READ BY PRODOS ===\n");
-                    printf("TC Nibbles (MSB-first): ");
-                    for (int n = 0; n < 10; n++) {
-                        int val = 0;
-                        for (int b = 0; b < 4; b++) {
-                            val |= (readBitLog_[n*4 + b] << (3-b));
-                        }
-                        printf("%X ", val);
-                    }
-                    printf("= mon,dow,day,hr,min,sec\n");
-                }
-#endif
             } else {
                 register_ &= ~0x80;
             }

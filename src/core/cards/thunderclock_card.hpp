@@ -32,15 +32,15 @@ namespace a2e {
  * Control Register ($C0n0):
  * - Bit 2 (STROBE): Rising edge triggers command execution
  * - Bit 1 (CLOCK): Rising edge shifts next data bit
- * - Bits 5-7: Command (0xA0 = read time, 0x20 = shift register)
+ * - Bits 3-5: Command (from uPD1990C C0-C2 pins)
  *
- * Time Data Format (40 bits, MSB first):
- * - Month (4 bits, 0-11)
+ * Time Data Format (40 bits, 10 BCD nibbles, LSB-first within each nibble):
+ * - Second ones, Second tens (8 bits)
+ * - Minute ones, Minute tens (8 bits)
+ * - Hour ones, Hour tens (8 bits)
+ * - Day ones, Day tens (8 bits)
  * - Day of week (4 bits, 0-6)
- * - Day of month (8 bits, BCD)
- * - Hour (8 bits, BCD)
- * - Minute (8 bits, BCD)
- * - Second (8 bits, BCD)
+ * - Month (4 bits, 1-12)
  *
  * ROM Space:
  * - Slot ROM ($Cn00-$CnFF): 256 bytes - contains ProDOS driver
@@ -96,10 +96,6 @@ private:
     std::array<uint8_t, 64> bits_;  // Bit buffer
     int bitIndex_ = 0;              // Number of valid bits
     int currentBitIndex_ = 0;       // Current bit being read
-
-    // Debug: track what bits ProDOS actually reads
-    mutable std::array<uint8_t, 64> readBitLog_;
-    mutable int readBitCount_ = 0;
 
     // Unused but kept for API compatibility
     std::array<uint8_t, 16> latches_;
