@@ -10,7 +10,7 @@ namespace a2e {
 
 Emulator::Emulator() {
   mmu_ = std::make_unique<MMU>();
-  disk_ = std::make_unique<Disk2Controller>();
+  disk_ = std::make_unique<Disk2Card>();
   video_ = std::make_unique<Video>(*mmu_);
   audio_ = std::make_unique<Audio>();
   keyboard_ = std::make_unique<Keyboard>();

@@ -9,7 +9,7 @@
 namespace a2e {
 
 // Forward declarations
-class Disk2Controller;
+class Disk2Card;
 class Mockingboard;
 class ExpansionCard;
 
@@ -100,7 +100,7 @@ public:
   }
 
   // Legacy peripheral connections (deprecated - use slots instead)
-  void setDiskController(Disk2Controller *disk) { diskController_ = disk; }
+  void setDiskController(Disk2Card *disk) { diskController_ = disk; }
   void setMockingboard(Mockingboard *mb) { mockingboard_ = mb; }
 
   // ===== Expansion Slot Management =====
@@ -210,7 +210,7 @@ private:
   CycleCallback cycleCallback_;
 
   // Legacy peripherals (deprecated - use slots_)
-  Disk2Controller *diskController_ = nullptr;
+  Disk2Card *diskController_ = nullptr;
   Mockingboard *mockingboard_ = nullptr;
 
   // Expansion slots (1-7, index 0-6)

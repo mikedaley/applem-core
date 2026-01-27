@@ -1,6 +1,6 @@
 #include "mmu.hpp"
+#include "../cards/disk2_card.hpp"
 #include "../cards/expansion_card.hpp"
-#include "../disk-image/disk2.hpp"
 #include "../mockingboard/mockingboard.hpp"
 #include <cstring>
 
@@ -349,7 +349,7 @@ uint8_t MMU::peekSoftSwitch(uint16_t address) const {
 
     // Legacy fallback for Disk II (slot 6)
     if (slot == 6 && diskController_) {
-      return diskController_->peek(offset);
+      return diskController_->peekIO(offset);
     }
 
     return 0x00;
@@ -980,7 +980,7 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
 
     // Legacy fallback for Disk II (slot 6)
     if (slot == 6 && diskController_) {
-      return diskController_->read(offset);
+      return diskController_->readIO(offset);
     }
 
     return getFloatingBusValue();
@@ -1216,7 +1216,7 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
 
     // Legacy fallback for Disk II (slot 6)
     if (slot == 6 && diskController_) {
-      diskController_->write(offset, value);
+      diskController_->writeIO(offset, value);
     }
     break;
   }

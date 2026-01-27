@@ -15,7 +15,6 @@ set(CORE_SOURCES
     src/core/mmu/mmu.cpp
     src/core/video/video.cpp
     src/core/audio/audio.cpp
-    src/core/disk-image/disk2.cpp
     src/core/disk-image/dsk_disk_image.cpp
     src/core/disk-image/woz_disk_image.cpp
     src/core/disk-image/gcr_encoding.cpp

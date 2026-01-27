@@ -2,7 +2,7 @@
 
 #include "audio/audio.hpp"
 #include "cpu/cpu6502.hpp"
-#include "disk-image/disk2.hpp"
+#include "cards/disk2_card.hpp"
 #include "input/keyboard.hpp"
 #include "mockingboard/mockingboard.hpp"
 #include "mmu/mmu.hpp"
@@ -108,7 +108,7 @@ public:
   MMU &getMMU() { return *mmu_; }
   Video &getVideo() { return *video_; }
   Audio &getAudio() { return *audio_; }
-  Disk2Controller &getDisk() { return *disk_; }
+  Disk2Card &getDisk() { return *disk_; }
   Mockingboard &getMockingboard() { return *mockingboard_; }
 
   // Slot management
@@ -133,7 +133,7 @@ private:
   std::unique_ptr<CPU6502> cpu_;
   std::unique_ptr<Video> video_;
   std::unique_ptr<Audio> audio_;
-  std::unique_ptr<Disk2Controller> disk_;
+  std::unique_ptr<Disk2Card> disk_;
   std::unique_ptr<Keyboard> keyboard_;
   std::unique_ptr<Mockingboard> mockingboard_;
 
