@@ -24,6 +24,8 @@ set(CORE_SOURCES
     src/core/mockingboard/ay8910.cpp
     src/core/mockingboard/via6522.cpp
     src/core/mockingboard/mockingboard.cpp
+    src/core/cards/disk2_card.cpp
+    src/core/cards/mockingboard_card.cpp
     src/bindings/wasm_interface.cpp
 )
 

@@ -4,12 +4,14 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 
 namespace a2e {
 
 // Forward declarations
 class Disk2Controller;
 class Mockingboard;
+class ExpansionCard;
 
 class MMU {
 public:
@@ -21,6 +23,7 @@ public:
   using CycleCallback = std::function<uint64_t()>;    // Returns current CPU cycle count
 
   MMU();
+  ~MMU();  // Defined in mmu.cpp (needed for unique_ptr<ExpansionCard>)
 
   // Memory access
   uint8_t read(uint16_t address);
@@ -96,9 +99,46 @@ public:
     return (paddle >= 0 && paddle < 4) ? paddleValues_[paddle] : 128;
   }
 
-  // Peripheral connections
+  // Legacy peripheral connections (deprecated - use slots instead)
   void setDiskController(Disk2Controller *disk) { diskController_ = disk; }
   void setMockingboard(Mockingboard *mb) { mockingboard_ = mb; }
+
+  // ===== Expansion Slot Management =====
+
+  /**
+   * Insert a card into an expansion slot
+   * @param slot Slot number (1-7)
+   * @param card Card to insert (ownership transferred)
+   * @return Previously installed card, or nullptr if slot was empty
+   */
+  std::unique_ptr<ExpansionCard> insertCard(uint8_t slot, std::unique_ptr<ExpansionCard> card);
+
+  /**
+   * Remove a card from an expansion slot
+   * @param slot Slot number (1-7)
+   * @return The removed card, or nullptr if slot was empty
+   */
+  std::unique_ptr<ExpansionCard> removeCard(uint8_t slot);
+
+  /**
+   * Get a card from a slot (non-owning)
+   * @param slot Slot number (1-7)
+   * @return Pointer to card, or nullptr if slot is empty
+   */
+  ExpansionCard* getCard(uint8_t slot) const;
+
+  /**
+   * Check if a slot is empty
+   * @param slot Slot number (1-7)
+   * @return true if no card is installed
+   */
+  bool isSlotEmpty(uint8_t slot) const;
+
+  /**
+   * Get which slot's expansion ROM is active
+   * @return Active slot (1-7), or 0 if none
+   */
+  uint8_t getActiveExpansionSlot() const { return activeExpansionSlot_; }
 
   // Reset
   void reset();
@@ -169,9 +209,13 @@ private:
   ButtonCallback buttonCallback_;
   CycleCallback cycleCallback_;
 
-  // Peripherals
+  // Legacy peripherals (deprecated - use slots_)
   Disk2Controller *diskController_ = nullptr;
   Mockingboard *mockingboard_ = nullptr;
+
+  // Expansion slots (1-7, index 0-6)
+  std::array<std::unique_ptr<ExpansionCard>, 7> slots_;
+  uint8_t activeExpansionSlot_ = 0;  // Which card owns $C800-$CFFF (0 = none)
 
   // Memory access tracking for debugger heat map
   bool trackingEnabled_ = false;

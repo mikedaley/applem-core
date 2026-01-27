@@ -1,4 +1,5 @@
 #include "mmu.hpp"
+#include "../cards/expansion_card.hpp"
 #include "../disk/disk2.hpp"
 #include "../mockingboard/mockingboard.hpp"
 #include <cstring>
@@ -6,6 +7,8 @@
 namespace a2e {
 
 MMU::MMU() { reset(); }
+
+MMU::~MMU() = default;
 
 void MMU::reset() {
   // Clear RAM
@@ -24,8 +27,65 @@ void MMU::reset() {
   // Keyboard
   keyboardLatch_ = 0;
 
+  // Reset expansion slot state
+  activeExpansionSlot_ = 0;
+
+  // Reset all installed cards
+  for (auto& card : slots_) {
+    if (card) {
+      card->reset();
+    }
+  }
+
   // Clear tracking (but preserve enabled state)
   clearTracking();
+}
+
+// ===== Expansion Slot Management =====
+
+std::unique_ptr<ExpansionCard> MMU::insertCard(uint8_t slot, std::unique_ptr<ExpansionCard> card) {
+  if (slot < 1 || slot > 7) {
+    return card; // Invalid slot, return card unchanged
+  }
+
+  std::unique_ptr<ExpansionCard> previous = std::move(slots_[slot - 1]);
+  slots_[slot - 1] = std::move(card);
+
+  // If the removed card owned the expansion ROM, clear it
+  if (activeExpansionSlot_ == slot) {
+    activeExpansionSlot_ = 0;
+  }
+
+  return previous;
+}
+
+std::unique_ptr<ExpansionCard> MMU::removeCard(uint8_t slot) {
+  if (slot < 1 || slot > 7) {
+    return nullptr;
+  }
+
+  std::unique_ptr<ExpansionCard> card = std::move(slots_[slot - 1]);
+
+  // If this card owned the expansion ROM, clear it
+  if (activeExpansionSlot_ == slot) {
+    activeExpansionSlot_ = 0;
+  }
+
+  return card;
+}
+
+ExpansionCard* MMU::getCard(uint8_t slot) const {
+  if (slot < 1 || slot > 7) {
+    return nullptr;
+  }
+  return slots_[slot - 1].get();
+}
+
+bool MMU::isSlotEmpty(uint8_t slot) const {
+  if (slot < 1 || slot > 7) {
+    return true;
+  }
+  return !slots_[slot - 1];
 }
 
 void MMU::clearTracking() {
@@ -263,27 +323,37 @@ uint8_t MMU::peekSoftSwitch(uint16_t address) const {
   case 0x67:
     return 0x00;
 
-  // Disk II controller - use peek if available, otherwise return 0
-  case 0xE0:
-  case 0xE1:
-  case 0xE2:
-  case 0xE3:
-  case 0xE4:
-  case 0xE5:
-  case 0xE6:
-  case 0xE7:
-  case 0xE8:
-  case 0xE9:
-  case 0xEA:
-  case 0xEB:
-  case 0xEC:
-  case 0xED:
-  case 0xEE:
-  case 0xEF:
-    if (diskController_) {
-      return diskController_->peek(reg - 0xE0);
+  // Slot I/O space: $C090-$C0FF (slots 1-7)
+  case 0x90: case 0x91: case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x97:
+  case 0x98: case 0x99: case 0x9A: case 0x9B: case 0x9C: case 0x9D: case 0x9E: case 0x9F:
+  case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: case 0xA6: case 0xA7:
+  case 0xA8: case 0xA9: case 0xAA: case 0xAB: case 0xAC: case 0xAD: case 0xAE: case 0xAF:
+  case 0xB0: case 0xB1: case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+  case 0xB8: case 0xB9: case 0xBA: case 0xBB: case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+  case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5: case 0xC6: case 0xC7:
+  case 0xC8: case 0xC9: case 0xCA: case 0xCB: case 0xCC: case 0xCD: case 0xCE: case 0xCF:
+  case 0xD0: case 0xD1: case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6: case 0xD7:
+  case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: case 0xDF:
+  case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: case 0xE6: case 0xE7:
+  case 0xE8: case 0xE9: case 0xEA: case 0xEB: case 0xEC: case 0xED: case 0xEE: case 0xEF:
+  case 0xF0: case 0xF1: case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6: case 0xF7:
+  case 0xF8: case 0xF9: case 0xFA: case 0xFB: case 0xFC: case 0xFD: case 0xFE: case 0xFF: {
+    // Calculate slot number
+    uint8_t slot = ((reg - 0x80) >> 4);
+    uint8_t offset = reg & 0x0F;
+
+    // First check new slot system
+    if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
+      return slots_[slot - 1]->peekIO(offset);
     }
+
+    // Legacy fallback for Disk II (slot 6)
+    if (slot == 6 && diskController_) {
+      return diskController_->peek(offset);
+    }
+
     return 0x00;
+  }
 
   // Language card switches - report switch state
   case 0x80:
@@ -394,35 +464,57 @@ uint8_t MMU::read(uint16_t address) {
       return getFloatingBusValue();
     }
 
-    // Slot 6 (Disk II): $C600-$C6FF
-    if (address >= 0xC600 && address < 0xC700) {
-      return diskROM_[address - 0xC600];
-    }
+    // Slot ROM space: $C100-$C7FF
+    // Each slot gets 256 bytes: slot N at $CN00-$CNFF
+    if (address < 0xC800) {
+      uint8_t slot = (address >> 8) & 0x07;
+      uint8_t offset = address & 0xFF;
 
-    // Slot 4 (Mockingboard): $C400-$C4FF
-    if (address >= 0xC400 && address < 0xC500) {
-      if (mockingboard_ && mockingboard_->isEnabled()) {
-        return mockingboard_->read(address);
+      // Access to slot ROM activates that card's expansion ROM
+      if (slot >= 1 && slot <= 7) {
+        // Check new slot system first
+        if (slots_[slot - 1]) {
+          activeExpansionSlot_ = slot;
+          return slots_[slot - 1]->readROM(offset);
+        }
+
+        // Legacy fallback for Disk II (slot 6)
+        if (slot == 6) {
+          activeExpansionSlot_ = 0; // Disk II has no expansion ROM
+          return diskROM_[offset];
+        }
+
+        // Legacy fallback for Mockingboard (slot 4)
+        if (slot == 4 && mockingboard_ && mockingboard_->isEnabled()) {
+          activeExpansionSlot_ = 0; // Mockingboard has no expansion ROM
+          return mockingboard_->read(address);
+        }
       }
+
       return getFloatingBusValue();
     }
 
     // $C800-$CFFF: Expansion ROM space
-    if (address >= 0xC800) {
-      // Access to $CFFF clears the $C800 ROM select
-      if (address == 0xCFFF) {
-        switches_.intc8rom = false;
-      }
-      // Return internal ROM if slot 3 internal ROM was accessed
-      if (switches_.intc8rom) {
-        return systemROM_[address - 0xC000];
-      }
-      // Otherwise return floating bus (no expansion ROM active)
-      return getFloatingBusValue();
+    // Access to $CFFF clears the expansion ROM select
+    if (address == 0xCFFF) {
+      switches_.intc8rom = false;
+      activeExpansionSlot_ = 0;
     }
 
-    // Other slot ROM space ($C100-$C2FF, $C500-$C5FF, $C700-$C7FF)
-    // No cards installed, return floating bus
+    // Return internal ROM if slot 3 internal ROM was accessed
+    if (switches_.intc8rom) {
+      return systemROM_[address - 0xC000];
+    }
+
+    // Check if a card owns the expansion ROM space
+    if (activeExpansionSlot_ >= 1 && activeExpansionSlot_ <= 7) {
+      auto& card = slots_[activeExpansionSlot_ - 1];
+      if (card && card->hasExpansionROM()) {
+        return card->readExpansionROM(address - 0xC800);
+      }
+    }
+
+    // No expansion ROM active, return floating bus
     return getFloatingBusValue();
   }
 
@@ -523,17 +615,31 @@ void MMU::write(uint16_t address, uint8_t value) {
     return;
   }
 
-  // Slot ROM space: $C100-$CFFF - writes are generally ignored
-  // BUT access to $CFFF (read or write) clears the $C800 ROM select
-  // Slot 4 (Mockingboard) handles writes
+  // Slot ROM space: $C100-$CFFF
+  // Most cards don't handle writes, but some (like Mockingboard) use ROM space for I/O
   if (address < 0xD000) {
+    // Access to $CFFF clears the expansion ROM select
     if (address == 0xCFFF) {
       switches_.intc8rom = false;
+      activeExpansionSlot_ = 0;
     }
-    // Slot 4 (Mockingboard): $C400-$C4FF
-    if (address >= 0xC400 && address < 0xC500) {
-      if (mockingboard_ && mockingboard_->isEnabled()) {
-        mockingboard_->write(address, value);
+
+    // Route writes to slot ROM space through cards
+    if (address < 0xC800) {
+      uint8_t slot = (address >> 8) & 0x07;
+      uint8_t offset = address & 0xFF;
+
+      if (slot >= 1 && slot <= 7) {
+        // Check new slot system first
+        if (slots_[slot - 1]) {
+          slots_[slot - 1]->writeROM(offset, value);
+          return;
+        }
+
+        // Legacy fallback for Mockingboard (slot 4)
+        if (slot == 4 && mockingboard_ && mockingboard_->isEnabled()) {
+          mockingboard_->write(address, value);
+        }
       }
     }
     return;
@@ -847,57 +953,38 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     // On IIe, reading $C07F returns DHIRES status in bit 7 (same as AN3 inverted)
     return (!switches_.an3 ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F);
 
-  // Slot 1 I/O ($C090-$C09F)
+  // Slot I/O space: $C090-$C0FF (slots 1-7)
+  // Each slot gets 16 bytes: slot N at $C080 + (N * 16)
   case 0x90: case 0x91: case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x97:
   case 0x98: case 0x99: case 0x9A: case 0x9B: case 0x9C: case 0x9D: case 0x9E: case 0x9F:
-    return getFloatingBusValue(); // No card in slot 1
-
-  // Slot 2 I/O ($C0A0-$C0AF)
   case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: case 0xA6: case 0xA7:
   case 0xA8: case 0xA9: case 0xAA: case 0xAB: case 0xAC: case 0xAD: case 0xAE: case 0xAF:
-    return getFloatingBusValue(); // No card in slot 2
-
-  // Slot 3 I/O ($C0B0-$C0BF)
   case 0xB0: case 0xB1: case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: case 0xB7:
   case 0xB8: case 0xB9: case 0xBA: case 0xBB: case 0xBC: case 0xBD: case 0xBE: case 0xBF:
-    return getFloatingBusValue(); // No card in slot 3
-
-  // Slot 4 I/O ($C0C0-$C0CF)
   case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5: case 0xC6: case 0xC7:
   case 0xC8: case 0xC9: case 0xCA: case 0xCB: case 0xCC: case 0xCD: case 0xCE: case 0xCF:
-    return getFloatingBusValue(); // No card in slot 4
-
-  // Slot 5 I/O ($C0D0-$C0DF)
   case 0xD0: case 0xD1: case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6: case 0xD7:
   case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: case 0xDF:
-    return getFloatingBusValue(); // No card in slot 5
-
-  // Disk II controller (slot 6): $C0E0-$C0EF
-  case 0xE0:
-  case 0xE1:
-  case 0xE2:
-  case 0xE3:
-  case 0xE4:
-  case 0xE5:
-  case 0xE6:
-  case 0xE7:
-  case 0xE8:
-  case 0xE9:
-  case 0xEA:
-  case 0xEB:
-  case 0xEC:
-  case 0xED:
-  case 0xEE:
-  case 0xEF:
-    if (diskController_) {
-      return diskController_->read(reg - 0xE0);
-    }
-    return 0x00;
-
-  // Slot 7 I/O ($C0F0-$C0FF)
+  case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: case 0xE6: case 0xE7:
+  case 0xE8: case 0xE9: case 0xEA: case 0xEB: case 0xEC: case 0xED: case 0xEE: case 0xEF:
   case 0xF0: case 0xF1: case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6: case 0xF7:
-  case 0xF8: case 0xF9: case 0xFA: case 0xFB: case 0xFC: case 0xFD: case 0xFE: case 0xFF:
-    return getFloatingBusValue(); // No card in slot 7
+  case 0xF8: case 0xF9: case 0xFA: case 0xFB: case 0xFC: case 0xFD: case 0xFE: case 0xFF: {
+    // Calculate slot number: $C090 = slot 1, $C0A0 = slot 2, etc.
+    uint8_t slot = ((reg - 0x80) >> 4);
+    uint8_t offset = reg & 0x0F;
+
+    // First check new slot system
+    if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
+      return slots_[slot - 1]->readIO(offset);
+    }
+
+    // Legacy fallback for Disk II (slot 6)
+    if (slot == 6 && diskController_) {
+      return diskController_->read(offset);
+    }
+
+    return getFloatingBusValue();
+  }
 
   // Language card
   case 0x80:
@@ -1102,27 +1189,37 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
     switches_.an3 = true;
     break;
 
-  // Disk II controller (slot 6)
-  case 0xE0:
-  case 0xE1:
-  case 0xE2:
-  case 0xE3:
-  case 0xE4:
-  case 0xE5:
-  case 0xE6:
-  case 0xE7:
-  case 0xE8:
-  case 0xE9:
-  case 0xEA:
-  case 0xEB:
-  case 0xEC:
-  case 0xED:
-  case 0xEE:
-  case 0xEF:
-    if (diskController_) {
-      diskController_->write(reg - 0xE0, value);
+  // Slot I/O space: $C090-$C0FF (slots 1-7)
+  case 0x90: case 0x91: case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x97:
+  case 0x98: case 0x99: case 0x9A: case 0x9B: case 0x9C: case 0x9D: case 0x9E: case 0x9F:
+  case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: case 0xA6: case 0xA7:
+  case 0xA8: case 0xA9: case 0xAA: case 0xAB: case 0xAC: case 0xAD: case 0xAE: case 0xAF:
+  case 0xB0: case 0xB1: case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+  case 0xB8: case 0xB9: case 0xBA: case 0xBB: case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+  case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5: case 0xC6: case 0xC7:
+  case 0xC8: case 0xC9: case 0xCA: case 0xCB: case 0xCC: case 0xCD: case 0xCE: case 0xCF:
+  case 0xD0: case 0xD1: case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6: case 0xD7:
+  case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: case 0xDF:
+  case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: case 0xE6: case 0xE7:
+  case 0xE8: case 0xE9: case 0xEA: case 0xEB: case 0xEC: case 0xED: case 0xEE: case 0xEF:
+  case 0xF0: case 0xF1: case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6: case 0xF7:
+  case 0xF8: case 0xF9: case 0xFA: case 0xFB: case 0xFC: case 0xFD: case 0xFE: case 0xFF: {
+    // Calculate slot number: $C090 = slot 1, $C0A0 = slot 2, etc.
+    uint8_t slot = ((reg - 0x80) >> 4);
+    uint8_t offset = reg & 0x0F;
+
+    // First check new slot system
+    if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
+      slots_[slot - 1]->writeIO(offset, value);
+      return;
+    }
+
+    // Legacy fallback for Disk II (slot 6)
+    if (slot == 6 && diskController_) {
+      diskController_->write(offset, value);
     }
     break;
+  }
 
   // Language card - writes do NOT enable write, and reset prewrite state
   case 0x80:
