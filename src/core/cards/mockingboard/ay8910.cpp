@@ -291,6 +291,19 @@ float AY8910::getChannelOutput(int channel) const {
     return volumeTable_[volume];
 }
 
+void AY8910::setChannelMute(int channel, bool muted) {
+    if (channel >= 0 && channel < NUM_CHANNELS) {
+        channelMuted_[channel] = muted;
+    }
+}
+
+bool AY8910::isChannelMuted(int channel) const {
+    if (channel >= 0 && channel < NUM_CHANNELS) {
+        return channelMuted_[channel];
+    }
+    return false;
+}
+
 void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
     // PSG clock cycles per audio sample
     double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
@@ -315,16 +328,55 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
             updateEnvelopeGenerator();
         }
 
-        // Mix all channels
+        // Mix all channels (respecting mute state)
         float sample = 0.0f;
+        int activeChannels = 0;
         for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-            sample += getChannelOutput(ch);
+            if (!channelMuted_[ch]) {
+                sample += getChannelOutput(ch);
+                activeChannels++;
+            }
         }
 
-        // Normalize (3 channels, each max 1.0)
-        sample /= 3.0f;
+        // Normalize by number of active channels (or silence if all muted)
+        if (activeChannels > 0) {
+            sample /= 3.0f;  // Keep consistent normalization
+        }
 
         buffer[i] = sample;
+    }
+}
+
+void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, int channel) {
+    if (channel < 0 || channel >= NUM_CHANNELS) {
+        for (int i = 0; i < count; i++) {
+            buffer[i] = 0.0f;
+        }
+        return;
+    }
+
+    // PSG clock cycles per audio sample
+    double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
+    double toneStepsPerSample = cyclesPerSample / 8.0;
+
+    for (int i = 0; i < count; i++) {
+        // Accumulate fractional cycles
+        phaseAccumulator_ += toneStepsPerSample;
+
+        // Process whole cycles
+        while (phaseAccumulator_ >= 1.0) {
+            phaseAccumulator_ -= 1.0;
+
+            // Update all generators (needed for accurate state)
+            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+                updateToneGenerator(ch);
+            }
+            updateNoiseGenerator();
+            updateEnvelopeGenerator();
+        }
+
+        // Output only the requested channel
+        buffer[i] = getChannelOutput(channel);
     }
 }
 

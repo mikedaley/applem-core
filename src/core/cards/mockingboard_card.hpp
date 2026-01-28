@@ -100,6 +100,8 @@ public:
     const VIA6522& getVIA2() const { return via2_; }
     const AY8910& getPSG1() const { return psg1_; }
     const AY8910& getPSG2() const { return psg2_; }
+    AY8910& getPSG1() { return psg1_; }
+    AY8910& getPSG2() { return psg2_; }
 
 private:
     // Two VIA chips

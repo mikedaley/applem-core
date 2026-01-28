@@ -29,6 +29,11 @@ public:
 
     // Audio generation
     void generateSamples(float* buffer, int count, int sampleRate);
+    void generateChannelSamples(float* buffer, int count, int sampleRate, int channel);
+
+    // Channel muting (for debug/mixing purposes)
+    void setChannelMute(int channel, bool muted);
+    bool isChannelMuted(int channel) const;
 
     // Reset
     void reset();
@@ -75,6 +80,9 @@ private:
     // Tone generator state (3 channels)
     std::array<uint32_t, 3> toneCounters_{};
     std::array<bool, 3> toneOutput_{};
+
+    // Channel mute state (for debug/visualization)
+    std::array<bool, 3> channelMuted_{};
 
     // Noise generator state
     uint32_t noiseCounter_ = 0;

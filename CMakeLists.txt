@@ -124,7 +124,10 @@ if(EMSCRIPTEN)
                 \"_free\", \
                 \"_getSlotCard\", \
                 \"_setSlotCard\", \
-                \"_isSlotEmpty\" \
+                \"_isSlotEmpty\", \
+                \"_getMockingboardWaveform\", \
+                \"_setMockingboardChannelMute\", \
+                \"_getMockingboardChannelMute\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
@@ -183,6 +186,47 @@ else()
     target_compile_options(klaus_6502_test PRIVATE -O3 -Wall -Wextra)
     add_test(NAME klaus_6502_functional_test
         COMMAND klaus_6502_test
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+
+    # ==========================================================================
+    # Thunderclock Card Tests
+    # ==========================================================================
+
+    # Ensure roms.cpp is generated for native builds too
+    add_custom_target(generate_roms_native DEPENDS ${CMAKE_BINARY_DIR}/generated/roms.cpp)
+
+    add_executable(thunderclock_test
+        tests/thunderclock/thunderclock_test.cpp
+        src/core/cards/thunderclock_card.cpp
+    )
+    add_dependencies(thunderclock_test generate_roms_native)
+    target_include_directories(thunderclock_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/core/cards
+        ${CMAKE_BINARY_DIR}/generated
+    )
+    target_compile_options(thunderclock_test PRIVATE -O3 -Wall -Wextra)
+    add_test(NAME thunderclock_card_test
+        COMMAND thunderclock_test
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+
+    # Thunderclock MMU Integration Test
+    add_executable(thunderclock_mmu_test
+        tests/thunderclock/thunderclock_mmu_test.cpp
+        src/core/cards/thunderclock_card.cpp
+        src/core/mmu/mmu.cpp
+    )
+    add_dependencies(thunderclock_mmu_test generate_roms_native)
+    target_include_directories(thunderclock_mmu_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/core/cards
+        ${CMAKE_BINARY_DIR}/generated
+    )
+    target_compile_options(thunderclock_mmu_test PRIVATE -O3 -Wall -Wextra)
+    add_test(NAME thunderclock_mmu_integration_test
+        COMMAND thunderclock_mmu_test
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
