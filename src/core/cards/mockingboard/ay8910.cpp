@@ -159,12 +159,9 @@ void AY8910::updateToneGenerator(int channel) {
 void AY8910::updateNoiseGenerator() {
     uint8_t period = getNoisePeriod();
 
-    // When noise period is 0, don't update - generator holds state
-    // The mixer logic in getChannelOutput() treats period=0 as noise disabled
-    if (period == 0) {
-        noiseCounter_ = 0;
-        return;
-    }
+    // Period 0 acts as period 1 (highest frequency noise)
+    // Hardware testing confirms noise does not halt on period 0
+    if (period == 0) period = 1;
 
     noiseCounter_++;
     // Noise runs at clock/16 while tones run at clock/8
@@ -269,13 +266,6 @@ float AY8910::getChannelOutput(int channel) const {
     // Note: bit=0 means enabled, bit=1 means disabled
     bool toneDisabled = (mixer & (1 << channel)) != 0;
     bool noiseDisabled = (mixer & (1 << (channel + 3))) != 0;
-
-    // Treat noise period=0 as if noise is disabled
-    // Some software uses period=0 to silence noise without touching mixer
-    uint8_t noisePeriod = registers_[REG_NOISE_PERIOD] & 0x1F;
-    if (noisePeriod == 0) {
-        noiseDisabled = true;
-    }
 
     // AY-3-8910 mixer uses AND logic:
     // Output = (ToneOut OR ToneDisabled) AND (NoiseOut OR NoiseDisabled)
