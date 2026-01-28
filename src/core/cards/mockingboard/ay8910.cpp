@@ -165,14 +165,15 @@ void AY8910::updateNoiseGenerator() {
 
     noiseCounter_++;
     // Noise runs at clock/16 while tones run at clock/8
-    // Since we step at clock/8 rate, double the period comparison (like ayumi does)
+    // Since we step at clock/8 rate, double the period comparison
     if (noiseCounter_ >= static_cast<uint32_t>(period) * 2) {
         noiseCounter_ = 0;
 
-        // 17-bit LFSR with taps at bits 0 and 3
-        // XOR bits 0 and 3, shift right, put result in bit 16
-        bool bit = ((noiseShiftReg_ ^ (noiseShiftReg_ >> 3)) & 1) != 0;
-        noiseShiftReg_ = (noiseShiftReg_ >> 1) | (bit ? 0x10000 : 0);
+        // 17-bit LFSR (Galois form) with polynomial x^17 + x^14 + 1
+        // This matches MAME's implementation and the reverse-engineered chip.
+        // Taps at bits 13 and 16: when LSB is 1, XOR those bit positions after shift.
+        uint32_t lsb = noiseShiftReg_ & 1;
+        noiseShiftReg_ = (noiseShiftReg_ >> 1) ^ (lsb ? 0x12000 : 0);
         noiseOutput_ = (noiseShiftReg_ & 1) != 0;
     }
 }
@@ -181,13 +182,14 @@ void AY8910::updateEnvelopeGenerator() {
     if (envHolding_) return;
 
     uint16_t period = getEnvPeriod();
-    if (period == 0) period = 1;
 
     envCounter_++;
-    // Envelope timing: datasheet says clock/256, but most emulators (MAME, ayumi)
-    // use clock/16 (same as noise). We step at clock/8, so *2 gives clock/16.
-    // This matches observed behavior in real hardware tests and other emulators.
-    if (envCounter_ >= static_cast<uint32_t>(period) * 2) {
+    // Envelope timing: we step at clock/8, so *2 gives clock/16.
+    // Special case: Period 0 runs at HALF the time of period 1 (twice as fast).
+    // This is unique to the envelope generator - tone/noise treat 0 as 1.
+    // Hardware testing confirms this behavior (see MAME ay8910.cpp).
+    uint32_t threshold = (period == 0) ? 1 : static_cast<uint32_t>(period) * 2;
+    if (envCounter_ >= threshold) {
         envCounter_ = 0;
 
         // Update envelope volume based on current direction
