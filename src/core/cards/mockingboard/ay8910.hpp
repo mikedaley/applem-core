@@ -52,7 +52,7 @@ public:
     // State serialization
     size_t exportState(uint8_t* buffer) const;
     void importState(const uint8_t* buffer);
-    static constexpr size_t STATE_SIZE = 32;
+    static constexpr size_t STATE_SIZE = 48;  // Expanded to include noise/envelope counters
 
 private:
     // Registers

@@ -178,4 +178,53 @@ void ThunderclockCard::reset() {
     updateLatches();
 }
 
+size_t ThunderclockCard::serialize(uint8_t* buffer, size_t maxSize) const {
+    if (maxSize < STATE_SIZE) return 0;
+
+    size_t offset = 0;
+
+    // Control state
+    buffer[offset++] = strobe_ ? 1 : 0;
+    buffer[offset++] = clock_ ? 1 : 0;
+    buffer[offset++] = command_;
+    buffer[offset++] = register_;
+    buffer[offset++] = static_cast<uint8_t>(bitIndex_);
+    buffer[offset++] = static_cast<uint8_t>(currentBitIndex_);
+
+    // Bit stream data (64 bytes)
+    for (int i = 0; i < 64; i++) {
+        buffer[offset++] = bits_[i];
+    }
+
+    // Reserved (2 bytes for future use)
+    buffer[offset++] = 0;
+    buffer[offset++] = 0;
+
+    return offset;  // Should be 72 bytes
+}
+
+size_t ThunderclockCard::deserialize(const uint8_t* buffer, size_t size) {
+    if (size < STATE_SIZE) return 0;
+
+    size_t offset = 0;
+
+    // Control state
+    strobe_ = buffer[offset++] != 0;
+    clock_ = buffer[offset++] != 0;
+    command_ = buffer[offset++];
+    register_ = buffer[offset++];
+    bitIndex_ = buffer[offset++];
+    currentBitIndex_ = buffer[offset++];
+
+    // Bit stream data (64 bytes)
+    for (int i = 0; i < 64; i++) {
+        bits_[i] = buffer[offset++];
+    }
+
+    // Skip reserved bytes
+    offset += 2;
+
+    return offset;  // Should be 72 bytes
+}
+
 } // namespace a2e

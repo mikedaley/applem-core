@@ -433,7 +433,12 @@ size_t VIA6522::exportState(uint8_t* buffer) const {
     buffer[offset++] = prevPsgControl_;
     buffer[offset++] = psgAddressLatched_ ? 1 : 0;
 
-    return offset;  // Should be ~23 bytes
+    // Pad to STATE_SIZE for consistent serialization
+    while (offset < STATE_SIZE) {
+        buffer[offset++] = 0;
+    }
+
+    return offset;  // Exactly STATE_SIZE bytes
 }
 
 void VIA6522::importState(const uint8_t* buffer) {

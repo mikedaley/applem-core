@@ -184,11 +184,11 @@ void AY8910::updateEnvelopeGenerator() {
     uint16_t period = getEnvPeriod();
 
     envCounter_++;
-    // Envelope timing: we step at clock/8, so *2 gives clock/16.
+    // Envelope timing: datasheet specifies clock/256 for envelope generator.
+    // Since we step at clock/8 rate, we need a multiplier of 32 (8*32=256).
     // Special case: Period 0 runs at HALF the time of period 1 (twice as fast).
-    // This is unique to the envelope generator - tone/noise treat 0 as 1.
-    // Hardware testing confirms this behavior (see MAME ay8910.cpp).
-    uint32_t threshold = (period == 0) ? 1 : static_cast<uint32_t>(period) * 2;
+    // For period 0: use 16 (half of 32) to maintain the 2× speed relationship.
+    uint32_t threshold = (period == 0) ? 16 : static_cast<uint32_t>(period) * 32;
     if (envCounter_ >= threshold) {
         envCounter_ = 0;
 
@@ -402,7 +402,35 @@ size_t AY8910::exportState(uint8_t* buffer) const {
     // Envelope state
     buffer[offset++] = envVolume_;
 
-    return offset;  // Should be ~32 bytes
+    // Additional state for proper audio continuity (added in state version 5)
+    // Noise counter (4 bytes)
+    buffer[offset++] = (noiseCounter_ >> 0) & 0xFF;
+    buffer[offset++] = (noiseCounter_ >> 8) & 0xFF;
+    buffer[offset++] = (noiseCounter_ >> 16) & 0xFF;
+    buffer[offset++] = (noiseCounter_ >> 24) & 0xFF;
+
+    // Noise shift register (4 bytes) - critical for noise pattern continuity
+    buffer[offset++] = (noiseShiftReg_ >> 0) & 0xFF;
+    buffer[offset++] = (noiseShiftReg_ >> 8) & 0xFF;
+    buffer[offset++] = (noiseShiftReg_ >> 16) & 0xFF;
+    buffer[offset++] = (noiseShiftReg_ >> 24) & 0xFF;
+
+    // Envelope counter (4 bytes)
+    buffer[offset++] = (envCounter_ >> 0) & 0xFF;
+    buffer[offset++] = (envCounter_ >> 8) & 0xFF;
+    buffer[offset++] = (envCounter_ >> 16) & 0xFF;
+    buffer[offset++] = (envCounter_ >> 24) & 0xFF;
+
+    // Envelope flags (1 byte packed)
+    buffer[offset++] = (envHolding_ ? 0x01 : 0) |
+                       (envAttack_ ? 0x02 : 0);
+
+    // Pad to STATE_SIZE for consistent serialization
+    while (offset < STATE_SIZE) {
+        buffer[offset++] = 0;
+    }
+
+    return offset;  // Exactly STATE_SIZE bytes
 }
 
 void AY8910::importState(const uint8_t* buffer) {
@@ -437,10 +465,36 @@ void AY8910::importState(const uint8_t* buffer) {
     // Envelope state
     envVolume_ = buffer[offset++];
 
-    // Restore envelope generator state from register 13
+    // Additional state for proper audio continuity (added in state version 5)
+    // Noise counter (4 bytes)
+    noiseCounter_ = buffer[offset] |
+                    (buffer[offset + 1] << 8) |
+                    (buffer[offset + 2] << 16) |
+                    (buffer[offset + 3] << 24);
+    offset += 4;
+
+    // Noise shift register (4 bytes)
+    noiseShiftReg_ = buffer[offset] |
+                     (buffer[offset + 1] << 8) |
+                     (buffer[offset + 2] << 16) |
+                     (buffer[offset + 3] << 24);
+    offset += 4;
+
+    // Envelope counter (4 bytes)
+    envCounter_ = buffer[offset] |
+                  (buffer[offset + 1] << 8) |
+                  (buffer[offset + 2] << 16) |
+                  (buffer[offset + 3] << 24);
+    offset += 4;
+
+    // Envelope flags (1 byte packed)
+    uint8_t envFlags = buffer[offset++];
+    envHolding_ = (envFlags & 0x01) != 0;
+    envAttack_ = (envFlags & 0x02) != 0;
+
+    // Restore envelope shape flags from register 13 (these are constant per shape)
     uint8_t envShape = registers_[REG_ENV_SHAPE] & 0x0F;
     envContinue_ = (envShape & 0x08) != 0;
-    envAttack_ = (envShape & 0x04) != 0;
     envAlternate_ = (envShape & 0x02) != 0;
     envHold_ = (envShape & 0x01) != 0;
 }

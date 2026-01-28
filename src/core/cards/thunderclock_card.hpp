@@ -81,6 +81,12 @@ public:
     const char* getName() const override { return "Thunderclock"; }
     uint8_t getPreferredSlot() const override { return 5; }
 
+    // State serialization
+    static constexpr size_t STATE_SIZE = 72;  // 6 bytes state + 64 bytes bits + 2 reserved
+    size_t getStateSize() const override { return STATE_SIZE; }
+    size_t serialize(uint8_t* buffer, size_t maxSize) const override;
+    size_t deserialize(const uint8_t* buffer, size_t size) override;
+
 private:
     // ROM data is loaded from embedded ROM file
     const uint8_t* rom_;       // Pointer to embedded ROM data

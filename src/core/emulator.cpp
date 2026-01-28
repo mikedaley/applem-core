@@ -576,7 +576,7 @@ bool Emulator::isSlotEmpty(uint8_t slot) const {
 // ============================================================================
 
 // State format version - increment when format changes
-static constexpr uint32_t STATE_VERSION = 4;  // Added Mockingboard state
+static constexpr uint32_t STATE_VERSION = 5;  // Added expansion card states
 static constexpr uint32_t STATE_MAGIC = 0x53324541; // "A2ES" in little-endian
 
 // Helper to write little-endian values
@@ -746,6 +746,42 @@ const uint8_t *Emulator::exportState(size_t *size) {
   size_t mbSize = mockingboard_->serialize(mbState, sizeof(mbState));
   writeLE16(stateBuffer_, static_cast<uint16_t>(mbSize));
   stateBuffer_.insert(stateBuffer_.end(), mbState, mbState + mbSize);
+
+  // Expansion card states (slots 1-7, excluding 4 and 6 which are handled above)
+  // First, count how many cards have state to save
+  uint8_t cardCount = 0;
+  for (uint8_t slot = 1; slot <= 7; slot++) {
+    if (slot == 4 || slot == 6) continue;  // Handled by legacy system
+    ExpansionCard* card = mmu_->getCard(slot);
+    if (card && card->getStateSize() > 0) {
+      cardCount++;
+    }
+  }
+  stateBuffer_.push_back(cardCount);
+
+  // Save each card's state
+  for (uint8_t slot = 1; slot <= 7; slot++) {
+    if (slot == 4 || slot == 6) continue;
+    ExpansionCard* card = mmu_->getCard(slot);
+    if (card && card->getStateSize() > 0) {
+      // Slot number
+      stateBuffer_.push_back(slot);
+
+      // Card type identifier (use name for identification)
+      const char* name = card->getName();
+      uint8_t cardType = 0;
+      if (strcmp(name, "Thunderclock") == 0) cardType = 1;
+      // Add more card types here as needed
+      stateBuffer_.push_back(cardType);
+
+      // Card state
+      size_t stateSize = card->getStateSize();
+      writeLE16(stateBuffer_, static_cast<uint16_t>(stateSize));
+      size_t currentSize = stateBuffer_.size();
+      stateBuffer_.resize(currentSize + stateSize);
+      card->serialize(stateBuffer_.data() + currentSize, stateSize);
+    }
+  }
 
   *size = stateBuffer_.size();
   return stateBuffer_.data();
@@ -990,6 +1026,44 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
     if (mbSize > 0 && offset + mbSize <= size) {
       mockingboard_->deserialize(data + offset, mbSize);
       offset += mbSize;
+    }
+  }
+
+  // Expansion card states
+  if (offset + 1 <= size) {
+    uint8_t cardCount = data[offset++];
+    for (uint8_t i = 0; i < cardCount && offset + 4 <= size; i++) {
+      uint8_t slot = data[offset++];
+      uint8_t cardType = data[offset++];
+      uint16_t stateSize = readLE16(data + offset);
+      offset += 2;
+
+      if (offset + stateSize > size) break;
+
+      // Create card based on type if slot is empty
+      if (slot >= 1 && slot <= 7 && slot != 4 && slot != 6) {
+        ExpansionCard* existingCard = mmu_->getCard(slot);
+
+        // Create appropriate card type if needed
+        if (!existingCard) {
+          switch (cardType) {
+            case 1: {  // Thunderclock
+              auto card = std::make_unique<ThunderclockCard>();
+              mmu_->insertCard(slot, std::move(card));
+              existingCard = mmu_->getCard(slot);
+              break;
+            }
+            // Add more card types here as needed
+          }
+        }
+
+        // Restore card state
+        if (existingCard) {
+          existingCard->deserialize(data + offset, stateSize);
+        }
+      }
+
+      offset += stateSize;
     }
   }
 

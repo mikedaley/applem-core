@@ -25,8 +25,8 @@ class MockingboardCard : public ExpansionCard {
 public:
     using CycleCallback = std::function<uint64_t()>;
 
-    // State size for serialization: enabled(1) + VIA1(32) + PSG1(32) + VIA2(32) + PSG2(32) = 129
-    static constexpr size_t STATE_SIZE = 129;
+    // State size for serialization: enabled(1) + VIA1(32) + PSG1(48) + VIA2(32) + PSG2(48) = 161
+    static constexpr size_t STATE_SIZE = 161;
 
     MockingboardCard();
     ~MockingboardCard() override = default;
