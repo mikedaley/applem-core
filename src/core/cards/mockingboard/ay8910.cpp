@@ -347,54 +347,68 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
 }
 
 void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle) {
-    // PSG runs at PSG_CLOCK, stepping tone generators at clock/8 rate
-    // We need to map CPU cycles to PSG steps for accurate write timing
-    double cpuCyclesTotal = static_cast<double>(endCycle - startCycle);
-    double psgStepsTotal = cpuCyclesTotal / 8.0;  // PSG steps in this buffer period
-    double psgStepsPerSample = psgStepsTotal / count;
+    // PSG clock cycles per audio sample
+    double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
+    double toneStepsPerSample = cyclesPerSample / 8.0;
 
-    // CPU cycles per PSG step (for mapping write cycles to PSG steps)
-    static constexpr double cpuCyclesPerPsgStep = 8.0;  // PSG runs at CPU_CLOCK/8
+    // Calculate CPU cycles per sample for timing
+    double cpuCyclesTotal = static_cast<double>(endCycle - startCycle);
+    double cpuCyclesPerSample = (count > 0) ? cpuCyclesTotal / count : 0;
 
     // Index into pending writes
     size_t writeIdx = 0;
 
-    // Track total PSG steps processed for write timing
-    double totalStepsProcessed = 0.0;
-
     for (int i = 0; i < count; i++) {
-        // Advance PSG state
-        phaseAccumulator_ += psgStepsPerSample;
+        // Calculate the CPU cycle for this sample
+        uint64_t sampleCycle = startCycle + static_cast<uint64_t>(i * cpuCyclesPerSample);
+
+        // Apply any pending writes that should happen before this sample
+        while (writeIdx < pendingWrites_.size() && pendingWrites_[writeIdx].cycle <= sampleCycle) {
+            applyRegisterWrite(pendingWrites_[writeIdx].reg, pendingWrites_[writeIdx].value);
+            writeIdx++;
+        }
+
+        // Track output integration over the sample period
+        // This reduces aliasing artifacts from high-frequency tones
+        std::array<float, NUM_CHANNELS> channelAccum = {0.0f, 0.0f, 0.0f};
+        int stepsThisSample = 0;
+
+        // Advance PSG state and integrate output
+        phaseAccumulator_ += toneStepsPerSample;
 
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
+            stepsThisSample++;
 
-            // Calculate CPU cycle for the NEXT PSG step (before we process it)
-            // This is when the step "happens" in CPU time
-            uint64_t nextStepCycle = startCycle + static_cast<uint64_t>((totalStepsProcessed + 1.0) * cpuCyclesPerPsgStep);
-
-            // Apply any pending writes that should happen BEFORE this PSG step
-            // Use < instead of <= so writes apply before the step they're meant for
-            while (writeIdx < pendingWrites_.size() && pendingWrites_[writeIdx].cycle < nextStepCycle) {
-                applyRegisterWrite(pendingWrites_[writeIdx].reg, pendingWrites_[writeIdx].value);
-                writeIdx++;
+            // Accumulate output BEFORE updating (captures current state)
+            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+                if (!channelMuted_[ch]) {
+                    channelAccum[ch] += getChannelOutput(ch);
+                }
             }
 
-            // Update generators with current register values
+            // Update generators
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
                 updateToneGenerator(ch);
             }
             updateNoiseGenerator();
             updateEnvelopeGenerator();
-
-            totalStepsProcessed += 1.0;
         }
 
-        // Mix channels (output is now bipolar, centered at 0)
+        // If no steps this sample, use current output state
+        // (this happens when accumulator hasn't reached 1.0 yet)
         float sample = 0.0f;
-        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-            if (!channelMuted_[ch]) {
-                sample += getChannelOutput(ch);
+        if (stepsThisSample > 0) {
+            // Average the accumulated outputs
+            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+                sample += channelAccum[ch] / stepsThisSample;
+            }
+        } else {
+            // No steps - just sample current state
+            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+                if (!channelMuted_[ch]) {
+                    sample += getChannelOutput(ch);
+                }
             }
         }
         sample /= 3.0f;
