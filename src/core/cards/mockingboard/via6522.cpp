@@ -194,9 +194,16 @@ void VIA6522::write(uint8_t reg, uint8_t value) {
             sr_ = value;
             break;
 
-        case REG_ACR:
+        case REG_ACR: {
+            uint8_t oldAcr = acr_;
             acr_ = value;
+            // If Timer 1 mode changed (one-shot <-> free-running), reset fired flag
+            // so the timer can fire again after a mode transition
+            if ((oldAcr & 0x40) != (value & 0x40)) {
+                t1Fired_ = false;
+            }
             break;
+        }
 
         case REG_PCR:
             pcr_ = value;
