@@ -291,10 +291,11 @@ float AY8910::getChannelOutput(int channel) const {
     bool noiseGate = noiseDisabled || noiseOutput_;
     bool output = toneGate && noiseGate;
 
-    // When output is low, return silence
-    if (!output) return 0.0f;
-
-    return volumeTable_[volume];
+    // Generate bipolar output centered at 0
+    // When output is HIGH: +volume, when LOW: -volume
+    // This creates a proper AC signal without DC offset
+    float amplitude = volumeTable_[volume];
+    return output ? amplitude : -amplitude;
 }
 
 void AY8910::setChannelMute(int channel, bool muted) {
@@ -378,7 +379,7 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             updateEnvelopeGenerator();
         }
 
-        // Mix channels
+        // Mix channels (output is now bipolar, centered at 0)
         float sample = 0.0f;
         for (int ch = 0; ch < NUM_CHANNELS; ch++) {
             if (!channelMuted_[ch]) {
