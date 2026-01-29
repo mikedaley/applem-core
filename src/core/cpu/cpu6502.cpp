@@ -28,16 +28,10 @@ void CPU6502::reset() {
 }
 
 void CPU6502::executeInstruction() {
-  // Poll for level-triggered IRQs (like VIA interrupts) only when:
-  // 1. No IRQ is already pending
-  // 2. Interrupts are enabled (I flag clear)
-  // This handles the case where a VIA IRQ is still active after RTI.
-  // We don't poll during interrupt handlers (I flag set) because:
-  // - The edge-triggered callback handles new IRQs during the handler
-  // - Polling would keep irqPending_ true even after the handler acknowledges
-  if (!irqPending_ && !getFlag(FLAG_I) && irqStatusCallback_ && irqStatusCallback_()) {
-    irqPending_ = true;
-  }
+  // Note: VIA IRQs are handled via edge-triggered callback in checkIRQ()
+  // The callback sets irqPending_ when interrupt first becomes active
+  // Level-triggered re-assertion after RTI is handled by the VIA callback
+  // mechanism - no polling needed here
 
   // Handle pending interrupts
   if (nmiPending_) {
