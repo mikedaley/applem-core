@@ -135,8 +135,19 @@ private:
     // Track if a valid PSG address was latched (AppleWin-style)
     bool psgAddressLatched_ = false;
 
+    // PSG state machine: operations only execute from INACTIVE state
+    enum PsgState { PSG_INACTIVE, PSG_READ, PSG_WRITE, PSG_LATCH };
+    PsgState psgState_ = PSG_INACTIVE;
+
+    // Bus-driven flag: true when PSG is driving port A data (READ state)
+    bool busDriven_ = false;
+
     // Previous IRQ state for edge detection (only trigger on 0->1 transition)
     bool prevIrqActive_ = false;
+
+    // IRQ delay - matches AppleWin's CheckTimerUnderflow behavior
+    int t1IrqDelay_ = 0;
+    int t2IrqDelay_ = 0;
 
     // VIA identifier for debug logging
     int viaId_ = 1;

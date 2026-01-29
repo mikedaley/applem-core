@@ -96,7 +96,7 @@ private:
     // Noise generator state
     uint32_t noiseCounter_ = 0;
     uint32_t noiseShiftReg_ = 1;  // 17-bit LFSR, must not be 0
-    bool noiseOutput_ = false;
+    bool noiseToggle_ = false;    // AppleWin/FUSE-style toggle output
 
     // Envelope generator state
     uint32_t envCounter_ = 0;

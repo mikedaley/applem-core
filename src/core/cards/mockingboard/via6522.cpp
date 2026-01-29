@@ -47,7 +47,11 @@ void VIA6522::reset() {
 
     prevPsgControl_ = 0;
     psgAddressLatched_ = false;
+    psgState_ = PSG_INACTIVE;
+    busDriven_ = false;
     prevIrqActive_ = false;
+    t1IrqDelay_ = 0;
+    t2IrqDelay_ = 0;
 }
 
 uint8_t VIA6522::read(uint8_t reg) {
@@ -68,7 +72,11 @@ uint8_t VIA6522::read(uint8_t reg) {
                 ifr_ &= ~(IRQ_CA1 | IRQ_CA2);
                 checkIRQ();
             }
-            return (ora_ & ddra_) | (ira_ & ~ddra_);
+            {
+                // Input pins: driven by PSG if in READ mode (use ira_), else float high
+                uint8_t inputBits = busDriven_ ? ira_ : 0xFF;
+                return (ora_ & ddra_) | (inputBits & ~ddra_);
+            }
 
         case REG_DDRB:
             return ddrb_;
@@ -164,7 +172,9 @@ void VIA6522::write(uint8_t reg, uint8_t value) {
         case REG_T1CH:
             t1Latch_ = (t1Latch_ & 0x00FF) | (value << 8);
             // Writing T1CH also loads counter and clears interrupt
-            t1Counter_ = t1Latch_;
+            // Real 6522 period = latch + 2 (Rockwell datasheet Fig.16)
+            // Counter starts at latch + 1 (the +2nd cycle is the write itself)
+            t1Counter_ = t1Latch_ + 1;
             t1Running_ = true;
             t1Fired_ = false;
             ifr_ &= ~IRQ_T1;
@@ -184,6 +194,7 @@ void VIA6522::write(uint8_t reg, uint8_t value) {
 
         case REG_T2CH:
             t2Counter_ = t2LatchLow_ | (value << 8);
+            t2Counter_ += 1;  // +1 extra cycle for proper period (total = latch + 2)
             t2Running_ = true;
             t2Fired_ = false;
             ifr_ &= ~IRQ_T2;
@@ -252,12 +263,10 @@ void VIA6522::update(int cycles) {
             // Check ACR for timer mode
             if (acr_ & 0x40) {
                 // Free-running mode - reload from latch and continue
-                if (t1Latch_ > 0) {
-                    overflow = overflow % (static_cast<uint32_t>(t1Latch_) + 1);
-                    t1Counter_ = t1Latch_ - static_cast<uint16_t>(overflow);
-                } else {
-                    t1Counter_ = 0;
-                }
+                // Real 6522 period = latch + 2 (Rockwell datasheet)
+                uint32_t period = static_cast<uint32_t>(t1Latch_) + 2;
+                overflow = overflow % period;
+                t1Counter_ = static_cast<uint16_t>(t1Latch_ + 1 - overflow);
                 t1Fired_ = false;  // Can fire again next time
             } else {
                 // One-shot mode - counter wraps but doesn't reload or re-fire
@@ -332,29 +341,42 @@ void VIA6522::updatePSG() {
     }
 #endif
 
-    // PSG control modes:
-    // 0x00/0x04: Inactive (BDIR=0, BC1=0)
-    // 0x01/0x05: Read from PSG (BDIR=0, BC1=1)
-    // 0x02/0x06: Write to PSG register (BDIR=1, BC1=0)
-    // 0x03/0x07: Latch address (BDIR=1, BC1=1)
+    // Compute PSG function from control bits: BC1=bit0, BDIR=bit1
+    // 0b00=INACTIVE, 0b01=READ, 0b10=WRITE, 0b11=LATCH
+    uint8_t psgFunc = control & 0x03;  // Mask out reset bit
+    PsgState newState;
+    switch (psgFunc) {
+        case 0x00: newState = PSG_INACTIVE; break;
+        case 0x01: newState = PSG_READ;     break;
+        case 0x02: newState = PSG_WRITE;    break;
+        case 0x03: newState = PSG_LATCH;    break;
+        default:   newState = PSG_INACTIVE; break;
+    }
 
-    bool isInactive = (control == 0x00 || control == 0x04);
-
-    // Transitioning to inactive - no operation needed
-    if (isInactive) {
+    // AppleWin-style: operations only execute when transitioning FROM inactive
+    if (psgState_ != PSG_INACTIVE) {
+        // Not inactive - just update state and return, no operation
+        busDriven_ = (newState == PSG_READ && psgAddressLatched_);
+        psgState_ = newState;
         return;
     }
 
-    // Latch address - trigger on ANY transition to latch state
-    // Software may do rapid latch→write→latch→write sequences without
-    // going to inactive between operations
-    if (control == 0x03 || control == 0x07) {
+    // Was inactive - execute the operation, then update state
+    psgState_ = newState;
+
+    if (newState == PSG_INACTIVE) {
+        busDriven_ = false;
+        return;
+    }
+
+    if (newState == PSG_LATCH) {
+        busDriven_ = false;
         uint8_t addr = ora_ & ddra_;
         if (addr <= 0x0F) {
             psg_->setRegisterAddress(addr);
-            psgAddressLatched_ = true;  // Mark that a valid address was latched
+            psgAddressLatched_ = true;
         } else {
-            psgAddressLatched_ = false;  // Invalid address - reject subsequent writes
+            psgAddressLatched_ = false;
 #ifdef __EMSCRIPTEN__
             if (viaDebugLogging_) {
                 EM_ASM({
@@ -366,9 +388,8 @@ void VIA6522::updatePSG() {
         return;
     }
 
-    // Write data - trigger on ANY transition to write state
-    // Only write if a valid address was previously latched (AppleWin behavior)
-    if (control == 0x02 || control == 0x06) {
+    if (newState == PSG_WRITE) {
+        busDriven_ = false;
         if (psgAddressLatched_) {
             psg_->writeRegister(ora_ & ddra_);
         } else {
@@ -383,10 +404,12 @@ void VIA6522::updatePSG() {
         return;
     }
 
-    // Read data - trigger on ANY transition to read state
-    if (control == 0x01 || control == 0x05) {
+    if (newState == PSG_READ) {
         if (psgAddressLatched_) {
             ira_ = psg_->readRegister();
+            busDriven_ = true;
+        } else {
+            busDriven_ = false;
         }
     }
 }
@@ -439,6 +462,8 @@ size_t VIA6522::exportState(uint8_t* buffer) const {
     // PSG control state
     buffer[offset++] = prevPsgControl_;
     buffer[offset++] = psgAddressLatched_ ? 1 : 0;
+    buffer[offset++] = static_cast<uint8_t>(psgState_);
+    buffer[offset++] = busDriven_ ? 1 : 0;
 
     // Pad to STATE_SIZE for consistent serialization
     while (offset < STATE_SIZE) {
@@ -486,9 +511,13 @@ void VIA6522::importState(const uint8_t* buffer) {
     // PSG control state
     prevPsgControl_ = buffer[offset++];
     psgAddressLatched_ = buffer[offset++] != 0;
+    psgState_ = static_cast<PsgState>(buffer[offset++]);
+    busDriven_ = buffer[offset++] != 0;
 
     // Restore IRQ state
     prevIrqActive_ = (ifr_ & ier_ & 0x7F) != 0;
+    t1IrqDelay_ = 0;
+    t2IrqDelay_ = 0;
 }
 
 } // namespace a2e
