@@ -138,7 +138,7 @@ int Audio::generateSamples(float *buffer, int sampleCount,
     mockingboard_->generateSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE, startCycle, endCycle);
     for (int i = 0; i < sampleCount; i++) {
       // Mix speaker and Mockingboard
-      // Mockingboard output is already properly normalized (max ~0.5 after PSG mixing)
+      // Mockingboard averages two PSGs, each with max ~1.0, so combined max is ~1.0
       float mbSample = mbBuffer[i] * volume_;
       // Additive mix - speaker clicks are transient, MB is sustained
       buffer[i] = buffer[i] + mbSample;
