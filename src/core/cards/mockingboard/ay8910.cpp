@@ -80,14 +80,18 @@ void AY8910::writeRegister(uint8_t value) {
     lastWriteReg_ = currentRegister_;
     lastWriteVal_ = value;
 
+    // TEST: Always apply immediately to see if timing is causing issues
+    applyRegisterWrite(currentRegister_, value);
+
+    // Original code (disabled for testing):
     // If we have a cycle callback, queue the write for proper timing during sample generation
-    if (cycleCallback_) {
-        uint64_t cycle = cycleCallback_();
-        pendingWrites_.push_back({cycle, currentRegister_, value});
-    } else {
-        // No timing available, apply immediately
-        applyRegisterWrite(currentRegister_, value);
-    }
+    // if (cycleCallback_) {
+    //     uint64_t cycle = cycleCallback_();
+    //     pendingWrites_.push_back({cycle, currentRegister_, value});
+    // } else {
+    //     // No timing available, apply immediately
+    //     applyRegisterWrite(currentRegister_, value);
+    // }
 
 #ifdef __EMSCRIPTEN__
     if (debugLogging_) {
