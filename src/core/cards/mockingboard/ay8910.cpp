@@ -200,9 +200,10 @@ void AY8910::updateEnvelopeGenerator() {
     envCounter_++;
     // Envelope timing: datasheet specifies clock/256 for envelope generator.
     // Since we step at clock/8 rate, we need a multiplier of 32 (8*32=256).
-    // Special case: Period 0 runs at HALF the time of period 1 (twice as fast).
-    // For period 0: use 16 (half of 32) to maintain the 2× speed relationship.
-    uint32_t threshold = (period == 0) ? 16 : static_cast<uint32_t>(period) * 32;
+    // Period 0 should be treated same as period 1 (minimum period, highest frequency)
+    // per MAME/AppleWin implementations - avoids undefined behavior.
+    uint32_t effectivePeriod = (period == 0) ? 1 : period;
+    uint32_t threshold = static_cast<uint32_t>(effectivePeriod) * 32;
     if (envCounter_ >= threshold) {
         envCounter_ = 0;
 
@@ -496,6 +497,9 @@ size_t AY8910::exportState(uint8_t* buffer) const {
 
 void AY8910::importState(const uint8_t* buffer) {
     size_t offset = 0;
+
+    // Clear any pending register writes from before state import
+    pendingWrites_.clear();
 
     // 16 registers
     for (int i = 0; i < 16; i++) {
