@@ -134,9 +134,8 @@ int Audio::generateSamples(float *buffer, int sampleCount,
     mockingboard_->generateSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE);
     for (int i = 0; i < sampleCount; i++) {
       // Mix speaker and Mockingboard
-      // Mockingboard output is normalized per-PSG (~0.33 max per channel after /3)
-      // Use 1.5x boost to avoid clipping while still being audible
-      float mbSample = mbBuffer[i] * 1.5f * volume_;
+      // Mockingboard output is already properly normalized (max ~0.5 after PSG mixing)
+      float mbSample = mbBuffer[i] * volume_;
       // Additive mix - speaker clicks are transient, MB is sustained
       buffer[i] = buffer[i] + mbSample;
       // Clamp to valid range
@@ -246,9 +245,9 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
   for (int i = 0; i < sampleCount; i++) {
     float speakerSample = speakerBuffer[i];
 
-    // Mockingboard: PSG1 left, PSG2 right with 1.5x boost
-    float mbLeft = mbBuffer[i * 2] * 1.5f * volume_;
-    float mbRight = mbBuffer[i * 2 + 1] * 1.5f * volume_;
+    // Mockingboard: PSG1 left, PSG2 right (already properly normalized)
+    float mbLeft = mbBuffer[i * 2] * volume_;
+    float mbRight = mbBuffer[i * 2 + 1] * volume_;
 
     // Mix: speaker goes to both channels
     float left = speakerSample + mbLeft;

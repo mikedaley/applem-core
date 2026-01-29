@@ -160,11 +160,10 @@ void MockingboardCard::generateSamples(float* buffer, int count, int sampleRate)
     psg1_.generateSamples(buffer, count, sampleRate);
     psg2_.generateSamples(audioBuffer1_.data(), count, sampleRate);
 
-    // Mix both PSGs together (stereo would put them in L/R channels,
-    // but for mono output we sum them)
-    // Don't attenuate here - let the final mixer handle levels
+    // Mix both PSGs together with proper attenuation to prevent clipping
+    // Each PSG outputs max ~1.0, so summing two and dividing by 2 keeps it in range
     for (int i = 0; i < count; i++) {
-        buffer[i] = buffer[i] + audioBuffer1_[i];
+        buffer[i] = (buffer[i] + audioBuffer1_[i]) * 0.5f;
     }
 }
 
