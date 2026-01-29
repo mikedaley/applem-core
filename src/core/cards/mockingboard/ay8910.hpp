@@ -110,6 +110,11 @@ private:
     // Fractional accumulator for sample rate conversion
     double phaseAccumulator_ = 0.0;
 
+    // Single-pole low-pass filter to emulate analog output roll-off
+    // Cutoff ~4kHz — tames square wave harmonics for a warmer/bassier sound
+    static constexpr float LPF_CUTOFF_HZ = 4000.0f;
+    float lpfState_ = 0.0f;
+
     // Volume table (4-bit to amplitude)
     static const float volumeTable_[16];
 

@@ -65,6 +65,7 @@ void AY8910::reset() {
     envHold_ = false;
 
     phaseAccumulator_ = 0.0;
+    lpfState_ = 0.0f;
 
     // Clear any pending register writes
     pendingWrites_.clear();
@@ -335,6 +336,10 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
     double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
     double toneStepsPerSample = cyclesPerSample / 8.0;
 
+    // Low-pass filter coefficient: α = 2πfc / (sr + 2πfc)
+    float omega = 2.0f * 3.14159265f * LPF_CUTOFF_HZ;
+    float alpha = omega / (static_cast<float>(sampleRate) + omega);
+
     uint8_t mixer = registers_[REG_MIXER];
 
     for (int i = 0; i < count; i++) {
@@ -397,7 +402,8 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
             sample += chanVal;
         }
         sample /= 3.0f;
-        buffer[i] = sample;
+        lpfState_ += alpha * (sample - lpfState_);
+        buffer[i] = lpfState_;
     }
 }
 
@@ -405,6 +411,10 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
     // PSG clock cycles per audio sample
     double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
     double toneStepsPerSample = cyclesPerSample / 8.0;
+
+    // Low-pass filter coefficient
+    float omega = 2.0f * 3.14159265f * LPF_CUTOFF_HZ;
+    float alpha = omega / (static_cast<float>(sampleRate) + omega);
 
     // Calculate CPU cycles per sample for timing
     double cpuCyclesTotal = static_cast<double>(endCycle - startCycle);
@@ -479,7 +489,8 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             sample += chanVal;
         }
         sample /= 3.0f;
-        buffer[i] = sample;
+        lpfState_ += alpha * (sample - lpfState_);
+        buffer[i] = lpfState_;
     }
 
     // Apply any remaining writes (for the end of the buffer)
