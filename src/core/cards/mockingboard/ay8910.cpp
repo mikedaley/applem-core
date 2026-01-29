@@ -368,26 +368,11 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             writeIdx++;
         }
 
-        // Track output integration over the sample period
-        // This reduces aliasing artifacts from high-frequency tones
-        std::array<float, NUM_CHANNELS> channelAccum = {0.0f, 0.0f, 0.0f};
-        int stepsThisSample = 0;
-
-        // Advance PSG state and integrate output
+        // Advance PSG state
         phaseAccumulator_ += toneStepsPerSample;
 
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
-            stepsThisSample++;
-
-            // Accumulate output BEFORE updating (captures current state)
-            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                if (!channelMuted_[ch]) {
-                    channelAccum[ch] += getChannelOutput(ch);
-                }
-            }
-
-            // Update generators
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
                 updateToneGenerator(ch);
             }
@@ -395,20 +380,11 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             updateEnvelopeGenerator();
         }
 
-        // If no steps this sample, use current output state
-        // (this happens when accumulator hasn't reached 1.0 yet)
+        // Sample current output state
         float sample = 0.0f;
-        if (stepsThisSample > 0) {
-            // Average the accumulated outputs
-            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                sample += channelAccum[ch] / stepsThisSample;
-            }
-        } else {
-            // No steps - just sample current state
-            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                if (!channelMuted_[ch]) {
-                    sample += getChannelOutput(ch);
-                }
+        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+            if (!channelMuted_[ch]) {
+                sample += getChannelOutput(ch);
             }
         }
         sample /= 3.0f;
