@@ -65,6 +65,9 @@ void AY8910::reset() {
     envHold_ = false;
 
     phaseAccumulator_ = 0.0;
+
+    // Clear any pending register writes
+    pendingWrites_.clear();
 }
 
 void AY8910::setRegisterAddress(uint8_t address) {
