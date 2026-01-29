@@ -131,7 +131,8 @@ int Audio::generateSamples(float *buffer, int sampleCount,
   // Mix in Mockingboard audio if present
   if (mockingboard_) {
     std::vector<float> mbBuffer(sampleCount);
-    mockingboard_->generateSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE);
+    // Pass cycle range for proper timing of register writes
+    mockingboard_->generateSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE, startCycle, endCycle);
     for (int i = 0; i < sampleCount; i++) {
       // Mix speaker and Mockingboard
       // Mockingboard output is already properly normalized (max ~0.5 after PSG mixing)
@@ -235,10 +236,10 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
 
   lastSampleCycle_ = currentCycle;
 
-  // Get stereo Mockingboard samples
+  // Get stereo Mockingboard samples with proper timing
   std::vector<float> mbBuffer(sampleCount * 2);
   if (mockingboard_) {
-    mockingboard_->generateStereoSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE);
+    mockingboard_->generateStereoSamples(mbBuffer.data(), sampleCount, AUDIO_SAMPLE_RATE, startCycle, endCycle);
   }
 
   // Mix speaker (center) with Mockingboard stereo

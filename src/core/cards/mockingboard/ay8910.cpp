@@ -72,8 +72,37 @@ void AY8910::setRegisterAddress(uint8_t address) {
 }
 
 void AY8910::writeRegister(uint8_t value) {
+    // Track writes for debugging
+    writeCount_++;
+    lastWriteReg_ = currentRegister_;
+    lastWriteVal_ = value;
+
+    // If we have a cycle callback, queue the write for proper timing during sample generation
+    if (cycleCallback_) {
+        uint64_t cycle = cycleCallback_();
+        pendingWrites_.push_back({cycle, currentRegister_, value});
+    } else {
+        // No timing available, apply immediately
+        applyRegisterWrite(currentRegister_, value);
+    }
+
+#ifdef __EMSCRIPTEN__
+    if (debugLogging_) {
+        const char* regName = getRegisterName(currentRegister_);
+        EM_ASM({
+            const reg = $0;
+            const val = $1;
+            const regName = UTF8ToString($2);
+            const psgId = $3;
+            console.log(`PSG${psgId}: R${reg} (${regName}) = $${val.toString(16).toUpperCase().padStart(2,'0')} (${val})`);
+        }, currentRegister_, value, regName, psgId_);
+    }
+#endif
+}
+
+void AY8910::applyRegisterWrite(uint8_t reg, uint8_t value) {
     // Apply masks based on register
-    switch (currentRegister_) {
+    switch (reg) {
         case REG_TONE_A_COARSE:
         case REG_TONE_B_COARSE:
         case REG_TONE_C_COARSE:
@@ -106,25 +135,7 @@ void AY8910::writeRegister(uint8_t value) {
             break;
     }
 
-    registers_[currentRegister_] = value;
-
-    // Track writes for debugging
-    writeCount_++;
-    lastWriteReg_ = currentRegister_;
-    lastWriteVal_ = value;
-
-#ifdef __EMSCRIPTEN__
-    if (debugLogging_) {
-        const char* regName = getRegisterName(currentRegister_);
-        EM_ASM({
-            const reg = $0;
-            const val = $1;
-            const regName = UTF8ToString($2);
-            const psgId = $3;
-            console.log(`PSG${psgId}: R${reg} (${regName}) = $${val.toString(16).toUpperCase().padStart(2,'0')} (${val})`);
-        }, currentRegister_, value, regName, psgId_);
-    }
-#endif
+    registers_[reg] = value;
 }
 
 uint8_t AY8910::readRegister() const {
@@ -297,22 +308,21 @@ bool AY8910::isChannelMuted(int channel) const {
 }
 
 void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
+    // Legacy version - apply any pending writes immediately and generate
+    for (const auto& write : pendingWrites_) {
+        applyRegisterWrite(write.reg, write.value);
+    }
+    pendingWrites_.clear();
+
     // PSG clock cycles per audio sample
     double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
-    // The tone generators run at clock/8 (not clock/16 as sometimes documented)
-    // Noise runs at clock/16, so we handle that by doubling the noise period comparison
-    // Reference: MAME, ayumi, and hardware testing confirm tone divider is 8
     double toneStepsPerSample = cyclesPerSample / 8.0;
 
     for (int i = 0; i < count; i++) {
-        // Accumulate fractional cycles
         phaseAccumulator_ += toneStepsPerSample;
 
-        // Process whole cycles
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
-
-            // Update all generators
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
                 updateToneGenerator(ch);
             }
@@ -320,23 +330,70 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
             updateEnvelopeGenerator();
         }
 
-        // Mix all channels (respecting mute state)
         float sample = 0.0f;
-        int activeChannels = 0;
         for (int ch = 0; ch < NUM_CHANNELS; ch++) {
             if (!channelMuted_[ch]) {
                 sample += getChannelOutput(ch);
-                activeChannels++;
             }
         }
-
-        // Normalize by number of active channels (or silence if all muted)
-        if (activeChannels > 0) {
-            sample /= 3.0f;  // Keep consistent normalization
-        }
-
+        sample /= 3.0f;
         buffer[i] = sample;
     }
+}
+
+void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle) {
+    // PSG clock cycles per audio sample
+    double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
+    double toneStepsPerSample = cyclesPerSample / 8.0;
+
+    // Calculate CPU cycles per sample for timing
+    double cpuCyclesTotal = static_cast<double>(endCycle - startCycle);
+    double cpuCyclesPerSample = (count > 0) ? cpuCyclesTotal / count : 0;
+
+    // Index into pending writes
+    size_t writeIdx = 0;
+
+    for (int i = 0; i < count; i++) {
+        // Calculate the CPU cycle for this sample
+        uint64_t sampleCycle = startCycle + static_cast<uint64_t>(i * cpuCyclesPerSample);
+
+        // Apply any pending writes that should happen before this sample
+        while (writeIdx < pendingWrites_.size() && pendingWrites_[writeIdx].cycle <= sampleCycle) {
+            applyRegisterWrite(pendingWrites_[writeIdx].reg, pendingWrites_[writeIdx].value);
+            writeIdx++;
+        }
+
+        // Advance PSG state
+        phaseAccumulator_ += toneStepsPerSample;
+
+        while (phaseAccumulator_ >= 1.0) {
+            phaseAccumulator_ -= 1.0;
+            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+                updateToneGenerator(ch);
+            }
+            updateNoiseGenerator();
+            updateEnvelopeGenerator();
+        }
+
+        // Mix channels
+        float sample = 0.0f;
+        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+            if (!channelMuted_[ch]) {
+                sample += getChannelOutput(ch);
+            }
+        }
+        sample /= 3.0f;
+        buffer[i] = sample;
+    }
+
+    // Apply any remaining writes (for the end of the buffer)
+    while (writeIdx < pendingWrites_.size()) {
+        applyRegisterWrite(pendingWrites_[writeIdx].reg, pendingWrites_[writeIdx].value);
+        writeIdx++;
+    }
+
+    // Clear processed writes
+    pendingWrites_.clear();
 }
 
 void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, int channel) {

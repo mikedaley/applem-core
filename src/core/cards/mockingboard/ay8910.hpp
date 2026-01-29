@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <array>
+#include <vector>
+#include <functional>
 
 namespace a2e {
 
@@ -14,6 +16,8 @@ public:
     // Apple IIe runs at 1.023 MHz (actually 1.0227272... MHz from 14.31818 MHz / 14)
     static constexpr int PSG_CLOCK = 1023000;  // ~1.023 MHz for accuracy
 
+    using CycleCallback = std::function<uint64_t()>;
+
     AY8910();
 
     // Set PSG ID for debug logging (1 or 2)
@@ -22,12 +26,17 @@ public:
     // Enable/disable console debug logging
     static void setDebugLogging(bool enabled);
 
+    // Set callback to get current CPU cycle (for timestamping register writes)
+    void setCycleCallback(CycleCallback callback) { cycleCallback_ = std::move(callback); }
+
     // Register access via 6522 VIA
     void setRegisterAddress(uint8_t address);
     void writeRegister(uint8_t value);
     uint8_t readRegister() const;
 
-    // Audio generation
+    // Audio generation - pass cycle range for proper timing
+    void generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle);
+    // Legacy version without timing (uses immediate register values)
     void generateSamples(float* buffer, int count, int sampleRate);
     void generateChannelSamples(float* buffer, int count, int sampleRate, int channel);
 
@@ -109,6 +118,18 @@ private:
     uint8_t lastWriteReg_ = 0;
     uint8_t lastWriteVal_ = 0;
     int psgId_ = 1;  // PSG identifier for logging
+
+    // Timestamped register writes for accurate sample generation
+    struct RegisterWrite {
+        uint64_t cycle;
+        uint8_t reg;
+        uint8_t value;
+    };
+    std::vector<RegisterWrite> pendingWrites_;
+    CycleCallback cycleCallback_;
+
+    // Apply a register write (internal, doesn't timestamp)
+    void applyRegisterWrite(uint8_t reg, uint8_t value);
 
     // Helper methods
     uint16_t getTonePeriod(int channel) const;

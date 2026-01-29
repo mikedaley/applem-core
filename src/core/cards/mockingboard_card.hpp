@@ -57,7 +57,12 @@ public:
     void update(int cycles) override;
 
     void setIRQCallback(IRQCallback callback) override;
-    void setCycleCallback(CycleCallback callback) override { cycleCallback_ = std::move(callback); }
+    void setCycleCallback(CycleCallback callback) override {
+        cycleCallback_ = callback;
+        // Pass to PSGs for timestamped register writes
+        psg1_.setCycleCallback(callback);
+        psg2_.setCycleCallback(callback);
+    }
 
     bool isIRQActive() const override;
 
@@ -74,20 +79,24 @@ public:
     // ===== Audio Generation =====
 
     /**
-     * Generate mono audio samples
-     * @param buffer Output buffer
-     * @param count Number of samples
-     * @param sampleRate Sample rate in Hz
+     * Generate mono audio samples (legacy, no timing)
      */
     void generateSamples(float* buffer, int count, int sampleRate);
 
     /**
-     * Generate stereo audio samples
-     * @param buffer Output buffer (interleaved L/R)
-     * @param count Number of sample frames
-     * @param sampleRate Sample rate in Hz
+     * Generate mono audio samples with proper timing
+     */
+    void generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle);
+
+    /**
+     * Generate stereo audio samples (legacy, no timing)
      */
     void generateStereoSamples(float* buffer, int count, int sampleRate);
+
+    /**
+     * Generate stereo audio samples with proper timing
+     */
+    void generateStereoSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle);
 
     /**
      * Enable/disable debug logging

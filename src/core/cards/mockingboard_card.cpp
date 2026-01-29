@@ -144,24 +144,40 @@ size_t MockingboardCard::deserialize(const uint8_t* buffer, size_t size) {
 
 void MockingboardCard::generateSamples(float* buffer, int count, int sampleRate) {
     if (!enabled_ || count <= 0) {
-        // Fill with silence
         for (int i = 0; i < count; i++) {
             buffer[i] = 0.0f;
         }
         return;
     }
 
-    // Ensure buffer is large enough (only reallocates if needed)
     if (static_cast<int>(audioBuffer1_.size()) < count) {
         audioBuffer1_.resize(count);
     }
 
-    // Generate samples from both PSGs
     psg1_.generateSamples(buffer, count, sampleRate);
     psg2_.generateSamples(audioBuffer1_.data(), count, sampleRate);
 
-    // Mix both PSGs together with proper attenuation to prevent clipping
-    // Each PSG outputs max ~1.0, so summing two and dividing by 2 keeps it in range
+    for (int i = 0; i < count; i++) {
+        buffer[i] = (buffer[i] + audioBuffer1_[i]) * 0.5f;
+    }
+}
+
+void MockingboardCard::generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle) {
+    if (!enabled_ || count <= 0) {
+        for (int i = 0; i < count; i++) {
+            buffer[i] = 0.0f;
+        }
+        return;
+    }
+
+    if (static_cast<int>(audioBuffer1_.size()) < count) {
+        audioBuffer1_.resize(count);
+    }
+
+    // Generate with proper timing
+    psg1_.generateSamples(buffer, count, sampleRate, startCycle, endCycle);
+    psg2_.generateSamples(audioBuffer1_.data(), count, sampleRate, startCycle, endCycle);
+
     for (int i = 0; i < count; i++) {
         buffer[i] = (buffer[i] + audioBuffer1_[i]) * 0.5f;
     }
@@ -169,14 +185,12 @@ void MockingboardCard::generateSamples(float* buffer, int count, int sampleRate)
 
 void MockingboardCard::generateStereoSamples(float* buffer, int count, int sampleRate) {
     if (!enabled_ || count <= 0) {
-        // Fill with silence (interleaved stereo)
         for (int i = 0; i < count * 2; i++) {
             buffer[i] = 0.0f;
         }
         return;
     }
 
-    // Ensure buffers are large enough (only reallocates if needed)
     if (static_cast<int>(audioBuffer1_.size()) < count) {
         audioBuffer1_.resize(count);
     }
@@ -184,14 +198,37 @@ void MockingboardCard::generateStereoSamples(float* buffer, int count, int sampl
         audioBuffer2_.resize(count);
     }
 
-    // Generate samples from both PSGs into preallocated buffers
     psg1_.generateSamples(audioBuffer1_.data(), count, sampleRate);
     psg2_.generateSamples(audioBuffer2_.data(), count, sampleRate);
 
-    // Interleave: PSG1 on left channel, PSG2 on right channel
     for (int i = 0; i < count; i++) {
-        buffer[i * 2] = audioBuffer1_[i];      // Left channel
-        buffer[i * 2 + 1] = audioBuffer2_[i];  // Right channel
+        buffer[i * 2] = audioBuffer1_[i];
+        buffer[i * 2 + 1] = audioBuffer2_[i];
+    }
+}
+
+void MockingboardCard::generateStereoSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle) {
+    if (!enabled_ || count <= 0) {
+        for (int i = 0; i < count * 2; i++) {
+            buffer[i] = 0.0f;
+        }
+        return;
+    }
+
+    if (static_cast<int>(audioBuffer1_.size()) < count) {
+        audioBuffer1_.resize(count);
+    }
+    if (static_cast<int>(audioBuffer2_.size()) < count) {
+        audioBuffer2_.resize(count);
+    }
+
+    // Generate with proper timing
+    psg1_.generateSamples(audioBuffer1_.data(), count, sampleRate, startCycle, endCycle);
+    psg2_.generateSamples(audioBuffer2_.data(), count, sampleRate, startCycle, endCycle);
+
+    for (int i = 0; i < count; i++) {
+        buffer[i * 2] = audioBuffer1_[i];
+        buffer[i * 2 + 1] = audioBuffer2_[i];
     }
 }
 
