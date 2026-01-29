@@ -68,7 +68,13 @@ public:
   }
 
   // Cycle counting
-  uint64_t getTotalCycles() const { return totalCycles_; }
+  // During instruction execution (cycleCount_ > 0), return the cycle of
+  // the last bus access — this matches when the 6502 performs the effective
+  // memory read/write that triggers soft switch callbacks.
+  // Between instructions (cycleCount_ == 0), return the plain total.
+  uint64_t getTotalCycles() const {
+    return cycleCount_ > 0 ? totalCycles_ + cycleCount_ - 1 : totalCycles_;
+  }
   void resetCycleCount() { totalCycles_ = 0; }
   void setTotalCycles(uint64_t cycles) { totalCycles_ = cycles; }
 

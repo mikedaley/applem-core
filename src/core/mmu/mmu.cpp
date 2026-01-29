@@ -668,9 +668,9 @@ uint8_t MMU::getFloatingBusValue() {
   // within the frame.
   //
   // Apple IIe timing:
-  // - 65 cycles per scanline (40 visible + 25 horizontal blank)
+  // - 65 cycles per scanline (25 hblank + 40 visible)
   // - 262 scanlines per frame (192 visible + 70 vertical blank)
-  // - During visible portion, video reads from screen memory
+  // - Cycles 0-24: horizontal blanking, cycles 25-64: visible display
 
   if (!cycleCallback_) {
     return 0x00;
@@ -681,11 +681,14 @@ uint8_t MMU::getFloatingBusValue() {
   uint32_t scanline = frameCycle / CYCLES_PER_SCANLINE;
   uint32_t hPos = frameCycle % CYCLES_PER_SCANLINE;
 
-  // During horizontal blank (cycles 40-64), video still reads but from
+  // During horizontal blank (cycles 0-24), video reads from
   // unpredictable locations. Return 0 for simplicity during hblank.
-  if (hPos >= 40) {
+  if (hPos < 25) {
     return 0x00;
   }
+
+  // Convert to visible column (0-39)
+  uint32_t col = hPos - 25;
 
   // During vertical blank (scanlines 192-261), return data from the
   // last few lines' worth of addresses (video wraps during vblank)
@@ -715,7 +718,7 @@ uint8_t MMU::getFloatingBusValue() {
         0x028, 0x0A8, 0x128, 0x1A8, 0x228, 0x2A8, 0x328, 0x3A8,
         0x050, 0x0D0, 0x150, 0x1D0, 0x250, 0x2D0, 0x350, 0x3D0};
 
-    address = base + rowOffsets[textRow] + hPos;
+    address = base + rowOffsets[textRow] + col;
   } else {
     // HiRes mode - reads from hi-res page
     uint16_t base = switches_.page2 ? 0x4000 : 0x2000;
@@ -731,7 +734,7 @@ uint8_t MMU::getFloatingBusValue() {
     // Lines 0,8,16,24,32,40,48,56 of each group start at group*$28
     // Plus $80 for each subgroup, plus $400 for each line within subgroup
     uint16_t offset = (group * 0x28) + (subGroup * 0x80) + (lineInSubGroup * 0x400);
-    address = base + offset + hPos;
+    address = base + offset + col;
   }
 
   // Read from the appropriate memory bank

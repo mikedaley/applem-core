@@ -521,6 +521,11 @@ void Video::renderFrame() {
     flashState_ = !flashState_;
   }
 
+  // Apple IIe horizontal timing: each 65-cycle scanline starts with
+  // 25 cycles of horizontal blanking, then 40 cycles of visible display.
+  // Cycles 0-24: hblank, cycles 25-64: visible columns 0-39.
+  static constexpr int HBLANK_CYCLES = 25;
+
   if (switchChangeCount_ == 0) {
     // Fast path: single mode for entire frame
     for (int s = 0; s < 192; s++) {
@@ -533,28 +538,30 @@ void Video::renderFrame() {
 
     for (int scanline = 0; scanline < 192; scanline++) {
       uint32_t scanlineStartCycle = scanline * CYCLES_PER_SCANLINE;
-      uint32_t scanlineVisibleEnd = scanlineStartCycle + 40;
+      uint32_t visibleStartCycle = scanlineStartCycle + HBLANK_CYCLES;
       uint32_t scanlineEndCycle = scanlineStartCycle + CYCLES_PER_SCANLINE;
 
-      int col = 0;
-
-      // Process changes within the visible portion of this scanline
+      // Phase 1: Consume hblank changes (cycles 0-24) and any earlier changes
       while (changeIdx < switchChangeCount_) {
         uint32_t changeCycle = switchChanges_[changeIdx].cycleOffset;
+        if (changeCycle >= visibleStartCycle) {
+          break; // Change is in visible area or a later scanline
+        }
+        currentState = switchChanges_[changeIdx].state;
+        changeIdx++;
+      }
 
-        if (changeCycle >= scanlineVisibleEnd) {
-          break; // Change is in hblank or a later scanline
+      // Phase 2: Process visible-area changes (cycles 25-64 → columns 0-39)
+      int col = 0;
+      while (changeIdx < switchChangeCount_) {
+        uint32_t changeCycle = switchChanges_[changeIdx].cycleOffset;
+        if (changeCycle >= scanlineEndCycle) {
+          break; // Belongs to a later scanline
         }
 
-        if (changeCycle < scanlineStartCycle) {
-          // Change was before this scanline — catch up state
-          currentState = switchChanges_[changeIdx].state;
-          changeIdx++;
-          continue;
-        }
+        int changeCol = static_cast<int>(changeCycle - visibleStartCycle);
+        if (changeCol > 40) changeCol = 40;
 
-        // Change is within visible portion of this scanline
-        int changeCol = static_cast<int>(changeCycle - scanlineStartCycle);
         if (changeCol > col) {
           renderScanlineSegment(scanline, col, changeCol, currentState);
           col = changeCol;
@@ -567,16 +574,6 @@ void Video::renderFrame() {
       // Render remaining visible columns
       if (col < 40) {
         renderScanlineSegment(scanline, col, 40, currentState);
-      }
-
-      // Consume hblank changes for this scanline
-      while (changeIdx < switchChangeCount_) {
-        uint32_t changeCycle = switchChanges_[changeIdx].cycleOffset;
-        if (changeCycle >= scanlineEndCycle) {
-          break; // Belongs to a later scanline
-        }
-        currentState = switchChanges_[changeIdx].state;
-        changeIdx++;
       }
     }
   }
