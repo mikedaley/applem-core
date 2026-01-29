@@ -204,12 +204,14 @@ void AY8910::updateEnvelopeGenerator() {
     uint16_t period = getEnvPeriod();
 
     envCounter_++;
-    // Envelope timing: datasheet specifies clock/256 for envelope generator.
-    // Since we step at clock/8 rate, we need a multiplier of 32 (8*32=256).
+    // Envelope counter runs at the same rate as tone counters (master/8).
+    // FUSE/AppleWin compare directly against the period value — no multiplier.
+    // The datasheet's fE = fCLOCK/(256*EP) refers to a full 32-step triangle
+    // (16 up + 16 down), so each individual step = EP ticks at master/8.
     // Period 0 should be treated same as period 1 (minimum period, highest frequency)
     // per MAME/AppleWin implementations - avoids undefined behavior.
     uint32_t effectivePeriod = (period == 0) ? 1 : period;
-    uint32_t threshold = static_cast<uint32_t>(effectivePeriod) * 32;
+    uint32_t threshold = static_cast<uint32_t>(effectivePeriod);
     if (envCounter_ >= threshold) {
         envCounter_ = 0;
 
