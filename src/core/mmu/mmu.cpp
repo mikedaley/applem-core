@@ -859,35 +859,45 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     return getFloatingBusValue();
   case 0x5E:
     switches_.an3 = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // AN3 OFF = DHIRES enabled
   case 0x5F:
     switches_.an3 = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // AN3 ON = DHIRES disabled
 
   // Display switches - reading also sets the switch, returns floating bus
   case 0x50:
     switches_.text = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // TXTCLR (graphics)
   case 0x51:
     switches_.text = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // TXTSET (text)
   case 0x52:
     switches_.mixed = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // MIXCLR
   case 0x53:
     switches_.mixed = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // MIXSET
   case 0x54:
     switches_.page2 = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // LOWSCR (page 1)
   case 0x55:
     switches_.page2 = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // HISCR (page 2)
   case 0x56:
     switches_.hires = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // LORES
   case 0x57:
     switches_.hires = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     return getFloatingBusValue(); // HIRES
 
   // 80-column / memory switches (IIe specific)
@@ -1096,9 +1106,11 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
   // 80STORE
   case 0x00:
     switches_.store80 = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x01:
     switches_.store80 = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
 
   // Memory switches
@@ -1134,41 +1146,53 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
     break;
   case 0x0C:
     switches_.col80 = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x0D:
     switches_.col80 = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x0E:
     switches_.altCharSet = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x0F:
     switches_.altCharSet = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
 
   // Display switches
   case 0x50:
     switches_.text = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x51:
     switches_.text = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x52:
     switches_.mixed = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x53:
     switches_.mixed = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x54:
     switches_.page2 = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x55:
     switches_.page2 = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x56:
     switches_.hires = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x57:
     switches_.hires = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
 
   // Paddle trigger (write also triggers)
@@ -1197,9 +1221,11 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
     break;
   case 0x5E:
     switches_.an3 = false;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
   case 0x5F:
     switches_.an3 = true;
+    if (videoSwitchCallback_) videoSwitchCallback_();
     break;
 
   // Slot I/O space: $C090-$C0FF (slots 1-7)

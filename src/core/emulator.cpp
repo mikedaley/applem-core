@@ -34,6 +34,10 @@ Emulator::Emulator() {
   mmu_->setButtonCallback([this](int btn) { return getButtonState(btn); });
   mmu_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
 
+  // Wire video subsystem callbacks
+  video_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
+  mmu_->setVideoSwitchCallback([this]() { video_->onVideoSwitchChanged(); });
+
   // Connect disk controller to MMU
   mmu_->setDiskController(disk_.get());
 
@@ -83,6 +87,8 @@ void Emulator::reset() {
   frameReady_ = false;
   breakpointHit_ = false;
   paused_ = false;
+
+  video_->beginNewFrame(0);
 }
 
 void Emulator::warmReset() {
@@ -140,8 +146,12 @@ void Emulator::runCycles(int cycles) {
     // Check for frame boundary
     uint64_t currentCycle = cpu_->getTotalCycles();
     if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
-      lastFrameCycle_ = currentCycle;
-      video_->renderFrame();
+      // Advance by exactly CYCLES_PER_FRAME to stay aligned with VBL detection
+      // ($C019 uses cycles % CYCLES_PER_FRAME). Using currentCycle would drift
+      // by a few cycles each frame, desynchronizing raster effects.
+      lastFrameCycle_ += CYCLES_PER_FRAME;
+      video_->renderFrame();                   // Uses this frame's change log
+      video_->beginNewFrame(lastFrameCycle_);   // Reset log, aligned to frame boundary
       frameReady_ = true;
     }
   }
@@ -302,8 +312,9 @@ void Emulator::stepInstruction() {
   // Check for frame boundary
   uint64_t currentCycle = cpu_->getTotalCycles();
   if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
-    lastFrameCycle_ = currentCycle;
+    lastFrameCycle_ += CYCLES_PER_FRAME;
     video_->renderFrame();
+    video_->beginNewFrame(lastFrameCycle_);
     frameReady_ = true;
   }
 }

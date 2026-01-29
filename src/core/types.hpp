@@ -168,4 +168,22 @@ constexpr std::array<uint32_t, 16> DLGR_COLORS = {{
     0xFFF1F1F1  // 15: White       (LORES[15])
 }};
 
+// Snapshot of video-relevant soft switch state for per-scanline rendering
+struct VideoSwitchState {
+  bool text;
+  bool mixed;
+  bool page2;
+  bool hires;
+  bool col80;
+  bool altCharSet;
+  bool store80;
+  bool an3;
+};
+
+// Records a video switch change at a specific cycle within a frame
+struct VideoSwitchChange {
+  uint32_t cycleOffset;       // Cycle offset from frame start
+  VideoSwitchState state;     // Full snapshot after the change
+};
+
 } // namespace a2e

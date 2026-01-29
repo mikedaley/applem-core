@@ -4,11 +4,14 @@
 #include "../types.hpp"
 #include <array>
 #include <cstdint>
+#include <functional>
 
 namespace a2e {
 
 class Video {
 public:
+  using CycleCallback = std::function<uint64_t()>;
+
   Video(MMU &mmu);
 
   // Render a complete frame to the framebuffer
@@ -40,29 +43,50 @@ public:
   void setUKCharacterSet(bool uk) { ukCharSet_ = uk; }
   bool isUKCharacterSet() const { return ukCharSet_; }
 
+  // Cycle callback for determining current position within frame
+  void setCycleCallback(CycleCallback cb) { cycleCallback_ = std::move(cb); }
+
+  // Called by MMU callback when a video-relevant soft switch changes
+  void onVideoSwitchChanged();
+
+  // Called at frame boundaries to reset the change log and snapshot state
+  void beginNewFrame(uint64_t cycleStart);
+
 private:
-  // Rendering methods for each mode
-  void renderText40();
-  void renderText80();
-  void renderLoRes();
-  void renderHiRes();
-  void renderDoubleLoRes();
-  void renderDoubleHiRes();
+  // Per-scanline segment rendering (column range within a single scanline)
+  // startCol/endCol are byte positions 0-40 (one per CPU cycle in visible area)
+  void renderText40Scanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void renderText80Scanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void renderLoResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void renderHiResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void renderDoubleLoResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void renderDoubleHiResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
 
-  // Mixed mode handling
-  void renderMixedMode();
+  // Dispatch a scanline segment to the correct mode renderer, handling mixed mode
+  void renderScanlineSegment(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
 
-  // Character rendering
-  void renderCharacter(int x, int y, uint8_t ch, bool inverse, bool flash);
-  void renderCharacter80(int x, int y, uint8_t ch, bool inverse, bool flash);
+  // Character rendering — single character row (1 ROM line → 2 framebuffer rows)
+  void renderCharacterLine(int col, int textRow, int charLine,
+                           uint8_t ch, bool inverse, bool flash,
+                           const VideoSwitchState& vs, bool is80col);
+
+  // Character ROM offset helper (shared between 40-col and 80-col paths)
+  struct CharROMInfo {
+    uint16_t romOffset;
+    bool needsXor;
+    bool inverse;
+  };
+  CharROMInfo getCharROMInfo(uint8_t ch, bool inverse, bool flash,
+                             const VideoSwitchState& vs) const;
+
+  // Capture current video switch state from MMU
+  VideoSwitchState captureVideoState() const;
 
   // Pixel helpers
   void setPixel(int x, int y, uint32_t color);
-  void setPixelScaled(int x, int y, uint32_t color); // 2x scaling
 
   // Color helpers
   uint32_t getLoResColor(uint8_t colorIndex) const;
-  uint32_t getHiResColor(int x, uint8_t pattern, bool highBit) const;
   uint32_t getMonochromeColor(bool on) const;
 
   // Text screen address calculation
@@ -87,6 +111,17 @@ private:
   bool monochrome_ = false;
   bool greenPhosphor_ = false;
   bool ukCharSet_ = false;  // UK character set switch
+
+  // Cycle callback for position calculation
+  CycleCallback cycleCallback_;
+
+  // Per-scanline rendering: frame start cycle and switch change log
+  uint64_t frameStartCycle_ = 0;
+  VideoSwitchState frameStartState_{};
+
+  static constexpr int MAX_SWITCH_CHANGES = 1024;
+  std::array<VideoSwitchChange, MAX_SWITCH_CHANGES> switchChanges_;
+  int switchChangeCount_ = 0;
 
   // Lookup tables
   static constexpr std::array<int, 24> TEXT_ROW_OFFSETS = {

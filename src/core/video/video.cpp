@@ -1,25 +1,8 @@
 #include "video.hpp"
+#include <algorithm>
 #include <cstring>
 
 namespace a2e {
-
-// Helper function to blend two ARGB colors
-static uint32_t blendColors(uint32_t c1, uint32_t c2, float factor) {
-  uint8_t a1 = (c1 >> 24) & 0xFF;
-  uint8_t r1 = (c1 >> 16) & 0xFF;
-  uint8_t g1 = (c1 >> 8) & 0xFF;
-  uint8_t b1 = c1 & 0xFF;
-
-  uint8_t r2 = (c2 >> 16) & 0xFF;
-  uint8_t g2 = (c2 >> 8) & 0xFF;
-  uint8_t b2 = c2 & 0xFF;
-
-  uint8_t r = static_cast<uint8_t>(r1 * (1.0f - factor) + r2 * factor);
-  uint8_t g = static_cast<uint8_t>(g1 * (1.0f - factor) + g2 * factor);
-  uint8_t b = static_cast<uint8_t>(b1 * (1.0f - factor) + b2 * factor);
-
-  return (a1 << 24) | (r << 16) | (g << 8) | b;
-}
 
 Video::Video(MMU &mmu) : mmu_(mmu) {
   // Initialize framebuffer to black
@@ -48,643 +31,58 @@ VideoMode Video::getCurrentMode() const {
   return VideoMode::LORES;
 }
 
-void Video::renderFrame() {
+// ============================================================================
+// Raster rendering infrastructure
+// ============================================================================
+
+VideoSwitchState Video::captureVideoState() const {
   const auto &sw = mmu_.getSoftSwitches();
-
-  // Update flash state
-  flashCounter_++;
-  if (flashCounter_ >= FLASH_RATE) {
-    flashCounter_ = 0;
-    flashState_ = !flashState_;
-  }
-
-  if (sw.text) {
-    // Text mode
-    if (sw.col80) {
-      renderText80();
-    } else {
-      renderText40();
-    }
-  } else if (sw.hires) {
-    // Hi-res graphics
-    // DHR requires: AN3 OFF (!an3), 80COL on
-    if (sw.col80 && !sw.an3) {
-      renderDoubleHiRes();
-    } else {
-      renderHiRes();
-    }
-
-    // Mixed mode - render text at bottom
-    if (sw.mixed) {
-      renderMixedMode();
-    }
-  } else {
-    // Lo-res graphics
-    // Double LoRes: AN3 OFF (!an3), 80COL on
-    if (sw.col80 && !sw.an3) {
-      renderDoubleLoRes();
-    } else {
-      renderLoRes();
-    }
-
-    // Mixed mode - render text at bottom
-    if (sw.mixed) {
-      renderMixedMode();
-    }
-  }
-
-  frameDirty_ = true;
+  return {sw.text, sw.mixed, sw.page2, sw.hires,
+          sw.col80, sw.altCharSet, sw.store80, sw.an3};
 }
 
-void Video::renderMixedMode() {
-  const auto &sw = mmu_.getSoftSwitches();
+void Video::onVideoSwitchChanged() {
+  VideoSwitchState newState = captureVideoState();
 
-  // Render bottom 4 lines (rows 20-23) as text
-  for (int row = 20; row < 24; row++) {
-    for (int col = 0; col < 40; col++) {
-      uint16_t addr = getTextAddress(row, col);
+  // Compare against last logged state to avoid redundant entries
+  const VideoSwitchState &lastState =
+      (switchChangeCount_ > 0) ? switchChanges_[switchChangeCount_ - 1].state
+                                : frameStartState_;
 
-      // Determine page offset - PAGE2 without 80STORE displays page 2
-      uint16_t pageOffset = (sw.page2 && !sw.store80) ? 0x0400 : 0x0000;
-
-      if (sw.col80) {
-        // 80-column mode - interleaved main/aux memory
-        uint8_t mainCh = mmu_.readRAM(addr + pageOffset, false);
-        uint8_t auxCh = mmu_.readRAM(addr + pageOffset, true);
-
-        bool mainInverse = (mainCh & 0xC0) == 0x00;
-        bool mainFlash = (mainCh & 0xC0) == 0x40;
-        bool auxInverse = (auxCh & 0xC0) == 0x00;
-        bool auxFlash = (auxCh & 0xC0) == 0x40;
-
-        renderCharacter80(col * 2, row, auxCh, auxInverse, auxFlash);
-        renderCharacter80(col * 2 + 1, row, mainCh, mainInverse, mainFlash);
-      } else {
-        // 40-column mode
-        uint8_t ch = mmu_.readRAM(addr + pageOffset, false);
-        bool inverse = (ch & 0xC0) == 0x00;
-        bool flash = (ch & 0xC0) == 0x40;
-        renderCharacter(col, row, ch, inverse, flash);
-      }
-    }
+  if (std::memcmp(&newState, &lastState, sizeof(VideoSwitchState)) == 0) {
+    return; // No actual change
   }
+
+  if (switchChangeCount_ >= MAX_SWITCH_CHANGES) {
+    return; // Log full, drop this change
+  }
+
+  uint32_t cycleOffset = 0;
+  if (cycleCallback_) {
+    uint64_t currentCycle = cycleCallback_();
+    cycleOffset = static_cast<uint32_t>(currentCycle - frameStartCycle_);
+  }
+
+  switchChanges_[switchChangeCount_] = {cycleOffset, newState};
+  switchChangeCount_++;
 }
 
-void Video::renderText40() {
-  const auto &sw = mmu_.getSoftSwitches();
-
-  for (int row = 0; row < 24; row++) {
-    for (int col = 0; col < 40; col++) {
-      uint16_t addr = getTextAddress(row, col);
-
-      // Determine which memory page
-      uint8_t ch;
-      if (sw.page2 && !sw.store80) {
-        ch = mmu_.readRAM(addr + 0x0400, false);
-      } else {
-        ch = mmu_.readRAM(addr, false);
-      }
-
-      // Character attributes
-      bool inverse = (ch & 0xC0) == 0x00;
-      bool flash = (ch & 0xC0) == 0x40;
-
-      renderCharacter(col, row, ch, inverse, flash);
-    }
-  }
+void Video::beginNewFrame(uint64_t cycleStart) {
+  frameStartCycle_ = cycleStart;
+  frameStartState_ = captureVideoState();
+  switchChangeCount_ = 0;
 }
 
-void Video::renderText80() {
-  const auto &sw = mmu_.getSoftSwitches();
+// ============================================================================
+// Character ROM offset helper (deduplicates 40-col and 80-col logic)
+// ============================================================================
 
-  for (int row = 0; row < 24; row++) {
-    for (int col = 0; col < 40; col++) {
-      uint16_t addr = getTextAddress(row, col);
-
-      // Determine page offset - PAGE2 without 80STORE displays page 2
-      uint16_t pageOffset = (sw.page2 && !sw.store80) ? 0x0400 : 0x0000;
-
-      // Main memory character (odd columns in display)
-      uint8_t mainCh = mmu_.readRAM(addr + pageOffset, false);
-
-      // Aux memory character (even columns in display)
-      uint8_t auxCh = mmu_.readRAM(addr + pageOffset, true);
-
-      // Render aux character first (even column)
-      bool auxInverse = (auxCh & 0xC0) == 0x00;
-      bool auxFlash = (auxCh & 0xC0) == 0x40;
-      renderCharacter80(col * 2, row, auxCh, auxInverse, auxFlash);
-
-      // Render main character (odd column)
-      bool mainInverse = (mainCh & 0xC0) == 0x00;
-      bool mainFlash = (mainCh & 0xC0) == 0x40;
-      renderCharacter80(col * 2 + 1, row, mainCh, mainInverse, mainFlash);
-    }
-  }
-}
-
-void Video::renderLoRes() {
-  const auto &sw = mmu_.getSoftSwitches();
-
-  for (int row = 0; row < 24; row++) {
-    // In mixed mode, only render graphics for top 20 rows
-    if (sw.mixed && row >= 20)
-      break;
-
-    for (int col = 0; col < 40; col++) {
-      uint16_t addr = getTextAddress(row, col);
-
-      uint8_t colorByte;
-      if (sw.page2 && !sw.store80) {
-        colorByte = mmu_.readRAM(addr + 0x0400, false);
-      } else {
-        colorByte = mmu_.readRAM(addr, false);
-      }
-
-      // Each byte contains two 4-bit colors (top and bottom halves)
-      uint8_t topColor = colorByte & 0x0F;
-      uint8_t bottomColor = (colorByte >> 4) & 0x0F;
-
-      uint32_t topRGB = getLoResColor(topColor);
-      uint32_t bottomRGB = getLoResColor(bottomColor);
-
-      // Each lo-res "pixel" is 14x8 screen pixels (with 2x scaling: 14x16)
-      int screenX = col * 14;
-      int screenY = row * 16;
-
-      // Top half
-      for (int py = 0; py < 8; py++) {
-        for (int px = 0; px < 14; px++) {
-          setPixel(screenX + px, screenY + py, topRGB);
-        }
-      }
-
-      // Bottom half
-      for (int py = 8; py < 16; py++) {
-        for (int px = 0; px < 14; px++) {
-          setPixel(screenX + px, screenY + py, bottomRGB);
-        }
-      }
-    }
-  }
-}
-
-void Video::renderHiRes() {
-  // Apple II Hi-Res Graphics: 280x192 with NTSC artifact coloring
-  //
-  // Technical background:
-  // - Each scanline is 40 bytes, each byte contributes 7 dots (280 total)
-  // - Bit 0 (LSB) of each byte is the leftmost dot
-  // - Bit 7 (high bit) selects the color palette for ALL 7 dots in that byte:
-  //   - High bit = 0: Group 1 (Violet on even columns, Green on odd)
-  //   - High bit = 1: Group 2 (Blue on even columns, Orange on odd)
-  //
-  // NTSC artifact color rules:
-  // - Each dot is 1/2 of an NTSC color clock cycle (140ns)
-  // - A single ON dot produces an artifact color based on its phase (column)
-  // - Two adjacent ON dots = one full color clock = white
-  // - The transition from ON to OFF (and vice versa) creates color fringing
-  //   which is handled by the CRT shader's NTSC fringing effect
-  //
-  // References:
-  // - Apple IIe Technical Reference Manual, Chapter 2
-  // - https://www.xtof.info/hires-graphics-apple-ii.html
-
-  const auto &sw = mmu_.getSoftSwitches();
-  int maxRow = sw.mixed ? 160 : 192;
-
-  for (int row = 0; row < maxRow; row++) {
-    // Build scanline arrays: 280 dots plus padding for neighbor checks
-    uint8_t dots[280] = {0};
-    uint8_t highBits[280] = {0};
-
-    // Extract dots and high bits from memory
-    for (int col = 0; col < 40; col++) {
-      uint16_t addr = getHiResAddress(row, col);
-
-      uint8_t dataByte;
-      if (sw.page2 && !sw.store80) {
-        dataByte = mmu_.readRAM(addr + 0x2000, false);
-      } else {
-        dataByte = mmu_.readRAM(addr, false);
-      }
-
-      // High bit affects all 7 dots in this byte (palette selection)
-      bool highBit = (dataByte & 0x80) != 0;
-
-      // Extract 7 dots (bit 0 = leftmost)
-      for (int bit = 0; bit < 7; bit++) {
-        int dotX = col * 7 + bit;
-        dots[dotX] = (dataByte & (1 << bit)) ? 1 : 0;
-        highBits[dotX] = highBit ? 1 : 0;
-      }
-    }
-
-    int screenY = row * 2;
-
-    if (monochrome_) {
-      // Monochrome mode: simple 1-bit display
-      for (int x = 0; x < 280; x++) {
-        uint32_t color = getMonochromeColor(dots[x] != 0);
-        int screenX = x * 2;
-        setPixel(screenX, screenY, color);
-        setPixel(screenX + 1, screenY, color);
-        setPixel(screenX, screenY + 1, color);
-        setPixel(screenX + 1, screenY + 1, color);
-      }
-    } else {
-      // NTSC artifact color mode
-      for (int x = 0; x < 280; x++) {
-        uint32_t color;
-        bool highBit = highBits[x] != 0;
-        bool dotOn = dots[x] != 0;
-
-        // Check neighbors for pattern detection
-        bool prevOn = (x > 0) && dots[x - 1];
-        bool nextOn = (x < 279) && dots[x + 1];
-
-        if (!dotOn) {
-          // OFF dot - check for alternating pattern
-          //
-          // On real hardware, an alternating pattern like 10101010 produces
-          // a continuous colored line, not individual dots with gaps.
-          // The NTSC signal blends the alternating dots into a solid color.
-          //
-          // Detect alternating: OFF dot with ON neighbors, where those ONs
-          // are themselves isolated (their far neighbors are OFF).
-          bool prev2On = (x > 1) && dots[x - 2];
-          bool next2On = (x < 278) && dots[x + 2];
-
-          if (prevOn && nextOn && !prev2On && !next2On) {
-            // Alternating pattern: ...ON-OFF-ON... where outer neighbors are OFF
-            // Fill with artifact color if both neighbors have same high bit
-            if (highBits[x - 1] == highBits[x + 1]) {
-              // Both neighbors have same parity (x±1 are both even or both odd)
-              bool neighborEven = ((x - 1) & 1) == 0;
-              bool neighborHighBit = highBits[x - 1];
-              if (neighborEven) {
-                color = neighborHighBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
-              } else {
-                color = neighborHighBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
-              }
-            } else {
-              // Different high bits across byte boundary - leave black
-              color = HIRES_COLORS[0];
-            }
-          } else {
-            // Not an alternating pattern - black
-            // NTSC fringing at edges is handled by the CRT shader
-            color = HIRES_COLORS[0];
-          }
-        } else if (prevOn || nextOn) {
-          // Adjacent to another ON dot = white
-          // Two adjacent dots span one full NTSC color clock cycle
-          color = HIRES_COLORS[3]; // White
-        } else {
-          // Isolated ON dot = artifact color
-          // Color depends on screen column (phase) and high bit (palette)
-          //
-          // Column phase:  Even = 0°/180°    Odd = 90°/270°
-          // High bit = 0:  Violet            Green
-          // High bit = 1:  Blue              Orange
-          bool evenColumn = (x & 1) == 0;
-          if (evenColumn) {
-            color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2]; // Blue/Violet
-          } else {
-            color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1]; // Orange/Green
-          }
-        }
-
-        // Output at 2x scale (280 dots → 560 pixels)
-        int screenX = x * 2;
-        setPixel(screenX, screenY, color);
-        setPixel(screenX + 1, screenY, color);
-        setPixel(screenX, screenY + 1, color);
-        setPixel(screenX + 1, screenY + 1, color);
-      }
-    }
-  }
-}
-
-void Video::renderDoubleLoRes() {
-  // Double lo-res: 80x48 with 16 colors
-  // Uses DLGR_COLORS palette (different from Lo-Res due to 14MHz dot rate)
-  const auto &sw = mmu_.getSoftSwitches();
-
-  for (int row = 0; row < 24; row++) {
-    if (sw.mixed && row >= 20)
-      break;
-
-    for (int col = 0; col < 40; col++) {
-      uint16_t addr = getTextAddress(row, col);
-
-      // Aux memory (even pixels)
-      uint8_t auxByte = mmu_.readRAM(addr, true);
-      // Main memory (odd pixels)
-      uint8_t mainByte = mmu_.readRAM(addr, false);
-
-      uint8_t auxTop = auxByte & 0x0F;
-      uint8_t auxBottom = (auxByte >> 4) & 0x0F;
-      uint8_t mainTop = mainByte & 0x0F;
-      uint8_t mainBottom = (mainByte >> 4) & 0x0F;
-
-      // Get colors using DLGR palette (handles monochrome mode)
-      uint32_t auxTopColor = monochrome_ ? getMonochromeColor(auxTop != 0) : DLGR_COLORS[auxTop];
-      uint32_t auxBottomColor = monochrome_ ? getMonochromeColor(auxBottom != 0) : DLGR_COLORS[auxBottom];
-      uint32_t mainTopColor = monochrome_ ? getMonochromeColor(mainTop != 0) : DLGR_COLORS[mainTop];
-      uint32_t mainBottomColor = monochrome_ ? getMonochromeColor(mainBottom != 0) : DLGR_COLORS[mainBottom];
-
-      int screenX = col * 14;
-      int screenY = row * 16;
-
-      // Draw aux pixels (left half, 7 pixels wide)
-      for (int py = 0; py < 8; py++) {
-        for (int px = 0; px < 7; px++) {
-          setPixel(screenX + px, screenY + py, auxTopColor);
-        }
-      }
-      for (int py = 8; py < 16; py++) {
-        for (int px = 0; px < 7; px++) {
-          setPixel(screenX + px, screenY + py, auxBottomColor);
-        }
-      }
-
-      // Draw main pixels (right half, 7 pixels wide)
-      for (int py = 0; py < 8; py++) {
-        for (int px = 7; px < 14; px++) {
-          setPixel(screenX + px, screenY + py, mainTopColor);
-        }
-      }
-      for (int py = 8; py < 16; py++) {
-        for (int px = 7; px < 14; px++) {
-          setPixel(screenX + px, screenY + py, mainBottomColor);
-        }
-      }
-    }
-  }
-}
-
-void Video::renderDoubleHiRes() {
-  // Apple II Double Hi-Res Graphics: 560x192 monochrome or 140x192 color
-  //
-  // Technical background:
-  // - Each scanline uses 80 bytes (40 aux + 40 main, interleaved)
-  // - Memory interleaving: aux[0], main[0], aux[1], main[1], ...
-  // - Each byte contributes 7 dots, for 560 dots per line
-  // - Bit 0 (LSB) of each byte is the leftmost dot
-  // - The high bit (bit 7) is NOT used for display in DHGR
-  //
-  // Color mode (16 colors):
-  // - Colors are determined by groups of 4 adjacent dots
-  // - The 4-bit pattern indexes directly into the 16-color DHGR palette
-  // - Colors are phase-aligned to 4-dot boundaries for clean output
-  // - NTSC fringing effects at color transitions are handled by the
-  //   CRT shader for smoother, more authentic results
-  //
-  // References:
-  // - Apple IIe Technical Reference Manual, Chapter 2, Table 2-7
-  // - http://www.appleoldies.ca/graphics/dhgr/dhgrtechnote.txt
-
-  const auto &sw = mmu_.getSoftSwitches();
-  int maxRow = sw.mixed ? 160 : 192;
-
-  // DHGR color palette - different from DLGR despite both running at 14MHz
-  // In DHGR, the 4-bit color is assembled from individual dot bits, not memory nibbles
-  // The bit assembly order: (dot0<<3)|(dot1<<2)|(dot2<<1)|dot3 creates this mapping
-  static const uint32_t DHGR_COLORS[16] = {
-    0xFF000000, // 0  = 0000 = Black
-    0xFF9F1B48, // 1  = 0001 = Magenta
-    0xFF496500, // 2  = 0010 = Brown
-    0xFFD87300, // 3  = 0011 = Orange
-    0xFF197544, // 4  = 0100 = Dark Green
-    0xFF818181, // 5  = 0101 = Grey 1
-    0xFF3CCC00, // 6  = 0110 = Light Green
-    0xFFBCD600, // 7  = 0111 = Yellow
-    0xFF4832EB, // 8  = 1000 = Dark Blue
-    0xFFD643FF, // 9  = 1001 = Purple
-    0xFF818181, // 10 = 1010 = Grey 2
-    0xFFFB8FBC, // 11 = 1011 = Pink
-    0xFF3692FF, // 12 = 1100 = Medium Blue
-    0xFFB89EFF, // 13 = 1101 = Light Blue
-    0xFF6CE6B8, // 14 = 1110 = Aqua
-    0xFFF1F1F1  // 15 = 1111 = White
-  };
-
-  // Page 2 offset: when 80STORE is off and PAGE2 is on, display from $4000
-  uint16_t pageOffset = (sw.page2 && !sw.store80) ? 0x2000 : 0;
-
-  for (int row = 0; row < maxRow; row++) {
-    // Build interleaved byte array: aux0, main0, aux1, main1, ...
-    uint8_t line[80];
-    for (int col = 0; col < 40; col++) {
-      uint16_t addr = getHiResAddress(row, col) + pageOffset;
-      line[col * 2] = mmu_.readRAM(addr, true);      // aux byte
-      line[col * 2 + 1] = mmu_.readRAM(addr, false); // main byte
-    }
-
-    // Extract 560 dots from 80 bytes
-    // Per Apple IIe Technical Reference: bit 0 (LSB) is the leftmost dot
-    uint8_t dots[564];
-    memset(dots, 0, sizeof(dots));
-    for (int i = 0; i < 560; i++) {
-      int byteIdx = i / 7;
-      int bitIdx = i % 7;  // LSB first: bit 0 is leftmost dot
-      dots[i] = (line[byteIdx] >> bitIdx) & 1;
-    }
-
-    int screenY = row * 2;
-
-    if (monochrome_) {
-      for (int i = 0; i < 560; i++) {
-        uint32_t color = getMonochromeColor(dots[i] != 0);
-        setPixel(i, screenY, color);
-        setPixel(i, screenY + 1, color);
-      }
-    } else {
-      // Color mode: clean DHGR output using phase-aligned 4-dot windows
-      // NTSC fringing effects are applied in the CRT shader for better quality
-      for (int i = 0; i < 560; i++) {
-        int alignedBase = (i / 4) * 4;
-        uint8_t colorIdx = (dots[alignedBase] << 3) |
-                          (dots[alignedBase + 1] << 2) |
-                          (dots[alignedBase + 2] << 1) |
-                          dots[alignedBase + 3];
-
-        uint32_t color = DHGR_COLORS[colorIdx];
-        setPixel(i, screenY, color);
-        setPixel(i, screenY + 1, color);
-      }
-    }
-  }
-}
-
-void Video::renderCharacter(int col, int row, uint8_t ch, bool inverse,
-                            bool flash) {
-  const auto &sw = mmu_.getSoftSwitches();
-
-  // Apple IIe character ROM layout:
-  // The ROM contains 128 unique character patterns (indices 0-127).
-  // Screen codes map to character indices via the lower 7 bits.
-  // The display mode (inverse/flash/normal) is determined by the high bits
-  // and controls color rendering, not which pattern is fetched.
-  //
-  // Screen code ranges:
-  // - $00-$3F: Inverse characters - charIndex = ch (0-63)
-  // - $40-$5F: Flash uppercase - charIndex = ch & $3F (0-31, same as inverse uppercase)
-  // - $60-$7F: Flash lowercase - charIndex = ch (96-127)
-  // - $80-$FF: Normal characters - charIndex = ch & $7F (0-127)
-  //
-  // ALTCHARSET ($C00F) selects alternate character set with MouseText at $40-$5F.
-
-  // Apple IIe Enhanced character ROM (342-0273-A) layout:
-  // This 8KB ROM contains US and UK character sets. The first 2KB is the US set:
-  //   $000-$3FF (0-1023): Primary character set, NON-inverted data
-  //     - Indices 0-63: Characters for screen codes $00-$3F and $40-$7F
-  //     - Indices 64-95: Inverted/unused region (skip this)
-  //     - Indices 96-127: Lowercase characters for $E0-$FF
-  //   $400-$7FF (1024-2047): Alternate character set (MouseText), INVERTED data
-  //
-  // Screen code to character mapping (using indices 0-63 and 96-127 only):
-  //   $00-$1F: Inverse uppercase @ A-Z etc → index 0-31
-  //   $20-$3F: Inverse symbols/digits → index 32-63
-  //   $40-$5F: Flash uppercase → index 0-31 (same as inverse)
-  //   $60-$7F: Flash symbols → index 32-63
-  //   $80-$9F: Normal uppercase → index 0-31
-  //   $A0-$BF: Normal symbols/digits → index 32-63
-  //   $C0-$DF: Normal uppercase → index 0-31
-  //   $E0-$FF: Normal lowercase → index 96-127
-
+Video::CharROMInfo Video::getCharROMInfo(uint8_t ch, bool inverse, bool flash,
+                                          const VideoSwitchState &vs) const {
   uint16_t romOffset;
   bool needsXor = false;
 
-  if (sw.altCharSet) {
-    // ALTCHARSET mode: MouseText replaces flash characters at $40-$5F
-    // MouseText characters are stored at indices 64-95 (offset 512-767), INVERTED
-    // All other characters use primary charset mapping
-    uint8_t charIndex;
-    if (ch >= 0x40 && ch < 0x60) {
-      // $40-$5F: MouseText characters at indices 64-95
-      charIndex = ch;  // $40-$5F maps to indices 64-95 directly
-      needsXor = true;
-      inverse = false;
-    } else if (ch >= 0x60 && ch < 0x80) {
-      // $60-$7F: MouseText continuation at indices 96-127? Or symbols?
-      // Actually these show as inverse MouseText in ALTCHARSET mode
-      charIndex = ch;  // Direct mapping
-      needsXor = true;
-    } else if (ch < 0x40) {
-      // $00-$3F: Inverse characters, same as primary
-      charIndex = ch;
-      needsXor = false;
-    } else {
-      // $80-$FF: Normal characters, same mapping as primary
-      if (ch < 0xA0) {
-        charIndex = ch & 0x1F;
-      } else if (ch < 0xC0) {
-        charIndex = (ch & 0x1F) + 32;
-      } else if (ch < 0xE0) {
-        charIndex = ch & 0x1F;
-      } else {
-        charIndex = (ch & 0x1F) + 96;
-      }
-      needsXor = false;
-      inverse = false;
-    }
-    romOffset = charIndex * 8;
-  } else {
-    // Primary character set at offset 0-1023, data is NON-inverted
-    // Map screen codes to avoid indices 64-95 (which have bad data)
-    uint8_t charIndex;
-    if (ch < 0x20) {
-      charIndex = ch;           // $00-$1F → 0-31
-    } else if (ch < 0x40) {
-      charIndex = ch;           // $20-$3F → 32-63
-    } else if (ch < 0x60) {
-      charIndex = ch & 0x1F;    // $40-$5F → 0-31
-    } else if (ch < 0x80) {
-      charIndex = (ch & 0x1F) + 32;  // $60-$7F → 32-63
-    } else if (ch < 0xA0) {
-      charIndex = ch & 0x1F;    // $80-$9F → 0-31
-      inverse = false;
-    } else if (ch < 0xC0) {
-      charIndex = (ch & 0x1F) + 32;  // $A0-$BF → 32-63
-      inverse = false;
-    } else if (ch < 0xE0) {
-      charIndex = ch & 0x1F;    // $C0-$DF → 0-31
-      inverse = false;
-    } else {
-      charIndex = (ch & 0x1F) + 96;  // $E0-$FF → 96-127
-      inverse = false;
-    }
-    romOffset = charIndex * 8;
-    needsXor = false;  // Primary set data is NOT inverted
-  }
-
-  // Apply UK character set offset if enabled (UK chars in second 4KB of ROM)
-  if (ukCharSet_) {
-    romOffset += 0x1000;  // 4KB offset for UK character set
-  }
-
-  // Handle flash - toggle inverse state when flash is active
-  // Note: When altCharSet is enabled, flash characters display as normal (no flash)
-  if (flash && flashState_ && !sw.altCharSet) {
-    inverse = !inverse;
-  }
-
-  // Calculate screen position (each char is 14x16 pixels with 2x scaling)
-  int screenX = col * 14;
-  int screenY = row * 16;
-
-  // Text colors
-  uint32_t fgColor, bgColor;
-  if (monochrome_) {
-    fgColor = getMonochromeColor(true);
-    bgColor = getMonochromeColor(false);
-  } else {
-    fgColor = 0xFFFFFFFF; // White
-    bgColor = 0xFF000000; // Black
-  }
-
-  if (inverse) {
-    std::swap(fgColor, bgColor);
-  }
-
-  // Render 8x8 character with 2x scaling
-  for (int charRow = 0; charRow < 8; charRow++) {
-    // Read character ROM
-    uint8_t rowData = mmu_.readCharROM(romOffset + charRow);
-
-    // XOR with 0xFF if data is stored inverted
-    if (needsXor) {
-      rowData ^= 0xFF;
-    }
-
-    for (int charCol = 0; charCol < 7; charCol++) {
-      bool pixelOn = (rowData & (1 << charCol)) != 0;
-      uint32_t color = pixelOn ? fgColor : bgColor;
-
-      // Draw 2x2 block
-      int px = screenX + charCol * 2;
-      int py = screenY + charRow * 2;
-      setPixel(px, py, color);
-      setPixel(px + 1, py, color);
-      setPixel(px, py + 1, color);
-      setPixel(px + 1, py + 1, color);
-    }
-  }
-}
-
-void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
-                              bool flash) {
-  // 80-column mode: 7x8 characters, single-width pixels
-  const auto &sw = mmu_.getSoftSwitches();
-
-  // Same ROM addressing as 40-column mode
-  uint16_t romOffset;
-  bool needsXor = false;
-
-  if (sw.altCharSet) {
-    // ALTCHARSET mode: MouseText replaces flash characters at $40-$5F
+  if (vs.altCharSet) {
     uint8_t charIndex;
     if (ch >= 0x40 && ch < 0x60) {
       charIndex = ch;
@@ -711,7 +109,6 @@ void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
     }
     romOffset = charIndex * 8;
   } else {
-    // Primary character set at offset 0-1023, data is NON-inverted
     uint8_t charIndex;
     if (ch < 0x20) {
       charIndex = ch;
@@ -738,18 +135,27 @@ void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
     needsXor = false;
   }
 
-  // Apply UK character set offset if enabled (UK chars in second 4KB of ROM)
+  // Apply UK character set offset if enabled
   if (ukCharSet_) {
-    romOffset += 0x1000;  // 4KB offset for UK character set
+    romOffset += 0x1000;
   }
 
-  // Handle flash
-  if (flash && flashState_ && !sw.altCharSet) {
+  // Handle flash - toggle inverse state when flash is active
+  if (flash && flashState_ && !vs.altCharSet) {
     inverse = !inverse;
   }
 
-  int screenX = col80 * 7;
-  int screenY = row * 16;
+  return {romOffset, needsXor, inverse};
+}
+
+// ============================================================================
+// Per-character-line rendering
+// ============================================================================
+
+void Video::renderCharacterLine(int col, int textRow, int charLine,
+                                 uint8_t ch, bool inverse, bool flash,
+                                 const VideoSwitchState &vs, bool is80col) {
+  CharROMInfo info = getCharROMInfo(ch, inverse, flash, vs);
 
   uint32_t fgColor, bgColor;
   if (monochrome_) {
@@ -760,29 +166,427 @@ void Video::renderCharacter80(int col80, int row, uint8_t ch, bool inverse,
     bgColor = 0xFF000000;
   }
 
-  if (inverse) {
+  if (info.inverse) {
     std::swap(fgColor, bgColor);
   }
 
-  for (int charRow = 0; charRow < 8; charRow++) {
-    uint8_t rowData = mmu_.readCharROM(romOffset + charRow);
+  uint8_t rowData = mmu_.readCharROM(info.romOffset + charLine);
+  if (info.needsXor) {
+    rowData ^= 0xFF;
+  }
 
-    if (needsXor) {
-      rowData ^= 0xFF;
-    }
+  int screenY = textRow * 16 + charLine * 2;
 
+  if (is80col) {
+    // 80-col: col is 0-79, each character is 7 pixels wide (560 total)
+    int screenX = col * 7;
     for (int charCol = 0; charCol < 7; charCol++) {
       bool pixelOn = (rowData & (1 << charCol)) != 0;
       uint32_t color = pixelOn ? fgColor : bgColor;
-
-      // Single width, double height
       int px = screenX + charCol;
-      int py = screenY + charRow * 2;
-      setPixel(px, py, color);
-      setPixel(px, py + 1, color);
+      setPixel(px, screenY, color);
+      setPixel(px, screenY + 1, color);
+    }
+  } else {
+    // 40-col: col is 0-39, each character is 14 pixels wide (560 total)
+    int screenX = col * 14;
+    for (int charCol = 0; charCol < 7; charCol++) {
+      bool pixelOn = (rowData & (1 << charCol)) != 0;
+      uint32_t color = pixelOn ? fgColor : bgColor;
+      int px = screenX + charCol * 2;
+      setPixel(px, screenY, color);
+      setPixel(px + 1, screenY, color);
+      setPixel(px, screenY + 1, color);
+      setPixel(px + 1, screenY + 1, color);
     }
   }
 }
+
+// ============================================================================
+// Per-scanline segment renderers
+// Each renders a column range [startCol, endCol) on a single scanline.
+// Columns are byte positions 0-40 matching the hardware's per-cycle reads.
+// ============================================================================
+
+void Video::renderText40Scanline(int scanline, int startCol, int endCol,
+                                  const VideoSwitchState &vs) {
+  int textRow = scanline / 8;
+  int charLine = scanline % 8;
+  if (textRow >= 24) return;
+
+  for (int col = startCol; col < endCol; col++) {
+    uint16_t addr = getTextAddress(textRow, col);
+
+    uint8_t ch;
+    if (vs.page2 && !vs.store80) {
+      ch = mmu_.readRAM(addr + 0x0400, false);
+    } else {
+      ch = mmu_.readRAM(addr, false);
+    }
+
+    bool inverse = (ch & 0xC0) == 0x00;
+    bool flash = (ch & 0xC0) == 0x40;
+
+    renderCharacterLine(col, textRow, charLine, ch, inverse, flash, vs, false);
+  }
+}
+
+void Video::renderText80Scanline(int scanline, int startCol, int endCol,
+                                  const VideoSwitchState &vs) {
+  int textRow = scanline / 8;
+  int charLine = scanline % 8;
+  if (textRow >= 24) return;
+
+  uint16_t pageOffset = (vs.page2 && !vs.store80) ? 0x0400 : 0x0000;
+
+  for (int col = startCol; col < endCol; col++) {
+    uint16_t addr = getTextAddress(textRow, col);
+
+    // Aux memory character (even columns in display)
+    uint8_t auxCh = mmu_.readRAM(addr + pageOffset, true);
+    bool auxInverse = (auxCh & 0xC0) == 0x00;
+    bool auxFlash = (auxCh & 0xC0) == 0x40;
+    renderCharacterLine(col * 2, textRow, charLine, auxCh, auxInverse, auxFlash, vs, true);
+
+    // Main memory character (odd columns in display)
+    uint8_t mainCh = mmu_.readRAM(addr + pageOffset, false);
+    bool mainInverse = (mainCh & 0xC0) == 0x00;
+    bool mainFlash = (mainCh & 0xC0) == 0x40;
+    renderCharacterLine(col * 2 + 1, textRow, charLine, mainCh, mainInverse, mainFlash, vs, true);
+  }
+}
+
+void Video::renderLoResScanline(int scanline, int startCol, int endCol,
+                                 const VideoSwitchState &vs) {
+  int textRow = scanline / 8;
+  int lineInRow = scanline % 8;
+  if (textRow >= 24) return;
+
+  int screenY = scanline * 2;
+
+  for (int col = startCol; col < endCol; col++) {
+    uint16_t addr = getTextAddress(textRow, col);
+
+    uint8_t colorByte;
+    if (vs.page2 && !vs.store80) {
+      colorByte = mmu_.readRAM(addr + 0x0400, false);
+    } else {
+      colorByte = mmu_.readRAM(addr, false);
+    }
+
+    uint8_t colorIndex = (lineInRow < 4) ? (colorByte & 0x0F)
+                                          : ((colorByte >> 4) & 0x0F);
+
+    uint32_t color = getLoResColor(colorIndex);
+    int screenX = col * 14;
+
+    for (int px = 0; px < 14; px++) {
+      setPixel(screenX + px, screenY, color);
+      setPixel(screenX + px, screenY + 1, color);
+    }
+  }
+}
+
+void Video::renderHiResScanline(int scanline, int startCol, int endCol,
+                                 const VideoSwitchState &vs) {
+  if (scanline >= 192) return;
+
+  // Build dot/highBit arrays for the columns in our range.
+  // Full 280-element arrays are zero-initialized so dots outside
+  // our segment read as off — correct behavior at mode boundaries.
+  uint8_t dots[280] = {0};
+  uint8_t highBits[280] = {0};
+
+  for (int col = startCol; col < endCol; col++) {
+    uint16_t addr = getHiResAddress(scanline, col);
+
+    uint8_t dataByte;
+    if (vs.page2 && !vs.store80) {
+      dataByte = mmu_.readRAM(addr + 0x2000, false);
+    } else {
+      dataByte = mmu_.readRAM(addr, false);
+    }
+
+    bool highBit = (dataByte & 0x80) != 0;
+
+    for (int bit = 0; bit < 7; bit++) {
+      int dotX = col * 7 + bit;
+      dots[dotX] = (dataByte & (1 << bit)) ? 1 : 0;
+      highBits[dotX] = highBit ? 1 : 0;
+    }
+  }
+
+  int screenY = scanline * 2;
+  int dotStart = startCol * 7;
+  int dotEnd = endCol * 7;
+
+  if (monochrome_) {
+    for (int x = dotStart; x < dotEnd; x++) {
+      uint32_t color = getMonochromeColor(dots[x] != 0);
+      int screenX = x * 2;
+      setPixel(screenX, screenY, color);
+      setPixel(screenX + 1, screenY, color);
+      setPixel(screenX, screenY + 1, color);
+      setPixel(screenX + 1, screenY + 1, color);
+    }
+  } else {
+    for (int x = dotStart; x < dotEnd; x++) {
+      uint32_t color;
+      bool highBit = highBits[x] != 0;
+      bool dotOn = dots[x] != 0;
+
+      bool prevOn = (x > 0) && dots[x - 1];
+      bool nextOn = (x < 279) && dots[x + 1];
+
+      if (!dotOn) {
+        bool prev2On = (x > 1) && dots[x - 2];
+        bool next2On = (x < 278) && dots[x + 2];
+
+        if (prevOn && nextOn && !prev2On && !next2On) {
+          if (highBits[x - 1] == highBits[x + 1]) {
+            bool neighborEven = ((x - 1) & 1) == 0;
+            bool neighborHighBit = highBits[x - 1];
+            if (neighborEven) {
+              color = neighborHighBit ? HIRES_COLORS[4] : HIRES_COLORS[2];
+            } else {
+              color = neighborHighBit ? HIRES_COLORS[5] : HIRES_COLORS[1];
+            }
+          } else {
+            color = HIRES_COLORS[0];
+          }
+        } else {
+          color = HIRES_COLORS[0];
+        }
+      } else if (prevOn || nextOn) {
+        color = HIRES_COLORS[3]; // White
+      } else {
+        bool evenColumn = (x & 1) == 0;
+        if (evenColumn) {
+          color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2];
+        } else {
+          color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1];
+        }
+      }
+
+      int screenX = x * 2;
+      setPixel(screenX, screenY, color);
+      setPixel(screenX + 1, screenY, color);
+      setPixel(screenX, screenY + 1, color);
+      setPixel(screenX + 1, screenY + 1, color);
+    }
+  }
+}
+
+void Video::renderDoubleLoResScanline(int scanline, int startCol, int endCol,
+                                       const VideoSwitchState &vs) {
+  int textRow = scanline / 8;
+  int lineInRow = scanline % 8;
+  if (textRow >= 24) return;
+
+  int screenY = scanline * 2;
+
+  for (int col = startCol; col < endCol; col++) {
+    uint16_t addr = getTextAddress(textRow, col);
+
+    uint8_t auxByte = mmu_.readRAM(addr, true);
+    uint8_t mainByte = mmu_.readRAM(addr, false);
+
+    uint8_t auxColor = (lineInRow < 4) ? (auxByte & 0x0F)
+                                        : ((auxByte >> 4) & 0x0F);
+    uint8_t mainColor = (lineInRow < 4) ? (mainByte & 0x0F)
+                                         : ((mainByte >> 4) & 0x0F);
+
+    uint32_t auxRGB = monochrome_ ? getMonochromeColor(auxColor != 0) : DLGR_COLORS[auxColor];
+    uint32_t mainRGB = monochrome_ ? getMonochromeColor(mainColor != 0) : DLGR_COLORS[mainColor];
+
+    int screenX = col * 14;
+
+    // Aux pixels (left half, 7 pixels wide)
+    for (int px = 0; px < 7; px++) {
+      setPixel(screenX + px, screenY, auxRGB);
+      setPixel(screenX + px, screenY + 1, auxRGB);
+    }
+
+    // Main pixels (right half, 7 pixels wide)
+    for (int px = 7; px < 14; px++) {
+      setPixel(screenX + px, screenY, mainRGB);
+      setPixel(screenX + px, screenY + 1, mainRGB);
+    }
+  }
+}
+
+void Video::renderDoubleHiResScanline(int scanline, int startCol, int endCol,
+                                       const VideoSwitchState &vs) {
+  static const uint32_t DHGR_COLORS[16] = {
+    0xFF000000, 0xFF9F1B48, 0xFF496500, 0xFFD87300,
+    0xFF197544, 0xFF818181, 0xFF3CCC00, 0xFFBCD600,
+    0xFF4832EB, 0xFFD643FF, 0xFF818181, 0xFFFB8FBC,
+    0xFF3692FF, 0xFFB89EFF, 0xFF6CE6B8, 0xFFF1F1F1
+  };
+
+  if (scanline >= 192) return;
+
+  uint16_t pageOffset = (vs.page2 && !vs.store80) ? 0x2000 : 0;
+
+  // Read bytes for columns in our range (zero-init for edge handling)
+  uint8_t line[80] = {0};
+  for (int col = startCol; col < endCol; col++) {
+    uint16_t addr = getHiResAddress(scanline, col) + pageOffset;
+    line[col * 2] = mmu_.readRAM(addr, true);
+    line[col * 2 + 1] = mmu_.readRAM(addr, false);
+  }
+
+  // Extract dots for our column range
+  uint8_t dots[564] = {0};
+  int dotStart = startCol * 14;
+  int dotEnd = std::min(endCol * 14, 560);
+
+  for (int i = dotStart; i < dotEnd; i++) {
+    int byteIdx = i / 7;
+    int bitIdx = i % 7;
+    dots[i] = (line[byteIdx] >> bitIdx) & 1;
+  }
+
+  int screenY = scanline * 2;
+
+  if (monochrome_) {
+    for (int i = dotStart; i < dotEnd; i++) {
+      uint32_t color = getMonochromeColor(dots[i] != 0);
+      setPixel(i, screenY, color);
+      setPixel(i, screenY + 1, color);
+    }
+  } else {
+    for (int i = dotStart; i < dotEnd; i++) {
+      int alignedBase = (i / 4) * 4;
+      uint8_t colorIdx = (dots[alignedBase] << 3) |
+                          (dots[alignedBase + 1] << 2) |
+                          (dots[alignedBase + 2] << 1) |
+                          dots[alignedBase + 3];
+
+      uint32_t color = DHGR_COLORS[colorIdx];
+      setPixel(i, screenY, color);
+      setPixel(i, screenY + 1, color);
+    }
+  }
+}
+
+// ============================================================================
+// Scanline segment dispatcher
+// ============================================================================
+
+void Video::renderScanlineSegment(int scanline, int startCol, int endCol,
+                                   const VideoSwitchState &vs) {
+  if (scanline >= 192 || startCol >= endCol) return;
+
+  // Mixed mode: scanlines 160-191 always render as text
+  if (vs.mixed && scanline >= 160 && !vs.text) {
+    if (vs.col80) {
+      renderText80Scanline(scanline, startCol, endCol, vs);
+    } else {
+      renderText40Scanline(scanline, startCol, endCol, vs);
+    }
+    return;
+  }
+
+  if (vs.text) {
+    if (vs.col80) {
+      renderText80Scanline(scanline, startCol, endCol, vs);
+    } else {
+      renderText40Scanline(scanline, startCol, endCol, vs);
+    }
+  } else if (vs.hires) {
+    if (vs.col80 && !vs.an3) {
+      renderDoubleHiResScanline(scanline, startCol, endCol, vs);
+    } else {
+      renderHiResScanline(scanline, startCol, endCol, vs);
+    }
+  } else {
+    if (vs.col80 && !vs.an3) {
+      renderDoubleLoResScanline(scanline, startCol, endCol, vs);
+    } else {
+      renderLoResScanline(scanline, startCol, endCol, vs);
+    }
+  }
+}
+
+// ============================================================================
+// Frame rendering
+// ============================================================================
+
+void Video::renderFrame() {
+  // Update flash state
+  flashCounter_++;
+  if (flashCounter_ >= FLASH_RATE) {
+    flashCounter_ = 0;
+    flashState_ = !flashState_;
+  }
+
+  if (switchChangeCount_ == 0) {
+    // Fast path: single mode for entire frame
+    for (int s = 0; s < 192; s++) {
+      renderScanlineSegment(s, 0, 40, frameStartState_);
+    }
+  } else {
+    // Slow path: walk changes at cycle granularity, splitting within scanlines
+    VideoSwitchState currentState = frameStartState_;
+    int changeIdx = 0;
+
+    for (int scanline = 0; scanline < 192; scanline++) {
+      uint32_t scanlineStartCycle = scanline * CYCLES_PER_SCANLINE;
+      uint32_t scanlineVisibleEnd = scanlineStartCycle + 40;
+      uint32_t scanlineEndCycle = scanlineStartCycle + CYCLES_PER_SCANLINE;
+
+      int col = 0;
+
+      // Process changes within the visible portion of this scanline
+      while (changeIdx < switchChangeCount_) {
+        uint32_t changeCycle = switchChanges_[changeIdx].cycleOffset;
+
+        if (changeCycle >= scanlineVisibleEnd) {
+          break; // Change is in hblank or a later scanline
+        }
+
+        if (changeCycle < scanlineStartCycle) {
+          // Change was before this scanline — catch up state
+          currentState = switchChanges_[changeIdx].state;
+          changeIdx++;
+          continue;
+        }
+
+        // Change is within visible portion of this scanline
+        int changeCol = static_cast<int>(changeCycle - scanlineStartCycle);
+        if (changeCol > col) {
+          renderScanlineSegment(scanline, col, changeCol, currentState);
+          col = changeCol;
+        }
+
+        currentState = switchChanges_[changeIdx].state;
+        changeIdx++;
+      }
+
+      // Render remaining visible columns
+      if (col < 40) {
+        renderScanlineSegment(scanline, col, 40, currentState);
+      }
+
+      // Consume hblank changes for this scanline
+      while (changeIdx < switchChangeCount_) {
+        uint32_t changeCycle = switchChanges_[changeIdx].cycleOffset;
+        if (changeCycle >= scanlineEndCycle) {
+          break; // Belongs to a later scanline
+        }
+        currentState = switchChanges_[changeIdx].state;
+        changeIdx++;
+      }
+    }
+  }
+
+  frameDirty_ = true;
+}
+
+// ============================================================================
+// Pixel and color helpers
+// ============================================================================
 
 void Video::setPixel(int x, int y, uint32_t color) {
   if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) {
@@ -798,7 +602,6 @@ void Video::setPixel(int x, int y, uint32_t color) {
 
 uint32_t Video::getLoResColor(uint8_t colorIndex) const {
   if (monochrome_) {
-    // Use brightness-based monochrome
     return (colorIndex > 0) ? getMonochromeColor(true)
                             : getMonochromeColor(false);
   }
@@ -817,13 +620,10 @@ uint32_t Video::getMonochromeColor(bool on) const {
 }
 
 uint16_t Video::getTextAddress(int row, int col) const {
-  // Text/LoRes base address is $0400 (page 1) or $0800 (page 2)
   return 0x0400 + TEXT_ROW_OFFSETS[row] + col;
 }
 
 uint16_t Video::getHiResAddress(int row, int col) const {
-  // HiRes base address is $2000 (page 1) or $4000 (page 2)
-  // Address calculation: base + (row/8)*0x400 + (row%8)*0x80 + col
   int block = row / 8;
   int line = row % 8;
   return 0x2000 + TEXT_ROW_OFFSETS[block] + line * 0x400 + col;
