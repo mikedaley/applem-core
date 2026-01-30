@@ -127,7 +127,10 @@ if(EMSCRIPTEN)
                 \"_isSlotEmpty\", \
                 \"_getMockingboardWaveform\", \
                 \"_setMockingboardChannelMute\", \
-                \"_getMockingboardChannelMute\" \
+                \"_getMockingboardChannelMute\", \
+                \"_isKeyboardReady\", \
+                \"_setSpeedMultiplier\", \
+                \"_getSpeedMultiplier\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \

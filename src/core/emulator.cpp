@@ -90,6 +90,7 @@ void Emulator::reset() {
 
   keyboardLatch_ = 0;
   keyDown_ = false;
+  speedMultiplier_ = 1;
   lastFrameCycle_ = 0;
   frameReady_ = false;
   breakpointHit_ = false;
@@ -167,9 +168,15 @@ void Emulator::runCycles(int cycles) {
   }
 }
 
+void Emulator::setSpeedMultiplier(int multiplier) {
+  if (multiplier < 1) multiplier = 1;
+  if (multiplier > 8) multiplier = 8;
+  speedMultiplier_ = multiplier;
+}
+
 int Emulator::generateAudioSamples(float *buffer, int sampleCount) {
-  // Calculate cycles needed for this audio buffer
-  int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE);
+  // Calculate cycles needed for this audio buffer, scaled by speed multiplier
+  int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE * speedMultiplier_);
 
   // Run emulation for the required cycles
   runCycles(cyclesToRun);
@@ -182,8 +189,8 @@ int Emulator::generateAudioSamples(float *buffer, int sampleCount) {
 }
 
 int Emulator::generateStereoAudioSamples(float *buffer, int sampleCount) {
-  // Calculate cycles needed for this audio buffer
-  int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE);
+  // Calculate cycles needed for this audio buffer, scaled by speed multiplier
+  int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE * speedMultiplier_);
 
   // Run emulation for the required cycles
   runCycles(cyclesToRun);

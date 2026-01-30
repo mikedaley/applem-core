@@ -81,6 +81,10 @@ public:
   uint8_t getP() const { return cpu_->getP(); }
   uint64_t getTotalCycles() const { return cpu_->getTotalCycles(); }
 
+  // Speed control
+  void setSpeedMultiplier(int multiplier);
+  int getSpeedMultiplier() const { return speedMultiplier_; }
+
   // Pause/resume
   bool isPaused() const { return paused_; }
   void setPaused(bool paused) { paused_ = paused; }
@@ -151,6 +155,9 @@ private:
   // Button state (Open Apple, Closed Apple, Button 2)
   bool buttonState_[3] = {false, false, false};
   uint8_t getButtonState(int button);
+
+  // Speed control
+  int speedMultiplier_ = 1;
 
   // Frame timing
   uint64_t lastFrameCycle_ = 0;
