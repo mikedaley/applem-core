@@ -17,6 +17,9 @@ public:
   // Render a complete frame to the framebuffer
   void renderFrame();
 
+  // Progressive rendering: render all scanlines up to the current CPU cycle
+  void renderUpToCycle(uint64_t currentCycle);
+
   // Get the framebuffer (RGBA, 560x384)
   const uint8_t *getFramebuffer() const { return framebuffer_.data(); }
   uint8_t *getFramebuffer() { return framebuffer_.data(); }
@@ -64,6 +67,9 @@ private:
 
   // Dispatch a scanline segment to the correct mode renderer, handling mixed mode
   void renderScanlineSegment(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+
+  // Render a single scanline using the switch change log (progressive rendering)
+  void renderScanlineWithChanges(int scanline);
 
   // Character rendering — single character row (1 ROM line → 2 framebuffer rows)
   void renderCharacterLine(int col, int textRow, int charLine,
@@ -122,6 +128,11 @@ private:
   static constexpr int MAX_SWITCH_CHANGES = 1024;
   std::array<VideoSwitchChange, MAX_SWITCH_CHANGES> switchChanges_;
   int switchChangeCount_ = 0;
+
+  // Progressive per-scanline rendering state
+  int lastRenderedScanline_ = -1;   // -1 means no scanlines rendered yet this frame
+  int changeIdx_ = 0;               // Current position in switch change log
+  VideoSwitchState currentRenderState_{}; // Current video state for progressive rendering
 
   // Lookup tables
   static constexpr std::array<int, 24> TEXT_ROW_OFFSETS = {

@@ -143,6 +143,9 @@ void Emulator::runCycles(int cycles) {
     // This ensures timer IRQs fire before the CPU can disable them
     mockingboard_->update(static_cast<int>(cyclesUsed));
 
+    // Progressive rendering: render scanlines up to current cycle
+    video_->renderUpToCycle(cpu_->getTotalCycles());
+
     // Check for frame boundary
     uint64_t currentCycle = cpu_->getTotalCycles();
     if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
@@ -308,6 +311,9 @@ void Emulator::stepInstruction() {
 
   // Update Mockingboard timers
   mockingboard_->update(static_cast<int>(cyclesUsed));
+
+  // Progressive rendering: render scanlines up to current cycle
+  video_->renderUpToCycle(cpu_->getTotalCycles());
 
   // Check for frame boundary
   uint64_t currentCycle = cpu_->getTotalCycles();
