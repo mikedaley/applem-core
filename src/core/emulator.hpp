@@ -3,6 +3,7 @@
 #include "audio/audio.hpp"
 #include "cpu/cpu6502.hpp"
 #include "cards/disk2_card.hpp"
+#include "cards/expansion_card.hpp"
 #include "input/keyboard.hpp"
 #include "cards/mockingboard_card.hpp"
 #include "mmu/mmu.hpp"
@@ -133,9 +134,15 @@ private:
   std::unique_ptr<CPU6502> cpu_;
   std::unique_ptr<Video> video_;
   std::unique_ptr<Audio> audio_;
-  std::unique_ptr<Disk2Card> disk_;
   std::unique_ptr<Keyboard> keyboard_;
-  std::unique_ptr<MockingboardCard> mockingboard_;
+
+  // Non-owning pointers to cards (owned by MMU slot system)
+  Disk2Card* disk_ = nullptr;
+  MockingboardCard* mockingboard_ = nullptr;
+
+  // Storage for cards when removed from slots
+  std::unique_ptr<ExpansionCard> diskStorage_;
+  std::unique_ptr<ExpansionCard> mbStorage_;
 
   // Keyboard state
   uint8_t keyboardLatch_ = 0;

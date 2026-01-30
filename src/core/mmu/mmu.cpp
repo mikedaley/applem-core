@@ -1,7 +1,5 @@
 #include "mmu.hpp"
-#include "../cards/disk2_card.hpp"
 #include "../cards/expansion_card.hpp"
-#include "../cards/mockingboard_card.hpp"
 #include <cstring>
 
 namespace a2e {
@@ -109,17 +107,13 @@ void MMU::decayTracking(uint8_t amount) {
 }
 
 void MMU::loadROM(const uint8_t *systemRom, size_t systemSize,
-                  const uint8_t *charRom, size_t charSize,
-                  const uint8_t *diskRom, size_t diskSize) {
+                  const uint8_t *charRom, size_t charSize) {
   if (systemRom && systemSize > 0) {
     std::memcpy(systemROM_.data(), systemRom,
                 std::min(systemSize, systemROM_.size()));
   }
   if (charRom && charSize > 0) {
     std::memcpy(charROM_.data(), charRom, std::min(charSize, charROM_.size()));
-  }
-  if (diskRom && diskSize > 0) {
-    std::memcpy(diskROM_.data(), diskRom, std::min(diskSize, diskROM_.size()));
   }
 }
 
@@ -205,9 +199,14 @@ uint8_t MMU::peek(uint16_t address) const {
       return 0xFF; // No card, return high byte
     }
 
-    // Slot 6 (Disk II): $C600-$C6FF
-    if (address >= 0xC600 && address < 0xC700) {
-      return diskROM_[address - 0xC600];
+    // Slot ROM: $C100-$C7FF - check slot system
+    if (address < 0xC800) {
+      uint8_t slot = (address >> 8) & 0x07;
+      uint8_t offset = address & 0xFF;
+      if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
+        return slots_[slot - 1]->readROM(offset);
+      }
+      return 0xFF;
     }
 
     // $C800-$CFFF: Expansion ROM space
@@ -342,14 +341,8 @@ uint8_t MMU::peekSoftSwitch(uint16_t address) const {
     uint8_t slot = ((reg - 0x80) >> 4);
     uint8_t offset = reg & 0x0F;
 
-    // First check new slot system
     if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
       return slots_[slot - 1]->peekIO(offset);
-    }
-
-    // Legacy fallback for Disk II (slot 6)
-    if (slot == 6 && diskController_) {
-      return diskController_->peekIO(offset);
     }
 
     return 0x00;
@@ -471,24 +464,9 @@ uint8_t MMU::read(uint16_t address) {
       uint8_t offset = address & 0xFF;
 
       // Access to slot ROM activates that card's expansion ROM
-      if (slot >= 1 && slot <= 7) {
-        // Check new slot system first
-        if (slots_[slot - 1]) {
-          activeExpansionSlot_ = slot;
-          return slots_[slot - 1]->readROM(offset);
-        }
-
-        // Legacy fallback for Disk II (slot 6)
-        if (slot == 6) {
-          activeExpansionSlot_ = 0; // Disk II has no expansion ROM
-          return diskROM_[offset];
-        }
-
-        // Legacy fallback for Mockingboard (slot 4)
-        if (slot == 4 && mockingboard_ && mockingboard_->isEnabled()) {
-          activeExpansionSlot_ = 0; // Mockingboard has no expansion ROM
-          return mockingboard_->readROM(address & 0xFF);
-        }
+      if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
+        activeExpansionSlot_ = slot;
+        return slots_[slot - 1]->readROM(offset);
       }
 
       return getFloatingBusValue();
@@ -642,17 +620,8 @@ void MMU::write(uint16_t address, uint8_t value) {
       uint8_t slot = (address >> 8) & 0x07;
       uint8_t offset = address & 0xFF;
 
-      if (slot >= 1 && slot <= 7) {
-        // Check new slot system first
-        if (slots_[slot - 1]) {
-          slots_[slot - 1]->writeROM(offset, value);
-          return;
-        }
-
-        // Legacy fallback for Mockingboard (slot 4)
-        if (slot == 4 && mockingboard_ && mockingboard_->isEnabled()) {
-          mockingboard_->writeROM(address & 0xFF, value);
-        }
+      if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
+        slots_[slot - 1]->writeROM(offset, value);
       }
     }
     return;
@@ -999,14 +968,8 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     uint8_t slot = ((reg - 0x80) >> 4);
     uint8_t offset = reg & 0x0F;
 
-    // First check new slot system
     if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
       return slots_[slot - 1]->readIO(offset);
-    }
-
-    // Legacy fallback for Disk II (slot 6)
-    if (slot == 6 && diskController_) {
-      return diskController_->readIO(offset);
     }
 
     return getFloatingBusValue();
@@ -1250,15 +1213,8 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
     uint8_t slot = ((reg - 0x80) >> 4);
     uint8_t offset = reg & 0x0F;
 
-    // First check new slot system
     if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
       slots_[slot - 1]->writeIO(offset, value);
-      return;
-    }
-
-    // Legacy fallback for Disk II (slot 6)
-    if (slot == 6 && diskController_) {
-      diskController_->writeIO(offset, value);
     }
     break;
   }

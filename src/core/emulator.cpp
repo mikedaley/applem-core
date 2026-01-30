@@ -11,11 +11,15 @@ namespace a2e {
 
 Emulator::Emulator() {
   mmu_ = std::make_unique<MMU>();
-  disk_ = std::make_unique<Disk2Card>();
   video_ = std::make_unique<Video>(*mmu_);
   audio_ = std::make_unique<Audio>();
   keyboard_ = std::make_unique<Keyboard>();
-  mockingboard_ = std::make_unique<MockingboardCard>();
+
+  // Create cards, keep raw pointers, then insert into slots
+  auto disk = std::make_unique<Disk2Card>();
+  auto mb = std::make_unique<MockingboardCard>();
+  disk_ = disk.get();
+  mockingboard_ = mb.get();
 
   // Create CPU with memory callbacks
   cpu_ = std::make_unique<CPU6502>(
@@ -38,13 +42,6 @@ Emulator::Emulator() {
   video_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mmu_->setVideoSwitchCallback([this]() { video_->onVideoSwitchChanged(); });
 
-  // Connect disk controller to MMU
-  mmu_->setDiskController(disk_.get());
-
-  // Connect Mockingboard to MMU and audio
-  mmu_->setMockingboard(mockingboard_.get());
-  audio_->setMockingboard(mockingboard_.get());
-
   // Set up Mockingboard callbacks
   mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
@@ -56,14 +53,24 @@ Emulator::Emulator() {
   // Set up disk timing callback - allows disk reads to get accurate cycle count
   // during instruction execution (before disk_->update() is called)
   disk_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
+
+  // Insert cards into slots (transfers ownership to MMU)
+  mmu_->insertCard(6, std::move(disk));
+  mmu_->insertCard(4, std::move(mb));
+
+  // Audio gets raw pointer
+  audio_->setMockingboard(mockingboard_);
 }
 
 Emulator::~Emulator() = default;
 
 void Emulator::init() {
-  // Load ROMs - using combined 16KB system ROM and Disk II ROM
-  mmu_->loadROM(roms::ROM_SYSTEM, roms::ROM_SYSTEM_SIZE, roms::ROM_CHAR,
-                roms::ROM_CHAR_SIZE, roms::ROM_DISK2, roms::ROM_DISK2_SIZE);
+  // Load system and character ROMs into MMU
+  mmu_->loadROM(roms::ROM_SYSTEM, roms::ROM_SYSTEM_SIZE,
+                roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  // Load Disk II ROM into the card
+  disk_->loadROM(roms::ROM_DISK2, roms::ROM_DISK2_SIZE);
 
   reset();
 }
@@ -459,20 +466,7 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
     return "80col";
   }
 
-  // Slot 6: Disk II (always present for now, TODO: make configurable)
-  if (slot == 6) {
-    return "disk2";
-  }
-
-  // Slot 4: Mockingboard - check if enabled
-  if (slot == 4) {
-    if (mockingboard_ && mockingboard_->isEnabled()) {
-      return "mockingboard";
-    }
-    return "empty";
-  }
-
-  // Check the slot array for other cards
+  // Check the slot array for all cards
   ExpansionCard* card = mmu_->getCard(slot);
   if (!card) {
     return "empty";
@@ -505,37 +499,31 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
 
   // Handle empty slot
   if (strcmp(cardId, "empty") == 0) {
-    // Remove peripherals from this slot
-    if (slot == 6 && disk_) {
-      mmu_->setDiskController(nullptr);
+    if (slot == 6) {
+      if (!diskStorage_) {
+        diskStorage_ = mmu_->removeCard(6);
+      }
+    } else if (slot == 4) {
+      if (!mbStorage_) {
+        mbStorage_ = mmu_->removeCard(4);
+        audio_->setMockingboard(nullptr);
+      }
+    } else {
+      mmu_->removeCard(slot);
     }
-    if (slot == 4 && mockingboard_) {
-      // Disconnect from MMU and Audio
-      mmu_->setMockingboard(nullptr);
-      audio_->setMockingboard(nullptr);
-      // Disable the Mockingboard so isEnabled() returns false
-      mockingboard_->setEnabled(false);
-    }
-    mmu_->removeCard(slot);
     return true;
   }
 
   // Handle Disk II card
   if (strcmp(cardId, "disk2") == 0) {
-    // If moving from legacy slot 6, first disconnect
-    if (slot != 6 && disk_) {
-      mmu_->setDiskController(nullptr);
+    // Only slot 6 is supported for Disk II
+    if (slot != 6) {
+      return false;
     }
 
-    // For now, we continue using legacy mode for disk controller
-    // because the disk controller needs to share state with DiskManager
-    if (slot == 6) {
-      mmu_->setDiskController(disk_.get());
-    } else {
-      // Create a new Disk2Card for non-default slots
-      // Note: This would create a separate controller, not shared with DiskManager
-      // For MVP, we only support slot 6 for disk
-      return false;
+    // Re-insert from storage
+    if (diskStorage_) {
+      mmu_->insertCard(6, std::move(diskStorage_));
     }
     return true;
   }
@@ -547,10 +535,11 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
       return false;
     }
 
-    // Connect Mockingboard to slot 4
-    mmu_->setMockingboard(mockingboard_.get());
-    audio_->setMockingboard(mockingboard_.get());
-    mockingboard_->setEnabled(true);
+    // Re-insert from storage
+    if (mbStorage_) {
+      mmu_->insertCard(4, std::move(mbStorage_));
+      audio_->setMockingboard(mockingboard_);
+    }
     return true;
   }
 
@@ -573,16 +562,6 @@ bool Emulator::isSlotEmpty(uint8_t slot) const {
   // Slot 3 is never empty (built-in 80-column)
   if (slot == 3) {
     return false;
-  }
-
-  // Slot 6: Disk II is always present for now
-  if (slot == 6) {
-    return false;
-  }
-
-  // Slot 4: Check if Mockingboard is enabled
-  if (slot == 4) {
-    return !(mockingboard_ && mockingboard_->isEnabled());
   }
 
   return mmu_->isSlotEmpty(slot);

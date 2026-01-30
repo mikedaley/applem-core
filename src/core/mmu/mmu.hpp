@@ -8,9 +8,7 @@
 
 namespace a2e {
 
-// Forward declarations
-class Disk2Card;
-class MockingboardCard;
+// Forward declaration
 class ExpansionCard;
 
 class MMU {
@@ -65,8 +63,7 @@ public:
 
   // ROM loading - combined 16KB system ROM ($C000-$FFFF)
   void loadROM(const uint8_t *systemRom, size_t systemSize,
-               const uint8_t *charRom, size_t charSize, const uint8_t *diskRom,
-               size_t diskSize);
+               const uint8_t *charRom, size_t charSize);
 
   // Character ROM access (for video)
   uint8_t readCharROM(uint16_t address) const;
@@ -101,9 +98,6 @@ public:
     return (paddle >= 0 && paddle < 4) ? paddleValues_[paddle] : 128;
   }
 
-  // Legacy peripheral connections (deprecated - use slots instead)
-  void setDiskController(Disk2Card *disk) { diskController_ = disk; }
-  void setMockingboard(MockingboardCard *mb) { mockingboard_ = mb; }
 
   // ===== Expansion Slot Management =====
 
@@ -190,7 +184,6 @@ private:
   // ROM - combined 16KB system ROM ($C000-$FFFF)
   std::array<uint8_t, 0x4000> systemROM_{}; // $C000-$FFFF (16KB)
   std::array<uint8_t, CHAR_ROM_SIZE> charROM_{};
-  std::array<uint8_t, DISK_ROM_SIZE> diskROM_{};
 
   // Soft switches
   SoftSwitches switches_;
@@ -211,10 +204,6 @@ private:
   ButtonCallback buttonCallback_;
   CycleCallback cycleCallback_;
   VideoSwitchCallback videoSwitchCallback_;
-
-  // Legacy peripherals (deprecated - use slots_)
-  Disk2Card *diskController_ = nullptr;
-  MockingboardCard *mockingboard_ = nullptr;
 
   // Expansion slots (1-7, index 0-6)
   std::array<std::unique_ptr<ExpansionCard>, 7> slots_;
