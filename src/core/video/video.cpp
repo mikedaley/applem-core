@@ -60,7 +60,15 @@ void Video::onVideoSwitchChanged() {
   uint32_t cycleOffset = 0;
   if (cycleCallback_) {
     uint64_t currentCycle = cycleCallback_();
-    cycleOffset = static_cast<uint32_t>(currentCycle - frameStartCycle_);
+    // +2 models the Apple IIe two-stage video pipeline delay:
+    // 1) Phi-0/Phi-1 bus phasing: the video fetches memory on Phi-0 (first half
+    //    of each clock cycle) before the CPU writes on Phi-1 (second half).
+    //    A soft switch change on cycle N misses that cycle's video fetch.
+    // 2) Shift register latching: the byte fetched on Phi-0 of cycle N+1 is
+    //    loaded into the shift register and doesn't produce visible dots until
+    //    approximately cycle N+2.
+    // Combined: a CPU write on cycle N affects display output at cycle N+2.
+    cycleOffset = static_cast<uint32_t>(currentCycle - frameStartCycle_ + 2);
   }
 
   switchChanges_[switchChangeCount_] = {cycleOffset, newState};
