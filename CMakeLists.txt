@@ -139,7 +139,30 @@ if(EMSCRIPTEN)
                 \"_getMouseCardPIARegister\", \
                 \"_isIRQPending\", \
                 \"_isNMIPending\", \
-                \"_isNMIEdge\" \
+                \"_isNMIEdge\", \
+                \"_setRegA\", \
+                \"_setRegX\", \
+                \"_setRegY\", \
+                \"_setRegSP\", \
+                \"_setRegPC\", \
+                \"_setRegP\", \
+                \"_peekMemory\", \
+                \"_addWatchpoint\", \
+                \"_removeWatchpoint\", \
+                \"_clearWatchpoints\", \
+                \"_isWatchpointHit\", \
+                \"_getWatchpointAddress\", \
+                \"_getWatchpointValue\", \
+                \"_isWatchpointWrite\", \
+                \"_setTraceEnabled\", \
+                \"_clearTrace\", \
+                \"_getTraceCount\", \
+                \"_getTraceHead\", \
+                \"_getTraceBuffer\", \
+                \"_getTraceCapacity\", \
+                \"_setProfileEnabled\", \
+                \"_clearProfile\", \
+                \"_getProfileCycles\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \

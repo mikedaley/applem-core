@@ -14,6 +14,7 @@
 #include <memory>
 #include <set>
 #include <vector>
+#include <array>
 
 namespace a2e {
 
@@ -89,13 +90,53 @@ public:
   bool isNMIPending() const { return cpu_->isNMIPending(); }
   bool isNMIEdge() const { return cpu_->isNMIEdge(); }
 
+  // CPU state setters (for debugger register editing)
+  void setPC(uint16_t v) { cpu_->setPC(v); }
+  void setSP(uint8_t v) { cpu_->setSP(v); }
+  void setA(uint8_t v) { cpu_->setA(v); }
+  void setX(uint8_t v) { cpu_->setX(v); }
+  void setY(uint8_t v) { cpu_->setY(v); }
+  void setP(uint8_t v) { cpu_->setP(v); }
+
+  // Watchpoints
+  enum WatchpointType : uint8_t { WP_READ = 1, WP_WRITE = 2, WP_READWRITE = 3 };
+  void addWatchpoint(uint16_t startAddr, uint16_t endAddr, WatchpointType type);
+  void removeWatchpoint(uint16_t startAddr);
+  void clearWatchpoints();
+  bool isWatchpointHit() const { return watchpointHit_; }
+  uint16_t getWatchpointAddress() const { return watchpointAddress_; }
+  uint8_t getWatchpointValue() const { return watchpointValue_; }
+  bool isWatchpointWrite() const { return watchpointIsWrite_; }
+
+  // Trace log
+  struct TraceEntry {
+    uint16_t pc;
+    uint8_t opcode, a, x, y, sp, p;
+    uint8_t operand1, operand2, instrLen;
+    uint8_t padding;
+    uint32_t cycle;
+  };
+  void setTraceEnabled(bool enabled) { traceEnabled_ = enabled; }
+  bool isTraceEnabled() const { return traceEnabled_; }
+  void clearTrace() { traceHead_ = 0; traceCount_ = 0; }
+  size_t getTraceCount() const { return traceCount_; }
+  size_t getTraceHead() const { return traceHead_; }
+  const TraceEntry* getTraceBuffer() const { return traceBuffer_.data(); }
+  size_t getTraceCapacity() const { return traceBuffer_.size(); }
+
+  // Cycle profiling
+  void setProfileEnabled(bool enabled) { profileEnabled_ = enabled; }
+  bool isProfileEnabled() const { return profileEnabled_; }
+  void clearProfile() { profileCycles_.fill(0); }
+  const uint32_t* getProfileCycles() const { return profileCycles_.data(); }
+
   // Speed control
   void setSpeedMultiplier(int multiplier);
   int getSpeedMultiplier() const { return speedMultiplier_; }
 
   // Pause/resume
   bool isPaused() const { return paused_; }
-  void setPaused(bool paused) { paused_ = paused; }
+  void setPaused(bool paused);
 
   // Single step
   void stepInstruction();
@@ -183,6 +224,37 @@ private:
   bool breakpointHit_ = false;
   uint16_t breakpointAddress_ = 0;
   bool paused_ = false;
+  bool skipBreakpointOnce_ = false;
+
+  // Watchpoints
+  struct Watchpoint {
+    uint16_t startAddr;
+    uint16_t endAddr;
+    WatchpointType type;
+    bool enabled;
+  };
+  std::vector<Watchpoint> watchpoints_;
+  bool watchpointsActive_ = false;
+  bool watchpointHit_ = false;
+  uint16_t watchpointAddress_ = 0;
+  uint8_t watchpointValue_ = 0;
+  bool watchpointIsWrite_ = false;
+
+  // Watchpoint callback for MMU
+  void onWatchpointRead(uint16_t address, uint8_t value);
+  void onWatchpointWrite(uint16_t address, uint8_t value);
+
+  // Trace log
+  std::vector<TraceEntry> traceBuffer_;
+  size_t traceHead_ = 0;
+  size_t traceCount_ = 0;
+  bool traceEnabled_ = false;
+
+  void recordTrace();
+
+  // Cycle profiling
+  bool profileEnabled_ = false;
+  std::array<uint32_t, 65536> profileCycles_{};
 
   // Disassembly buffer
   mutable std::string disasmBuffer_;

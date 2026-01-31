@@ -43,6 +43,11 @@ Emulator::Emulator() {
   video_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mmu_->setVideoSwitchCallback([this]() { video_->onVideoSwitchChanged(); });
 
+  // Wire watchpoint callbacks (MMU -> Emulator)
+  mmu_->setWatchpointCallbacks(
+    [this](uint16_t addr, uint8_t val) { onWatchpointRead(addr, val); },
+    [this](uint16_t addr, uint8_t val) { onWatchpointWrite(addr, val); });
+
   // Set up Mockingboard callbacks
   mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
@@ -119,7 +124,17 @@ void Emulator::warmReset() {
   if (disk_) disk_->stopMotor();
 
   breakpointHit_ = false;
+  watchpointHit_ = false;
   paused_ = false;
+}
+
+void Emulator::setPaused(bool paused) {
+  if (!paused && paused_ && breakpointHit_) {
+    skipBreakpointOnce_ = true;
+  }
+  breakpointHit_ = false;
+  watchpointHit_ = false;
+  paused_ = paused;
 }
 
 void Emulator::runCycles(int cycles) {
@@ -132,17 +147,27 @@ void Emulator::runCycles(int cycles) {
   while (cpu_->getTotalCycles() < targetCycles) {
     // Check breakpoints
     if (!breakpoints_.empty()) {
-      uint16_t pc = cpu_->getPC();
-      if (breakpoints_.count(pc) && !disabledBreakpoints_.count(pc)) {
-        breakpointHit_ = true;
-        breakpointAddress_ = pc;
-        paused_ = true;
-        return;
+      if (skipBreakpointOnce_) {
+        skipBreakpointOnce_ = false;
+      } else {
+        uint16_t pc = cpu_->getPC();
+        if (breakpoints_.count(pc) && !disabledBreakpoints_.count(pc)) {
+          breakpointHit_ = true;
+          breakpointAddress_ = pc;
+          paused_ = true;
+          return;
+        }
       }
     }
 
+    // Record trace before execution
+    if (traceEnabled_) recordTrace();
+
     // Track cycles before instruction
     uint64_t cyclesBefore = cpu_->getTotalCycles();
+
+    // Profile: record PC before execution
+    uint16_t profilePC = profileEnabled_ ? cpu_->getPC() : 0;
 
     // Execute one instruction
     cpu_->executeInstruction();
@@ -150,6 +175,11 @@ void Emulator::runCycles(int cycles) {
     // Update disk controller with actual instruction cycles
     uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
     if (disk_) disk_->update(static_cast<int>(cyclesUsed));
+
+    // Accumulate cycle profiling
+    if (profileEnabled_) {
+      profileCycles_[profilePC] += static_cast<uint32_t>(cyclesUsed);
+    }
 
     // Update Mockingboard timers BEFORE next instruction
     // This ensures timer IRQs fire before the CPU can disable them
@@ -172,6 +202,9 @@ void Emulator::runCycles(int cycles) {
       video_->beginNewFrame(lastFrameCycle_);   // Reset log, aligned to frame boundary
       frameReady_ = true;
     }
+
+    // Check watchpoint hit (set by MMU callbacks during execution)
+    if (watchpointHit_) return;
   }
 }
 
@@ -325,17 +358,130 @@ void Emulator::enableBreakpoint(uint16_t address, bool enabled) {
   }
 }
 
+// ============================================================================
+// Watchpoints
+// ============================================================================
+
+void Emulator::addWatchpoint(uint16_t startAddr, uint16_t endAddr, WatchpointType type) {
+  watchpoints_.push_back({startAddr, endAddr, type, true});
+  watchpointsActive_ = true;
+  mmu_->setWatchpointsActive(true);
+}
+
+void Emulator::removeWatchpoint(uint16_t startAddr) {
+  watchpoints_.erase(
+    std::remove_if(watchpoints_.begin(), watchpoints_.end(),
+      [startAddr](const Watchpoint& wp) { return wp.startAddr == startAddr; }),
+    watchpoints_.end());
+  watchpointsActive_ = !watchpoints_.empty();
+  mmu_->setWatchpointsActive(watchpointsActive_);
+}
+
+void Emulator::clearWatchpoints() {
+  watchpoints_.clear();
+  watchpointsActive_ = false;
+  mmu_->setWatchpointsActive(false);
+}
+
+void Emulator::onWatchpointRead(uint16_t address, uint8_t value) {
+  if (!watchpointsActive_ || watchpointHit_) return;
+  for (const auto& wp : watchpoints_) {
+    if (!wp.enabled) continue;
+    if ((wp.type & WP_READ) && address >= wp.startAddr && address <= wp.endAddr) {
+      watchpointHit_ = true;
+      watchpointAddress_ = address;
+      watchpointValue_ = value;
+      watchpointIsWrite_ = false;
+      paused_ = true;
+      return;
+    }
+  }
+}
+
+void Emulator::onWatchpointWrite(uint16_t address, uint8_t value) {
+  if (!watchpointsActive_ || watchpointHit_) return;
+  for (const auto& wp : watchpoints_) {
+    if (!wp.enabled) continue;
+    if ((wp.type & WP_WRITE) && address >= wp.startAddr && address <= wp.endAddr) {
+      watchpointHit_ = true;
+      watchpointAddress_ = address;
+      watchpointValue_ = value;
+      watchpointIsWrite_ = true;
+      paused_ = true;
+      return;
+    }
+  }
+}
+
+// ============================================================================
+// Trace Log
+// ============================================================================
+
+void Emulator::recordTrace() {
+  if (traceBuffer_.empty()) {
+    traceBuffer_.resize(10000);
+  }
+
+  auto& entry = traceBuffer_[traceHead_];
+  entry.pc = cpu_->getPC();
+  entry.opcode = mmu_->peek(entry.pc);
+  entry.a = cpu_->getA();
+  entry.x = cpu_->getX();
+  entry.y = cpu_->getY();
+  entry.sp = cpu_->getSP();
+  entry.p = cpu_->getP();
+
+  // Read operands
+  entry.instrLen = 1;
+  entry.operand1 = 0;
+  entry.operand2 = 0;
+
+  // Determine instruction length from opcode
+  static const uint8_t instrLengths[256] = {
+    1,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
+    3,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
+    1,2,1,1,1,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,1,2,2,2,1,3,1,1,1,3,3,3,
+    1,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
+    2,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
+    2,2,2,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
+    2,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,1,2,2,2,1,3,1,1,1,3,3,3,
+    2,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,1,2,2,2,1,3,1,1,1,3,3,3,
+  };
+
+  entry.instrLen = instrLengths[entry.opcode];
+  if (entry.instrLen >= 2) entry.operand1 = mmu_->peek(entry.pc + 1);
+  if (entry.instrLen >= 3) entry.operand2 = mmu_->peek(entry.pc + 2);
+
+  entry.cycle = static_cast<uint32_t>(cpu_->getTotalCycles());
+  entry.padding = 0;
+
+  traceHead_ = (traceHead_ + 1) % traceBuffer_.size();
+  if (traceCount_ < traceBuffer_.size()) traceCount_++;
+}
+
 void Emulator::stepInstruction() {
   breakpointHit_ = false;
+  watchpointHit_ = false;
+
+  // Record trace before execution
+  if (traceEnabled_) recordTrace();
 
   // Track cycles before instruction
   uint64_t cyclesBefore = cpu_->getTotalCycles();
+
+  // Profile: record PC before execution
+  uint16_t profilePC = profileEnabled_ ? cpu_->getPC() : 0;
 
   cpu_->executeInstruction();
 
   // Update disk controller with actual instruction cycles
   uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
   if (disk_) disk_->update(static_cast<int>(cyclesUsed));
+
+  // Accumulate cycle profiling
+  if (profileEnabled_) {
+    profileCycles_[profilePC] += static_cast<uint32_t>(cyclesUsed);
+  }
 
   // Update Mockingboard timers
   if (mockingboard_) mockingboard_->update(static_cast<int>(cyclesUsed));

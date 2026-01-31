@@ -20,6 +20,8 @@ public:
   using ButtonCallback = std::function<uint8_t(int)>; // Returns button state for button 0-2
   using CycleCallback = std::function<uint64_t()>;    // Returns current CPU cycle count
   using VideoSwitchCallback = std::function<void()>;  // Called when video-relevant switches change
+  using WatchpointReadCallback = std::function<void(uint16_t, uint8_t)>;
+  using WatchpointWriteCallback = std::function<void(uint16_t, uint8_t)>;
 
   MMU();
   ~MMU();  // Defined in mmu.cpp (needed for unique_ptr<ExpansionCard>)
@@ -87,6 +89,11 @@ public:
   void setButtonCallback(ButtonCallback cb) { buttonCallback_ = std::move(cb); }
   void setCycleCallback(CycleCallback cb) { cycleCallback_ = std::move(cb); }
   void setVideoSwitchCallback(VideoSwitchCallback cb) { videoSwitchCallback_ = std::move(cb); }
+  void setWatchpointCallbacks(WatchpointReadCallback readCb, WatchpointWriteCallback writeCb) {
+    watchpointReadCallback_ = std::move(readCb);
+    watchpointWriteCallback_ = std::move(writeCb);
+  }
+  void setWatchpointsActive(bool active) { watchpointsActive_ = active; }
 
   // Paddle/joystick input
   void setPaddleValue(int paddle, uint8_t value) {
@@ -204,6 +211,9 @@ private:
   ButtonCallback buttonCallback_;
   CycleCallback cycleCallback_;
   VideoSwitchCallback videoSwitchCallback_;
+  WatchpointReadCallback watchpointReadCallback_;
+  WatchpointWriteCallback watchpointWriteCallback_;
+  bool watchpointsActive_ = false;
 
   // Expansion slots (1-7, index 0-6)
   std::array<std::unique_ptr<ExpansionCard>, 7> slots_;

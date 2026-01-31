@@ -378,6 +378,13 @@ uint8_t MMU::read(uint16_t address) {
     ++readCounts_[address];
   }
 
+  // Watchpoint check on read
+  if (watchpointsActive_ && watchpointReadCallback_) {
+    // Determine value without side effects for the callback
+    uint8_t val = peek(address);
+    watchpointReadCallback_(address, val);
+  }
+
   // Zero page and stack
   if (address < 0x0200) {
     if (switches_.altzp) {
@@ -517,6 +524,11 @@ void MMU::write(uint16_t address, uint8_t value) {
   // Track write access
   if (trackingEnabled_ && writeCounts_[address] < 255) {
     ++writeCounts_[address];
+  }
+
+  // Watchpoint check on write
+  if (watchpointsActive_ && watchpointWriteCallback_) {
+    watchpointWriteCallback_(address, value);
   }
 
   // Zero page and stack
