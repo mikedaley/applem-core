@@ -25,6 +25,7 @@ set(CORE_SOURCES
     src/core/cards/disk2_card.cpp
     src/core/cards/mockingboard_card.cpp
     src/core/cards/thunderclock_card.cpp
+    src/core/cards/mouse_card.cpp
     src/bindings/wasm_interface.cpp
 )
 
@@ -130,7 +131,12 @@ if(EMSCRIPTEN)
                 \"_getMockingboardChannelMute\", \
                 \"_isKeyboardReady\", \
                 \"_setSpeedMultiplier\", \
-                \"_getSpeedMultiplier\" \
+                \"_getSpeedMultiplier\", \
+                \"_mouseMove\", \
+                \"_mouseButton\", \
+                \"_isMouseCardInstalled\", \
+                \"_getMouseCardState\", \
+                \"_getMouseCardPIARegister\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \

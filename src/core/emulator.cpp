@@ -2,6 +2,7 @@
 #include "cards/disk2_card.hpp"
 #include "cards/mockingboard_card.hpp"
 #include "cards/thunderclock_card.hpp"
+#include "cards/mouse_card.hpp"
 #include <cstring>
 
 // Include generated ROM data directly
@@ -46,9 +47,12 @@ Emulator::Emulator() {
   mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
 
-  // Set up level-triggered IRQ polling for VIA interrupts
-  // VIA IRQs stay asserted until acknowledged by reading T1CL
-  cpu_->setIRQStatusCallback([this]() { return mockingboard_->isIRQActive(); });
+  // Set up level-triggered IRQ polling for VIA/mouse interrupts
+  cpu_->setIRQStatusCallback([this]() {
+    bool active = mockingboard_ ? mockingboard_->isIRQActive() : false;
+    if (mouse_) active = active || mouse_->isIRQActive();
+    return active;
+  });
 
   // Set up disk timing callback - allows disk reads to get accurate cycle count
   // during instruction execution (before disk_->update() is called)
@@ -80,9 +84,9 @@ void Emulator::reset() {
   cpu_->resetCycleCount(); // Clear cycle counter for fresh power-on state
   cpu_->reset();
   audio_->reset();
-  disk_->reset();
+  if (disk_) disk_->reset();
   keyboard_->reset();
-  mockingboard_->reset();
+  if (mockingboard_) mockingboard_->reset();
 
   // Clear Apple button states
   setButton(0, false);
@@ -112,7 +116,7 @@ void Emulator::warmReset() {
   setButton(1, false);
 
   // Stop disk motor (real Apple II behavior on Ctrl+Reset)
-  disk_->stopMotor();
+  if (disk_) disk_->stopMotor();
 
   breakpointHit_ = false;
   paused_ = false;
@@ -145,11 +149,14 @@ void Emulator::runCycles(int cycles) {
 
     // Update disk controller with actual instruction cycles
     uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
-    disk_->update(static_cast<int>(cyclesUsed));
+    if (disk_) disk_->update(static_cast<int>(cyclesUsed));
 
     // Update Mockingboard timers BEFORE next instruction
     // This ensures timer IRQs fire before the CPU can disable them
-    mockingboard_->update(static_cast<int>(cyclesUsed));
+    if (mockingboard_) mockingboard_->update(static_cast<int>(cyclesUsed));
+
+    // Update mouse card for VBL interrupt detection
+    if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
 
     // Progressive rendering: render scanlines up to current cycle
     video_->renderUpToCycle(cpu_->getTotalCycles());
@@ -269,24 +276,31 @@ uint8_t Emulator::getButtonState(int button) {
 
 bool Emulator::insertDisk(int drive, const uint8_t *data, size_t size,
                           const char *filename) {
+  if (!disk_) return false;
   return disk_->insertDisk(drive, data, size, filename ? filename : "");
 }
 
 bool Emulator::insertBlankDisk(int drive) {
+  if (!disk_) return false;
   return disk_->insertBlankDisk(drive);
 }
 
-void Emulator::ejectDisk(int drive) { disk_->ejectDisk(drive); }
+void Emulator::ejectDisk(int drive) {
+  if (disk_) disk_->ejectDisk(drive);
+}
 
 const uint8_t *Emulator::getDiskData(int drive, size_t *size) const {
+  if (!disk_) return nullptr;
   return disk_->getDiskData(drive, size);
 }
 
 const uint8_t *Emulator::exportDiskData(int drive, size_t *size) {
+  if (!disk_) return nullptr;
   return disk_->exportDiskData(drive, size);
 }
 
 const char *Emulator::getDiskFilename(int drive) const {
+  if (!disk_) return nullptr;
   const auto *image = disk_->getDiskImage(drive);
   if (!image) {
     return nullptr;
@@ -321,10 +335,13 @@ void Emulator::stepInstruction() {
 
   // Update disk controller with actual instruction cycles
   uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
-  disk_->update(static_cast<int>(cyclesUsed));
+  if (disk_) disk_->update(static_cast<int>(cyclesUsed));
 
   // Update Mockingboard timers
-  mockingboard_->update(static_cast<int>(cyclesUsed));
+  if (mockingboard_) mockingboard_->update(static_cast<int>(cyclesUsed));
+
+  // Update mouse card
+  if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
 
   // Progressive rendering: render scanlines up to current cycle
   video_->renderUpToCycle(cpu_->getTotalCycles());
@@ -460,6 +477,22 @@ void Emulator::toggleSpeaker() {
 }
 
 // ============================================================================
+// Mouse Input
+// ============================================================================
+
+void Emulator::mouseMove(int dx, int dy) {
+  if (mouse_) {
+    mouse_->addDelta(dx, dy);
+  }
+}
+
+void Emulator::mouseButton(bool pressed) {
+  if (mouse_) {
+    mouse_->setMouseButton(pressed);
+  }
+}
+
+// ============================================================================
 // Slot Management
 // ============================================================================
 
@@ -490,6 +523,9 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
   if (strcmp(name, "Thunderclock") == 0) {
     return "thunderclock";
   }
+  if (strcmp(name, "Mouse") == 0) {
+    return "mouse";
+  }
 
   return "empty";
 }
@@ -504,32 +540,44 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     return false;
   }
 
-  // Handle empty slot
-  if (strcmp(cardId, "empty") == 0) {
-    if (slot == 6) {
-      if (!diskStorage_) {
-        diskStorage_ = mmu_->removeCard(6);
-      }
-    } else if (slot == 4) {
+  // Before any slot change, clean up existing special card pointers.
+  // insertCard() destroys the old card, so dangling pointers must be cleared.
+  ExpansionCard* existing = mmu_->getCard(slot);
+  if (existing) {
+    const char* existingName = existing->getName();
+    if (strcmp(existingName, "Mockingboard") == 0 && slot == 4) {
+      // Move Mockingboard to storage so it can be restored later
       if (!mbStorage_) {
         mbStorage_ = mmu_->removeCard(4);
+        mockingboard_ = nullptr;
         audio_->setMockingboard(nullptr);
       }
+    } else if (strcmp(existingName, "Disk II") == 0 && slot == 6) {
+      if (!diskStorage_) {
+        diskStorage_ = mmu_->removeCard(6);
+        disk_ = nullptr;
+      }
+    } else if (strcmp(existingName, "Mouse") == 0) {
+      mouse_ = nullptr;
+      mmu_->removeCard(slot);
     } else {
       mmu_->removeCard(slot);
     }
+  }
+
+  // Handle empty slot - cleanup above already removed the card
+  if (strcmp(cardId, "empty") == 0) {
     return true;
   }
 
   // Handle Disk II card
   if (strcmp(cardId, "disk2") == 0) {
-    // Only slot 6 is supported for Disk II
     if (slot != 6) {
       return false;
     }
-
     // Re-insert from storage
     if (diskStorage_) {
+      disk_ = static_cast<Disk2Card*>(diskStorage_.get());
       mmu_->insertCard(6, std::move(diskStorage_));
     }
     return true;
@@ -537,13 +585,12 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
 
   // Handle Mockingboard card
   if (strcmp(cardId, "mockingboard") == 0) {
-    // Only slot 4 is supported for Mockingboard
     if (slot != 4) {
       return false;
     }
-
     // Re-insert from storage
     if (mbStorage_) {
+      mockingboard_ = static_cast<MockingboardCard*>(mbStorage_.get());
       mmu_->insertCard(4, std::move(mbStorage_));
       audio_->setMockingboard(mockingboard_);
     }
@@ -552,8 +599,18 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
 
   // Handle Thunderclock card
   if (strcmp(cardId, "thunderclock") == 0) {
-    // Create and insert Thunderclock card
     auto card = std::make_unique<ThunderclockCard>();
+    mmu_->insertCard(slot, std::move(card));
+    return true;
+  }
+
+  // Handle Mouse card
+  if (strcmp(cardId, "mouse") == 0) {
+    auto card = std::make_unique<MouseCard>();
+    card->setSlotNumber(slot);
+    card->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
+    card->setIRQCallback([this]() { cpu_->irq(); });
+    mouse_ = card.get();
     mmu_->insertCard(slot, std::move(card));
     return true;
   }
@@ -746,9 +803,14 @@ const uint8_t *Emulator::exportState(size_t *size) {
 
   // Mockingboard state
   uint8_t mbState[MockingboardCard::STATE_SIZE];
-  size_t mbSize = mockingboard_->serialize(mbState, sizeof(mbState));
+  size_t mbSize = 0;
+  if (mockingboard_) {
+    mbSize = mockingboard_->serialize(mbState, sizeof(mbState));
+  }
   writeLE16(stateBuffer_, static_cast<uint16_t>(mbSize));
-  stateBuffer_.insert(stateBuffer_.end(), mbState, mbState + mbSize);
+  if (mbSize > 0) {
+    stateBuffer_.insert(stateBuffer_.end(), mbState, mbState + mbSize);
+  }
 
   // Expansion card states (slots 1-7, excluding 4 and 6 which are handled above)
   // First, count how many cards have state to save
@@ -774,7 +836,7 @@ const uint8_t *Emulator::exportState(size_t *size) {
       const char* name = card->getName();
       uint8_t cardType = 0;
       if (strcmp(name, "Thunderclock") == 0) cardType = 1;
-      // Add more card types here as needed
+      if (strcmp(name, "Mouse") == 0) cardType = 2;
       stateBuffer_.push_back(cardType);
 
       // Card state
@@ -962,12 +1024,14 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
   uint8_t dataLatch = data[offset++];
 
   // Restore disk controller state (including motor for mid-load restores)
-  disk_->setMotorOn(motorOn);
-  disk_->setSelectedDrive(selectedDrive);
-  disk_->setQ6(q6);
-  disk_->setQ7(q7);
-  disk_->setPhaseStates(phaseStates);
-  disk_->setDataLatch(dataLatch);
+  if (disk_) {
+    disk_->setMotorOn(motorOn);
+    disk_->setSelectedDrive(selectedDrive);
+    disk_->setQ6(q6);
+    disk_->setQ7(q7);
+    disk_->setPhaseStates(phaseStates);
+    disk_->setDataLatch(dataLatch);
+  }
 
   // Per-drive state (disk images and track positions)
   for (int drive = 0; drive < 2; drive++) {
@@ -1000,12 +1064,14 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
       }
 
       // Insert the disk image from the saved state
-      disk_->insertDisk(drive, diskData, diskSize, filename);
+      if (disk_) {
+        disk_->insertDisk(drive, diskData, diskSize, filename);
 
-      // Restore track position
-      auto *image = disk_->getMutableDiskImage(drive);
-      if (image) {
-        image->setQuarterTrack(quarterTrack);
+        // Restore track position
+        auto *image = disk_->getMutableDiskImage(drive);
+        if (image) {
+          image->setQuarterTrack(quarterTrack);
+        }
       }
     } else {
       // Skip filename length field (will be 0)
@@ -1013,7 +1079,7 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
         offset += 2;
       }
       // Eject any existing disk
-      disk_->ejectDisk(drive);
+      if (disk_) disk_->ejectDisk(drive);
     }
   }
 
@@ -1027,7 +1093,9 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
     uint16_t mbSize = readLE16(data + offset);
     offset += 2;
     if (mbSize > 0 && offset + mbSize <= size) {
-      mockingboard_->deserialize(data + offset, mbSize);
+      if (mockingboard_) {
+        mockingboard_->deserialize(data + offset, mbSize);
+      }
       offset += mbSize;
     }
   }
@@ -1056,7 +1124,16 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
               existingCard = mmu_->getCard(slot);
               break;
             }
-            // Add more card types here as needed
+            case 2: {  // Mouse
+              auto card = std::make_unique<MouseCard>();
+              card->setSlotNumber(slot);
+              card->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
+              card->setIRQCallback([this]() { cpu_->irq(); });
+              mouse_ = card.get();
+              mmu_->insertCard(slot, std::move(card));
+              existingCard = mmu_->getCard(slot);
+              break;
+            }
           }
         }
 

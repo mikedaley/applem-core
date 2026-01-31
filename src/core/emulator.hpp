@@ -6,6 +6,7 @@
 #include "cards/expansion_card.hpp"
 #include "input/keyboard.hpp"
 #include "cards/mockingboard_card.hpp"
+#include "cards/mouse_card.hpp"
 #include "mmu/mmu.hpp"
 #include "types.hpp"
 #include "video/video.hpp"
@@ -54,6 +55,10 @@ public:
   void setButton(int button, bool pressed);  // Set button state (0=Open Apple, 1=Closed Apple, 2=Button2)
   void setPaddleValue(int paddle, int value);  // Set paddle value (0-3, value 0-255)
   int getPaddleValue(int paddle) const;  // Get paddle value (0-3)
+
+  // Mouse input
+  void mouseMove(int dx, int dy);
+  void mouseButton(bool pressed);
   bool isKeyboardReady() const { return (keyboardLatch_ & 0x80) == 0; }  // True if strobe cleared
 
   // Disk management
@@ -115,6 +120,7 @@ public:
   Audio &getAudio() { return *audio_; }
   Disk2Card &getDisk() { return *disk_; }
   MockingboardCard &getMockingboard() { return *mockingboard_; }
+  MouseCard* getMouseCard() { return mouse_; }
 
   // Slot management
   const char* getSlotCardName(uint8_t slot) const;
@@ -143,6 +149,7 @@ private:
   // Non-owning pointers to cards (owned by MMU slot system)
   Disk2Card* disk_ = nullptr;
   MockingboardCard* mockingboard_ = nullptr;
+  MouseCard* mouse_ = nullptr;
 
   // Storage for cards when removed from slots
   std::unique_ptr<ExpansionCard> diskStorage_;
