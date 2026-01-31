@@ -610,6 +610,19 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     card->setSlotNumber(slot);
     card->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
     card->setIRQCallback([this]() { cpu_->irq(); });
+    // Wire firmware interception callbacks so entry points can directly
+    // update screen holes and CPU registers without MC6805 emulation
+    card->setFirmwareCallbacks(
+        [this]() { return cpu_->isInstructionComplete(); },  // isOpcodeFetch
+        [this](uint16_t addr) { return mmu_->read(addr); },  // memRead
+        [this](uint16_t addr, uint8_t val) { mmu_->write(addr, val); },  // memWrite
+        [this]() { return cpu_->getA(); },   // getA
+        [this]() { return cpu_->getP(); },   // getP
+        [this](uint8_t v) { cpu_->setA(v); },  // setA
+        [this](uint8_t v) { cpu_->setX(v); },  // setX
+        [this](uint8_t v) { cpu_->setY(v); },  // setY
+        [this](uint8_t v) { cpu_->setP(v); }   // setP
+    );
     mouse_ = card.get();
     mmu_->insertCard(slot, std::move(card));
     return true;

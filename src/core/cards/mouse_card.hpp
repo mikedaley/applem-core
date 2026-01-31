@@ -12,9 +12,14 @@ namespace a2e {
  * a Motorola MC6821 PIA (Peripheral Interface Adapter) paired with an
  * MC6805 microcontroller to interface a mouse to the Apple II.
  *
- * In this emulation, the MC6805 protocol is emulated directly rather
- * than executing 6805 instructions. The firmware communicates mouse
- * state through "screen holes" - unused bytes in the text screen memory:
+ * Since we don't have the MC68705 MCU ROM, the firmware entry points
+ * are intercepted directly: when the CPU fetches an opcode at a known
+ * entry point in the slot ROM, we perform the operation (updating
+ * screen holes, CPU registers) and return RTS ($60) so the caller
+ * gets immediate results without the MC6805 communication protocol.
+ *
+ * Mouse state is communicated through "screen holes" - unused bytes
+ * in the text screen memory:
  *
  *   $0478+n: Mouse X position low byte
  *   $04F8+n: Mouse X position high byte
@@ -25,15 +30,9 @@ namespace a2e {
  *   $0778+n: Status byte
  *   $07F8+n: Mode byte
  *
- * The 6821 PIA provides 4 registers at I/O offsets 0-3:
- *   Offset 0: Port A data / DDRA (selected by CRA bit 2)
- *   Offset 1: Control Register A (CRA)
- *   Offset 2: Port B data / DDRB (selected by CRB bit 2)
- *   Offset 3: Control Register B (CRB)
- *
- * The firmware uses PIA Port B to send commands to the 6805 and
- * Port A to receive responses. The 6805 protocol commands include
- * reading mouse position, button state, and setting operating modes.
+ * The 6821 PIA provides 4 registers at I/O offsets 0-3 and the
+ * real ROM is served for card identification (signature bytes at
+ * $Cn05, $Cn07, $Cn0B, $Cn0C and entry point table at $Cn12-$Cn20).
  *
  * VBL (Vertical Blank) interrupt generation:
  * When the mouse mode has bit 3 set (VBL interrupt enable), an IRQ
@@ -65,8 +64,8 @@ public:
     uint8_t readROM(uint8_t offset) override;
     bool hasROM() const override { return true; }
 
-    // Expansion ROM ($C800-$CFFF)
-    bool hasExpansionROM() const override { return true; }
+    // No expansion ROM - the mouse card uses banked slot ROM instead
+    bool hasExpansionROM() const override { return false; }
     uint8_t readExpansionROM(uint16_t offset) override;
 
     void reset() override;
@@ -90,6 +89,21 @@ public:
     void setSlotNumber(uint8_t slot) { slotNum_ = slot; }
     void addDelta(int dx, int dy);
     void setMouseButton(bool pressed);
+
+    // Firmware interception callbacks
+    // These allow the card to read/write Apple II memory and CPU registers
+    // directly when intercepting firmware entry points.
+    using MemReadCB = std::function<uint8_t(uint16_t)>;
+    using MemWriteCB = std::function<void(uint16_t, uint8_t)>;
+    using IsOpcodeFetchCB = std::function<bool()>;
+    using GetRegCB = std::function<uint8_t()>;
+    using SetRegCB = std::function<void(uint8_t)>;
+
+    void setFirmwareCallbacks(
+        IsOpcodeFetchCB isOpcodeFetch,
+        MemReadCB memRead, MemWriteCB memWrite,
+        GetRegCB getA, GetRegCB getP,
+        SetRegCB setA, SetRegCB setX, SetRegCB setY, SetRegCB setP);
 
     // Debug accessors
     uint8_t getSlotNumber() const { return slotNum_; }
@@ -116,7 +130,7 @@ public:
     uint8_t getLastCommand() const { return lastCommand_; }
     uint8_t getResponseState() const { return responseState_; }
     bool getWasInVBL() const { return wasInVBL_; }
-    uint8_t getMode() const { return ora_ & 0x0F; }
+    uint8_t getMode() const { return mode_; }
 
 private:
     // ROM data
@@ -144,6 +158,9 @@ private:
     bool moved_ = false;
     bool buttonChanged_ = false;
 
+    // Mouse mode (set by SetMouse firmware call)
+    uint8_t mode_ = 0;
+
     // Mouse clamping
     int16_t clampMinX_ = 0;
     int16_t clampMaxX_ = 1023;
@@ -164,13 +181,38 @@ private:
     IRQCallback irqCallback_;
     CycleCallback cycleCallback_;
 
-    // 6805 protocol state machine
-    // The firmware writes commands via Port B, reads responses via Port A
+    // 6805 protocol state machine (kept for debug display)
     uint8_t lastCommand_ = 0;
     uint8_t responseState_ = 0;
 
+    // Firmware interception callbacks
+    IsOpcodeFetchCB isOpcodeFetch_;
+    MemReadCB memRead_;
+    MemWriteCB memWrite_;
+    GetRegCB getRegA_;
+    GetRegCB getRegP_;
+    SetRegCB setRegA_;
+    SetRegCB setRegX_;
+    SetRegCB setRegY_;
+    SetRegCB setRegP_;
+
     void updateIRQState();
     void processCommand(uint8_t cmd);
+
+    // Firmware entry point handlers
+    bool handleFirmwareCall(uint8_t offset);
+    void fwInitMouse();
+    void fwSetMouse();
+    void fwServeMouse();
+    void fwReadMouse();
+    void fwClearMouse();
+    void fwPosMouse();
+    void fwClampMouse();
+    void fwHomeMouse();
+
+    // Helpers
+    void writeScreenHoles();
+    void clearCarry();
 };
 
 } // namespace a2e
