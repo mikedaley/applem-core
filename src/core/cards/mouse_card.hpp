@@ -8,31 +8,26 @@ namespace a2e {
 /**
  * MouseCard - Apple Mouse Interface Card emulation
  *
- * Emulates the Apple Mouse Interface Card (342-0270-C ROM) which uses
- * a Motorola MC6821 PIA (Peripheral Interface Adapter) paired with an
- * MC6805 microcontroller to interface a mouse to the Apple II.
+ * Emulates the Apple Mouse Interface Card (342-0270-C ROM) using the
+ * AppleWin-style PIA command protocol. The real ROM firmware executes
+ * as native 6502 code on the CPU while our C++ code emulates the
+ * "MCU side" of the MC6821 PIA — receiving commands and providing
+ * response data through Port A/B transitions.
  *
- * Since we don't have the MC68705 MCU ROM, the firmware entry points
- * are intercepted directly: when the CPU fetches an opcode at a known
- * entry point in the slot ROM, we perform the operation (updating
- * screen holes, CPU registers) and return RTS ($60) so the caller
- * gets immediate results without the MC6805 communication protocol.
+ * Protocol overview:
+ *   6502 CPU <-> ROM firmware (runs natively) <-> MC6821 PIA <-> Our "MCU" code
  *
- * Mouse state is communicated through "screen holes" - unused bytes
- * in the text screen memory:
+ * The firmware writes command bytes to PIA Port A and toggles Port B
+ * control signals. Our code detects Port B transitions, buffers the
+ * command/data, and places response data on Port A input pins for the
+ * firmware to read back.
  *
- *   $0478+n: Mouse X position low byte
- *   $04F8+n: Mouse X position high byte
- *   $0578+n: Mouse Y position low byte
- *   $05F8+n: Mouse Y position high byte
- *   $0678+n: Button 0/1 state + interrupt flags
- *   $06F8+n: Reserved
- *   $0778+n: Status byte
- *   $07F8+n: Mode byte
+ * Mouse state is communicated through "screen holes" by the firmware
+ * itself — we only provide position/status data via the PIA when asked.
  *
  * The 6821 PIA provides 4 registers at I/O offsets 0-3 and the
- * real ROM is served for card identification (signature bytes at
- * $Cn05, $Cn07, $Cn0B, $Cn0C and entry point table at $Cn12-$Cn20).
+ * real ROM is served for card identification and firmware execution.
+ * Port B bits 1-3 select the 256-byte ROM page (2KB total).
  *
  * VBL (Vertical Blank) interrupt generation:
  * When the mouse mode has bit 3 set (VBL interrupt enable), an IRQ
@@ -90,21 +85,6 @@ public:
     void addDelta(int dx, int dy);
     void setMouseButton(bool pressed);
 
-    // Firmware interception callbacks
-    // These allow the card to read/write Apple II memory and CPU registers
-    // directly when intercepting firmware entry points.
-    using MemReadCB = std::function<uint8_t(uint16_t)>;
-    using MemWriteCB = std::function<void(uint16_t, uint8_t)>;
-    using IsOpcodeFetchCB = std::function<bool()>;
-    using GetRegCB = std::function<uint8_t()>;
-    using SetRegCB = std::function<void(uint8_t)>;
-
-    void setFirmwareCallbacks(
-        IsOpcodeFetchCB isOpcodeFetch,
-        MemReadCB memRead, MemWriteCB memWrite,
-        GetRegCB getA, GetRegCB getP,
-        SetRegCB setA, SetRegCB setX, SetRegCB setY, SetRegCB setP);
-
     // Debug accessors
     uint8_t getSlotNumber() const { return slotNum_; }
     int16_t getMouseX() const { return mouseX_; }
@@ -128,7 +108,7 @@ public:
     bool getMoveInterruptPending() const { return moveInterruptPending_; }
     bool getButtonInterruptPending() const { return buttonInterruptPending_; }
     uint8_t getLastCommand() const { return lastCommand_; }
-    uint8_t getResponseState() const { return responseState_; }
+    uint8_t getResponseState() const { return byState_; }
     bool getWasInVBL() const { return wasInVBL_; }
     uint8_t getMode() const { return mode_; }
 
@@ -158,7 +138,7 @@ private:
     bool moved_ = false;
     bool buttonChanged_ = false;
 
-    // Mouse mode (set by SetMouse firmware call)
+    // Mouse mode (set by SetMouse command)
     uint8_t mode_ = 0;
 
     // Mouse clamping
@@ -174,45 +154,30 @@ private:
     bool buttonInterruptPending_ = false;
 
     // VBL tracking
-    uint64_t lastVBLCycle_ = 0;
     bool wasInVBL_ = false;
 
     // IRQ/cycle callbacks
     IRQCallback irqCallback_;
     CycleCallback cycleCallback_;
 
-    // 6805 protocol state machine (kept for debug display)
-    uint8_t lastCommand_ = 0;
-    uint8_t responseState_ = 0;
+    // PIA command protocol state machine (AppleWin-style)
+    uint8_t byState_ = 0;       // Protocol state (0=idle, 1=writing, 2=reading)
+    uint8_t byBuff_[8] = {};    // Command/response data buffer
+    uint8_t nBuffPos_ = 0;      // Current buffer position
+    uint8_t nDataLen_ = 0;      // Expected data length for current operation
+    uint8_t by6821B_ = 0;       // Previous Port B value for transition detection
+    uint8_t lastCommand_ = 0;   // Last command byte (for debug display)
 
-    // Firmware interception callbacks
-    IsOpcodeFetchCB isOpcodeFetch_;
-    MemReadCB memRead_;
-    MemWriteCB memWrite_;
-    GetRegCB getRegA_;
-    GetRegCB getRegP_;
-    SetRegCB setRegA_;
-    SetRegCB setRegX_;
-    SetRegCB setRegY_;
-    SetRegCB setRegP_;
+    // Position snapshot (set on ReadMouse, served to firmware)
+    int16_t snapX_ = 0;
+    int16_t snapY_ = 0;
 
     void updateIRQState();
-    void processCommand(uint8_t cmd);
 
-    // Firmware entry point handlers
-    bool handleFirmwareCall(uint8_t offset);
-    void fwInitMouse();
-    void fwSetMouse();
-    void fwServeMouse();
-    void fwReadMouse();
-    void fwClearMouse();
-    void fwPosMouse();
-    void fwClampMouse();
-    void fwHomeMouse();
-
-    // Helpers
-    void writeScreenHoles();
-    void clearCarry();
+    // PIA command protocol handlers
+    void on6821_B(uint8_t byData);  // Port B transition handler
+    void onCommand();               // Command dispatch
+    void onWrite();                 // Multi-byte write dispatch
 };
 
 } // namespace a2e

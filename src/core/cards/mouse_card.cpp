@@ -28,18 +28,15 @@ static constexpr uint8_t PIA_CRA    = 1;  // Control Register A
 static constexpr uint8_t PIA_PORT_B = 2;  // Port B data / DDRB
 static constexpr uint8_t PIA_CRB    = 3;  // Control Register B
 
-// Firmware entry point offsets within ROM page 0
-// These are the target addresses stored in the entry point table at $Cn12-$Cn20
-static constexpr uint8_t ENTRY_BOOT    = 0x00;  // Card scan / boot entry
-static constexpr uint8_t ENTRY_INIT    = 0x08;  // InitMouse
-static constexpr uint8_t ENTRY_COMMON  = 0x20;  // Common init (target of $00 and $08)
-static constexpr uint8_t ENTRY_POS     = 0x48;  // PosMouse
-static constexpr uint8_t ENTRY_CLAMP   = 0x53;  // ClampMouse
-static constexpr uint8_t ENTRY_SERV    = 0x9B;  // ServeMouse
-static constexpr uint8_t ENTRY_SET     = 0xB3;  // SetMouse
-static constexpr uint8_t ENTRY_READ    = 0xC0;  // ReadMouse
-static constexpr uint8_t ENTRY_CLEAR   = 0xDD;  // ClearMouse
-static constexpr uint8_t ENTRY_HOME    = 0xE6;  // HomeMouse
+// Command codes (high nibble of command byte)
+static constexpr uint8_t CMD_SET   = 0x00;
+static constexpr uint8_t CMD_READ  = 0x10;
+static constexpr uint8_t CMD_SERV  = 0x20;
+static constexpr uint8_t CMD_CLEAR = 0x30;
+static constexpr uint8_t CMD_POS   = 0x40;
+static constexpr uint8_t CMD_INIT  = 0x50;
+static constexpr uint8_t CMD_CLAMP = 0x60;
+static constexpr uint8_t CMD_HOME  = 0x70;
 
 MouseCard::MouseCard()
     : rom_(roms::ROM_MOUSE)
@@ -81,29 +78,20 @@ void MouseCard::reset() {
     buttonInterruptPending_ = false;
 
     // Reset VBL tracking
-    lastVBLCycle_ = 0;
     wasInVBL_ = false;
 
-    // Reset protocol state
+    // Reset protocol state machine
+    byState_ = 0;
+    std::memset(byBuff_, 0, sizeof(byBuff_));
+    nBuffPos_ = 0;
+    nDataLen_ = 1;
+    by6821B_ = 0x40;    // BIT6 set (MCU ready signal)
+    irb_ = by6821B_;    // Reflect in Port B input
     lastCommand_ = 0;
-    responseState_ = 0;
-}
 
-void MouseCard::setFirmwareCallbacks(
-    IsOpcodeFetchCB isOpcodeFetch,
-    MemReadCB memRead, MemWriteCB memWrite,
-    GetRegCB getA, GetRegCB getP,
-    SetRegCB setA, SetRegCB setX, SetRegCB setY, SetRegCB setP)
-{
-    isOpcodeFetch_ = std::move(isOpcodeFetch);
-    memRead_ = std::move(memRead);
-    memWrite_ = std::move(memWrite);
-    getRegA_ = std::move(getA);
-    getRegP_ = std::move(getP);
-    setRegA_ = std::move(setA);
-    setRegX_ = std::move(setX);
-    setRegY_ = std::move(setY);
-    setRegP_ = std::move(setP);
+    // Reset snapshot
+    snapX_ = 0;
+    snapY_ = 0;
 }
 
 // ============================================================================
@@ -176,6 +164,7 @@ void MouseCard::writeIO(uint8_t offset, uint8_t value) {
             if (crb_ & 0x04) {
                 // Write to output register B
                 orb_ = value;
+                on6821_B(value);  // Detect clock transitions
             } else {
                 // Write to DDR B
                 ddrb_ = value;
@@ -210,38 +199,12 @@ uint8_t MouseCard::peekIO(uint8_t offset) const {
 }
 
 // ============================================================================
-// Firmware Entry Point Interception
+// ROM Access (banked, firmware runs natively)
 // ============================================================================
 
 uint8_t MouseCard::readROM(uint8_t offset) {
-    // Intercept ALL opcode fetches from the slot ROM.
-    //
-    // We detect opcode fetch by checking cpu_->isInstructionComplete(),
-    // which returns true when cycleCount_ == 0 (before the instruction
-    // begins executing). During operand reads, cycleCount_ > 0.
-    //
-    // For known entry points (page 0): perform the mouse operation and
-    // return RTS ($60) so the caller gets results immediately.
-    //
-    // For any other opcode fetch: return RTS to prevent the firmware's
-    // MC68705 communication code from executing (since we don't emulate
-    // the MC68705 MCU, the firmware would hang polling for responses).
-    //
-    // Data reads (card ID bytes, entry point table) are unaffected since
-    // they occur during instruction execution when cycleCount_ > 0.
-    if (isOpcodeFetch_ && isOpcodeFetch_()) {
-        // Try to handle as a known firmware entry point (page 0 only)
-        if ((orb_ & 0x0E) == 0) {
-            handleFirmwareCall(offset);
-        }
-        // Return RTS for ALL opcode fetches - prevents firmware from
-        // executing MC68705 protocol code that would hang
-        return 0x60;
-    }
-
-    // Data/operand reads: return real ROM bytes with page banking
-    // PIA Port B bits 1-3 select which 256-byte page of the 2KB ROM
-    uint16_t romBank = static_cast<uint16_t>(orb_ & 0x0E) << 7;
+    // Port B bits 1-3 select which 256-byte page of the 2KB ROM
+    uint16_t romBank = static_cast<uint16_t>(by6821B_ & 0x0E) << 7;
     uint16_t romOffset = romBank | offset;
     if (rom_ && romOffset < romSize_) {
         return rom_[romOffset];
@@ -249,219 +212,218 @@ uint8_t MouseCard::readROM(uint8_t offset) {
     return 0xFF;
 }
 
-bool MouseCard::handleFirmwareCall(uint8_t offset) {
-    // Only handle if firmware callbacks are wired
-    if (!memRead_ || !memWrite_) return false;
-
-    switch (offset) {
-        // Card scan / boot entry ($Cn00) and common init target ($Cn20)
-        // The system JSRs to $Cn00 during card scanning; the firmware at $00
-        // branches to $20 for PIA/MC6805 init. We intercept both to prevent
-        // the firmware from trying to communicate with the MC68705.
-        case ENTRY_BOOT:
-        case ENTRY_COMMON:
-            lastCommand_ = 0x50;
-            fwInitMouse();
-            return true;
-
-        case ENTRY_INIT:  lastCommand_ = 0x50; fwInitMouse();  return true;
-        case ENTRY_SET:   lastCommand_ = 0x00; fwSetMouse();   return true;
-        case ENTRY_SERV:  lastCommand_ = 0x20; fwServeMouse(); return true;
-        case ENTRY_READ:  lastCommand_ = 0x10; fwReadMouse();  return true;
-        case ENTRY_CLEAR: lastCommand_ = 0x30; fwClearMouse(); return true;
-        case ENTRY_POS:   lastCommand_ = 0x40; fwPosMouse();   return true;
-        case ENTRY_CLAMP: lastCommand_ = 0x60; fwClampMouse(); return true;
-        case ENTRY_HOME:  lastCommand_ = 0x70; fwHomeMouse();  return true;
-        default: return false;
-    }
-}
-
-void MouseCard::fwInitMouse() {
-    // Reset clamp bounds to default
-    clampMinX_ = 0;
-    clampMaxX_ = 1023;
-    clampMinY_ = 0;
-    clampMaxY_ = 1023;
-
-    // Clear position
-    mouseX_ = 0;
-    mouseY_ = 0;
-    moved_ = false;
-    buttonChanged_ = false;
-
-    // Disable mouse
-    mode_ = 0;
-
-    // Clear screen holes
-    writeScreenHoles();
-    memWrite_(0x0678 + slotNum_, 0);   // Button status
-    memWrite_(0x06F8 + slotNum_, 0);   // Reserved
-    memWrite_(0x0778 + slotNum_, 0);   // Status
-    memWrite_(0x07F8 + slotNum_, 0);   // Mode
-
-    clearCarry();
-}
-
-void MouseCard::fwSetMouse() {
-    // Mode in A register
-    if (getRegA_) {
-        mode_ = getRegA_() & 0x0F;
-    }
-
-    // Write mode to screen hole
-    memWrite_(0x07F8 + slotNum_, mode_);
-
-    // If mouse is being disabled, deassert all interrupts
-    if (!(mode_ & MODE_MOUSE_ON)) {
-        irqActive_ = false;
-        vblInterruptPending_ = false;
-        moveInterruptPending_ = false;
-        buttonInterruptPending_ = false;
-        cra_ &= 0x3F;
-    }
-
-    clearCarry();
-}
-
-void MouseCard::fwServeMouse() {
-    // Build interrupt status byte
-    uint8_t status = 0;
-    if (moveInterruptPending_)   status |= STAT_INT_MOVEMENT;
-    if (buttonInterruptPending_) status |= STAT_INT_BUTTON;
-    if (vblInterruptPending_)    status |= STAT_INT_VBL;
-
-    // Write to screen hole
-    memWrite_(0x0778 + slotNum_, status);
-
-    // Clear all pending interrupts and deassert IRQ
-    vblInterruptPending_ = false;
-    moveInterruptPending_ = false;
-    buttonInterruptPending_ = false;
-    irqActive_ = false;
-    cra_ &= 0x3F;
-
-    // Return: X = $Cn, Y = interrupt status
-    if (setRegX_) setRegX_(0xC0 | slotNum_);
-    if (setRegY_) setRegY_(status);
-
-    clearCarry();
-}
-
-void MouseCard::fwReadMouse() {
-    // Build status byte
-    uint8_t status = 0;
-    if (mouseButton_)  status |= STAT_CURR_BUTTON0;
-    if (lastButton_)   status |= STAT_PREV_BUTTON0;
-    if (moved_)        status |= STAT_MOVEMENT_SINCE_READMOUSE;
-    if (moveInterruptPending_)   status |= STAT_INT_MOVEMENT;
-    if (buttonInterruptPending_) status |= STAT_INT_BUTTON;
-    if (vblInterruptPending_)    status |= STAT_INT_VBL;
-
-    // Write position and status to screen holes
-    writeScreenHoles();
-    memWrite_(0x0678 + slotNum_, mouseButton_ ? 0x80 : 0x00);
-    memWrite_(0x0778 + slotNum_, status);
-
-    // Clear movement tracking after read
-    moved_ = false;
-    lastButton_ = mouseButton_;
-
-    // Return: X = $Cn, Y = status
-    if (setRegX_) setRegX_(0xC0 | slotNum_);
-    if (setRegY_) setRegY_(status);
-
-    clearCarry();
-}
-
-void MouseCard::fwClearMouse() {
-    mouseX_ = 0;
-    mouseY_ = 0;
-    moved_ = false;
-
-    writeScreenHoles();
-    clearCarry();
-}
-
-void MouseCard::fwPosMouse() {
-    // Read desired position from screen holes
-    mouseX_ = static_cast<int16_t>(
-        memRead_(0x0478 + slotNum_) |
-        (memRead_(0x04F8 + slotNum_) << 8));
-    mouseY_ = static_cast<int16_t>(
-        memRead_(0x0578 + slotNum_) |
-        (memRead_(0x05F8 + slotNum_) << 8));
-
-    // Apply clamping
-    if (mouseX_ < clampMinX_) mouseX_ = clampMinX_;
-    if (mouseX_ > clampMaxX_) mouseX_ = clampMaxX_;
-    if (mouseY_ < clampMinY_) mouseY_ = clampMinY_;
-    if (mouseY_ > clampMaxY_) mouseY_ = clampMaxY_;
-
-    clearCarry();
-}
-
-void MouseCard::fwClampMouse() {
-    // A register = axis (0 = X, 1 = Y)
-    uint8_t axis = 0;
-    if (getRegA_) {
-        axis = getRegA_();
-    }
-
-    // Clamping bounds are NOT slot-indexed
-    int16_t minVal = static_cast<int16_t>(
-        memRead_(0x0478) | (memRead_(0x04F8) << 8));
-    int16_t maxVal = static_cast<int16_t>(
-        memRead_(0x0578) | (memRead_(0x05F8) << 8));
-
-    if (axis == 0) {
-        // X axis
-        clampMinX_ = minVal;
-        clampMaxX_ = maxVal;
-        if (mouseX_ < clampMinX_) mouseX_ = clampMinX_;
-        if (mouseX_ > clampMaxX_) mouseX_ = clampMaxX_;
-    } else {
-        // Y axis
-        clampMinY_ = minVal;
-        clampMaxY_ = maxVal;
-        if (mouseY_ < clampMinY_) mouseY_ = clampMinY_;
-        if (mouseY_ > clampMaxY_) mouseY_ = clampMaxY_;
-    }
-
-    clearCarry();
-}
-
-void MouseCard::fwHomeMouse() {
-    mouseX_ = clampMinX_;
-    mouseY_ = clampMinY_;
-
-    writeScreenHoles();
-    clearCarry();
-}
-
-void MouseCard::writeScreenHoles() {
-    if (!memWrite_) return;
-    memWrite_(0x0478 + slotNum_, static_cast<uint8_t>(mouseX_ & 0xFF));
-    memWrite_(0x04F8 + slotNum_, static_cast<uint8_t>((mouseX_ >> 8) & 0xFF));
-    memWrite_(0x0578 + slotNum_, static_cast<uint8_t>(mouseY_ & 0xFF));
-    memWrite_(0x05F8 + slotNum_, static_cast<uint8_t>((mouseY_ >> 8) & 0xFF));
-}
-
-void MouseCard::clearCarry() {
-    if (getRegP_ && setRegP_) {
-        setRegP_(getRegP_() & ~0x01);
-    }
-}
-
 // ============================================================================
-// Legacy PIA command processing (kept for reference but no longer primary path)
+// PIA Command Protocol (AppleWin-style)
 // ============================================================================
 
-void MouseCard::processCommand(uint8_t cmd) {
-    // This was the original MC6805 protocol emulation path.
-    // With firmware entry point interception, this is no longer called
-    // during normal operation, but kept for completeness.
-    lastCommand_ = cmd;
-    responseState_ = 0;
+void MouseCard::on6821_B(uint8_t byData) {
+    // Detect transitions on Port B bits 1-5 to determine when the firmware
+    // is writing a command/data byte or reading a response byte.
+    // Matches AppleWin's CMouseInterface::On6821_B() exactly.
+
+    uint8_t byDiff = (by6821B_ ^ byData) & 0x3E;  // Only check bits 1-5
+    if (!byDiff) return;
+
+    // Update bits 1-5 from firmware output; bits 0,6,7 are MCU-managed
+    by6821B_ &= ~0x3E;
+    by6821B_ |= byData & 0x3E;
+
+    // BIT5: Write strobe (firmware writing data to MCU)
+    if (byDiff & 0x20) {
+        if (byData & 0x20) {
+            // Rising edge: MCU signals "ready to read"
+            by6821B_ |= 0x80;  // Set BIT7
+        } else {
+            // Falling edge: clock data in from Port A
+            byBuff_[nBuffPos_++] = ora_;
+            if (nBuffPos_ == 1) {
+                onCommand();
+            }
+            if (nBuffPos_ == nDataLen_ || nBuffPos_ > 7) {
+                onWrite();
+                nBuffPos_ = 0;
+            }
+            by6821B_ &= ~0x80;  // Clear BIT7 for next reading
+        }
+    }
+
+    // BIT4: Read strobe (firmware reading data from MCU)
+    if (byDiff & 0x10) {
+        if (byData & 0x10) {
+            // Rising edge: MCU prepares next value
+            by6821B_ &= ~0x40;  // Clear BIT6
+        } else {
+            // Falling edge: advance buffer and load next byte
+            if (nBuffPos_) {
+                nBuffPos_++;
+            }
+            if (nBuffPos_ == nDataLen_ || nBuffPos_ > 7) {
+                nBuffPos_ = 0;  // Read complete, ready for next command
+            } else {
+                ira_ = byBuff_[nBuffPos_];  // Load next response byte
+            }
+            by6821B_ |= 0x40;  // Set BIT6 for next writing
+        }
+    }
+
+    // Reflect MCU handshake signals in Port B input register
+    irb_ = by6821B_;
+}
+
+void MouseCard::onCommand() {
+    // Dispatch based on command byte high nibble.
+    // Matches AppleWin's CMouseInterface::OnCommand() exactly.
+    // nDataLen_ = total bytes in this transaction (command + data).
+    // For read-back commands, byBuff_[1..N] are filled with response data.
+
+    uint8_t cmd = byBuff_[0] & 0xF0;
+    lastCommand_ = byBuff_[0];
+
+    switch (cmd) {
+        case CMD_SET:
+            // Mode is in the low nibble of the command byte itself
+            nDataLen_ = 1;
+            mode_ = byBuff_[0] & 0x0F;
+            break;
+
+        case CMD_READ: {
+            // Snapshot position, build 5-byte read response
+            nDataLen_ = 6;  // command + 5 response bytes
+
+            // Build status: keep only "moved since last read", then add buttons
+            uint8_t status = 0;
+            if (moved_) status |= STAT_MOVEMENT_SINCE_READMOUSE;
+            snapX_ = mouseX_;
+            snapY_ = mouseY_;
+
+            if (lastButton_) status |= STAT_PREV_BUTTON0;
+            lastButton_ = mouseButton_;
+            if (mouseButton_) status |= STAT_CURR_BUTTON0;
+
+            byBuff_[1] = static_cast<uint8_t>(snapX_ & 0xFF);
+            byBuff_[2] = static_cast<uint8_t>((snapX_ >> 8) & 0xFF);
+            byBuff_[3] = static_cast<uint8_t>(snapY_ & 0xFF);
+            byBuff_[4] = static_cast<uint8_t>((snapY_ >> 8) & 0xFF);
+            byBuff_[5] = status;
+
+            moved_ = false;
+            break;
+        }
+
+        case CMD_SERV: {
+            // Return interrupt status, deassert IRQ
+            nDataLen_ = 2;
+
+            uint8_t irqStatus = 0;
+            if (moveInterruptPending_)   irqStatus |= STAT_INT_MOVEMENT;
+            if (buttonInterruptPending_) irqStatus |= STAT_INT_BUTTON;
+            if (vblInterruptPending_)    irqStatus |= STAT_INT_VBL;
+            byBuff_[1] = irqStatus;
+
+            // Deassert IRQ (pending flags cleared so next event re-triggers)
+            vblInterruptPending_ = false;
+            moveInterruptPending_ = false;
+            buttonInterruptPending_ = false;
+            irqActive_ = false;
+            cra_ &= 0x3F;
+            break;
+        }
+
+        case CMD_CLEAR:
+            nDataLen_ = 1;
+            nBuffPos_ = 0;
+            mouseX_ = 0;
+            mouseY_ = 0;
+            snapX_ = 0;
+            snapY_ = 0;
+            lastButton_ = false;
+            moved_ = false;
+            break;
+
+        case CMD_POS:
+            nDataLen_ = 5;  // command + 4 data bytes
+            break;
+
+        case CMD_INIT:
+            nDataLen_ = 3;  // command + 2 protocol bytes
+            byBuff_[1] = 0xFF;  // Acknowledgment byte
+            break;
+
+        case CMD_CLAMP:
+            nDataLen_ = 5;  // command + 4 data bytes
+            break;
+
+        case CMD_HOME:
+            nDataLen_ = 1;
+            mouseX_ = 0;
+            mouseY_ = 0;
+            break;
+
+        default:
+            nDataLen_ = 1;
+            break;
+    }
+
+    // Preload first response byte into Port A input for firmware to read
+    ira_ = byBuff_[1];
+}
+
+void MouseCard::onWrite() {
+    // Process buffered write data after all expected bytes received.
+    // Matches AppleWin's CMouseInterface::OnWrite() data format.
+
+    switch (byBuff_[0] & 0xF0) {
+        case CMD_CLAMP: {
+            // Buffer: [cmd, minLo, maxLo, minHi, maxHi]
+            // Axis from bit 0 of command: 0=X, 1=Y
+            int16_t minVal = static_cast<int16_t>(
+                byBuff_[1] | (byBuff_[3] << 8));
+            int16_t maxVal = static_cast<int16_t>(
+                byBuff_[2] | (byBuff_[4] << 8));
+
+            if (byBuff_[0] & 1) {
+                // Clamp Y
+                clampMinY_ = minVal;
+                clampMaxY_ = maxVal;
+                if (mouseY_ < clampMinY_) mouseY_ = clampMinY_;
+                if (mouseY_ > clampMaxY_) mouseY_ = clampMaxY_;
+            } else {
+                // Clamp X
+                clampMinX_ = minVal;
+                clampMaxX_ = maxVal;
+                if (mouseX_ < clampMinX_) mouseX_ = clampMinX_;
+                if (mouseX_ > clampMaxX_) mouseX_ = clampMaxX_;
+            }
+            break;
+        }
+
+        case CMD_POS:
+            // Buffer: [cmd, Xlo, Xhi, Ylo, Yhi]
+            mouseX_ = static_cast<int16_t>(
+                byBuff_[1] | (byBuff_[2] << 8));
+            mouseY_ = static_cast<int16_t>(
+                byBuff_[3] | (byBuff_[4] << 8));
+            // Apply clamping
+            if (mouseX_ < clampMinX_) mouseX_ = clampMinX_;
+            if (mouseX_ > clampMaxX_) mouseX_ = clampMaxX_;
+            if (mouseY_ < clampMinY_) mouseY_ = clampMinY_;
+            if (mouseY_ > clampMaxY_) mouseY_ = clampMaxY_;
+            break;
+
+        case CMD_INIT:
+            clampMinX_ = 0;
+            clampMaxX_ = 1023;
+            clampMinY_ = 0;
+            clampMaxY_ = 1023;
+            mouseX_ = 0;
+            mouseY_ = 0;
+            snapX_ = 0;
+            snapY_ = 0;
+            break;
+
+        default:
+            break;
+    }
 }
 
 // ============================================================================
@@ -591,7 +553,7 @@ size_t MouseCard::serialize(uint8_t* buffer, size_t maxSize) const {
     buffer[off++] = (irqActive_ ? 1 : 0) | (vblInterruptPending_ ? 2 : 0)
                   | (moveInterruptPending_ ? 4 : 0) | (buttonInterruptPending_ ? 8 : 0);
     buffer[off++] = lastCommand_;
-    buffer[off++] = mode_;  // Was responseState_, now mode (more useful)
+    buffer[off++] = mode_;
 
     // Slot number (1 byte)
     buffer[off++] = slotNum_;
@@ -599,7 +561,13 @@ size_t MouseCard::serialize(uint8_t* buffer, size_t maxSize) const {
     // VBL tracking (1 byte)
     buffer[off++] = wasInVBL_ ? 1 : 0;
 
-    // Reserved (6 bytes to reach STATE_SIZE=36)
+    // Protocol state (4 bytes: by6821B_, byState_, nBuffPos_, nDataLen_)
+    buffer[off++] = by6821B_;
+    buffer[off++] = byState_;
+    buffer[off++] = nBuffPos_;
+    buffer[off++] = nDataLen_;
+
+    // Reserved (to reach STATE_SIZE=36)
     while (off < STATE_SIZE) {
         buffer[off++] = 0;
     }
@@ -652,13 +620,23 @@ size_t MouseCard::deserialize(const uint8_t* buffer, size_t size) {
     buttonInterruptPending_ = (flags2 & 8) != 0;
 
     lastCommand_ = buffer[off++];
-    mode_ = buffer[off++];  // Was responseState_, now mode
+    mode_ = buffer[off++];
 
     // Slot number
     slotNum_ = buffer[off++];
 
     // VBL tracking
     wasInVBL_ = buffer[off++] != 0;
+
+    // Protocol state
+    by6821B_ = buffer[off++];
+    byState_ = buffer[off++];
+    nBuffPos_ = buffer[off++];
+    nDataLen_ = buffer[off++];
+
+    // Restore snapshot from current position
+    snapX_ = mouseX_;
+    snapY_ = mouseY_;
 
     // Skip reserved
     off = STATE_SIZE;
