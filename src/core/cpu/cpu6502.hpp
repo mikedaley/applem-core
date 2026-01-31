@@ -78,6 +78,11 @@ public:
   void resetCycleCount() { totalCycles_ = 0; }
   void setTotalCycles(uint64_t cycles) { totalCycles_ = cycles; }
 
+  // Interrupt state access
+  bool isIRQPending() const { return irqPending_; }
+  bool isNMIPending() const { return nmiPending_; }
+  bool isNMIEdge() const { return nmiEdge_; }
+
   // Debugging
   std::string disassembleAt(uint16_t address) const;
   uint8_t peekMemory(uint16_t address) const { return read_(address); }

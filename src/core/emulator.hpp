@@ -85,6 +85,9 @@ public:
   uint8_t getY() const { return cpu_->getY(); }
   uint8_t getP() const { return cpu_->getP(); }
   uint64_t getTotalCycles() const { return cpu_->getTotalCycles(); }
+  bool isIRQPending() const { return cpu_->isIRQPending(); }
+  bool isNMIPending() const { return cpu_->isNMIPending(); }
+  bool isNMIEdge() const { return cpu_->isNMIEdge(); }
 
   // Speed control
   void setSpeedMultiplier(int multiplier);

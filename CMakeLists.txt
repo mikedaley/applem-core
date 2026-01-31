@@ -136,7 +136,10 @@ if(EMSCRIPTEN)
                 \"_mouseButton\", \
                 \"_isMouseCardInstalled\", \
                 \"_getMouseCardState\", \
-                \"_getMouseCardPIARegister\" \
+                \"_getMouseCardPIARegister\", \
+                \"_isIRQPending\", \
+                \"_isNMIPending\", \
+                \"_isNMIEdge\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
