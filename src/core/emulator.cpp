@@ -103,10 +103,14 @@ void Emulator::reset() {
   lastFrameCycle_ = 0;
   frameReady_ = false;
   breakpointHit_ = false;
+  // Keep beam breakpoints across reset (same as regular breakpoints)
+  for (auto& bp : beamBreakpoints_) {
+    bp.lastFireFrame = UINT64_MAX;
+  }
   beamBreakHit_ = false;
+  beamBreakHitId_ = -1;
   beamBreakHitScanline_ = -1;
   beamBreakHitHPos_ = -1;
-  beamBreakLastFireFrame_ = 0;
   paused_ = false;
 
   video_->beginNewFrame(0);
@@ -130,9 +134,13 @@ void Emulator::warmReset() {
   breakpointHit_ = false;
   watchpointHit_ = false;
   beamBreakHit_ = false;
+  beamBreakHitId_ = -1;
   beamBreakHitScanline_ = -1;
   beamBreakHitHPos_ = -1;
-  beamBreakLastFireFrame_ = 0;
+  // Keep breakpoints but reset per-breakpoint fire tracking
+  for (auto& bp : beamBreakpoints_) {
+    bp.lastFireFrame = UINT64_MAX;
+  }
   paused_ = false;
 }
 
@@ -143,6 +151,7 @@ void Emulator::setPaused(bool paused) {
   breakpointHit_ = false;
   watchpointHit_ = false;
   beamBreakHit_ = false;
+  beamBreakHitId_ = -1;
   paused_ = paused;
 }
 
@@ -215,25 +224,26 @@ void Emulator::runCycles(int cycles) {
     // Check watchpoint hit (set by MMU callbacks during execution)
     if (watchpointHit_) return;
 
-    // Check beam breakpoint
-    if (beamBreak_.enabled) {
+    // Check beam breakpoints
+    if (!beamBreakpoints_.empty()) {
       uint64_t fc = cpu_->getTotalCycles() - lastFrameCycle_;
       if (fc >= CYCLES_PER_FRAME) fc %= CYCLES_PER_FRAME;
       int16_t sl = static_cast<int16_t>(fc / 65);
       int16_t hp = static_cast<int16_t>(fc % 65);
-      // Scanline: exact match (scanlines advance precisely)
-      bool scanOk = (beamBreak_.scanline < 0) || (sl == beamBreak_.scanline);
-      // hPos: >= match (instructions consume 2-7 cycles, exact match often missed)
-      bool hPosOk = (beamBreak_.hPos < 0) || (hp >= beamBreak_.hPos);
-      // Need at least one dimension specified
-      bool valid = (beamBreak_.scanline >= 0 || beamBreak_.hPos >= 0);
-      if (scanOk && hPosOk && valid && lastFrameCycle_ != beamBreakLastFireFrame_) {
-        beamBreakHit_ = true;
-        beamBreakHitScanline_ = sl;
-        beamBreakHitHPos_ = hp;
-        beamBreakLastFireFrame_ = lastFrameCycle_;
-        paused_ = true;
-        return;
+      for (auto& bp : beamBreakpoints_) {
+        if (!bp.enabled) continue;
+        bool scanOk = (bp.scanline < 0) || (sl == bp.scanline);
+        bool hPosOk = (bp.hPos < 0) || (hp >= bp.hPos);
+        bool valid = (bp.scanline >= 0 || bp.hPos >= 0);
+        if (scanOk && hPosOk && valid && lastFrameCycle_ != bp.lastFireFrame) {
+          beamBreakHit_ = true;
+          beamBreakHitId_ = bp.id;
+          beamBreakHitScanline_ = sl;
+          beamBreakHitHPos_ = hp;
+          bp.lastFireFrame = lastFrameCycle_;
+          paused_ = true;
+          return;
+        }
       }
     }
   }
@@ -448,22 +458,36 @@ void Emulator::onWatchpointWrite(uint16_t address, uint8_t value) {
 // Beam Breakpoints
 // ============================================================================
 
-void Emulator::setBeamBreakpoint(int16_t scanline, int16_t hPos) {
-  beamBreak_.scanline = scanline;
-  beamBreak_.hPos = hPos;
-  beamBreak_.enabled = true;
-  beamBreakHit_ = false;
-  beamBreakHitScanline_ = -1;
-  beamBreakHitHPos_ = -1;
-  beamBreakLastFireFrame_ = 0;
+int32_t Emulator::addBeamBreakpoint(int16_t scanline, int16_t hPos) {
+  if (beamBreakpoints_.size() >= MAX_BEAM_BREAKPOINTS) return -1;
+  int32_t id = beamBreakNextId_++;
+  beamBreakpoints_.push_back({scanline, hPos, true, id, UINT64_MAX});
+  return id;
 }
 
-void Emulator::clearBeamBreakpoint() {
-  beamBreak_.enabled = false;
+void Emulator::removeBeamBreakpoint(int32_t id) {
+  beamBreakpoints_.erase(
+    std::remove_if(beamBreakpoints_.begin(), beamBreakpoints_.end(),
+      [id](const BeamBreakpoint& bp) { return bp.id == id; }),
+    beamBreakpoints_.end());
+}
+
+void Emulator::enableBeamBreakpoint(int32_t id, bool enabled) {
+  for (auto& bp : beamBreakpoints_) {
+    if (bp.id == id) {
+      bp.enabled = enabled;
+      return;
+    }
+  }
+}
+
+void Emulator::clearAllBeamBreakpoints() {
+  beamBreakpoints_.clear();
+  beamBreakNextId_ = 1;
   beamBreakHit_ = false;
+  beamBreakHitId_ = -1;
   beamBreakHitScanline_ = -1;
   beamBreakHitHPos_ = -1;
-  beamBreakLastFireFrame_ = 0;
 }
 
 // ============================================================================
@@ -516,6 +540,7 @@ void Emulator::stepInstruction() {
   breakpointHit_ = false;
   watchpointHit_ = false;
   beamBreakHit_ = false;
+  beamBreakHitId_ = -1;
 
   // Record trace before execution
   if (traceEnabled_) recordTrace();

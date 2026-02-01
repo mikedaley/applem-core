@@ -163,9 +163,12 @@ if(EMSCRIPTEN)
                 \"_setProfileEnabled\", \
                 \"_clearProfile\", \
                 \"_getProfileCycles\", \
-                \"_setBeamBreakpoint\", \
-                \"_clearBeamBreakpoint\", \
+                \"_addBeamBreakpoint\", \
+                \"_removeBeamBreakpoint\", \
+                \"_enableBeamBreakpoint\", \
+                \"_clearAllBeamBreakpoints\", \
                 \"_isBeamBreakpointHit\", \
+                \"_getBeamBreakpointHitId\", \
                 \"_getBeamBreakScanline\", \
                 \"_getBeamBreakHPos\" \
             ]' \
