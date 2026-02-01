@@ -78,6 +78,20 @@ public:
   bool isBreakpointHit() const { return breakpointHit_; }
   uint16_t getBreakpointAddress() const { return breakpointAddress_; }
 
+  // Beam position (derived from cycle count)
+  int getFrameCycle() const;
+  int getBeamScanline() const;
+  int getBeamHPos() const;
+  int getBeamColumn() const;
+  bool isInVBL() const;
+  bool isInHBLANK() const;
+
+  // Step Over / Step Out
+  uint16_t stepOver();   // Returns temp breakpoint address, or 0 if single-stepped
+  uint16_t stepOut();    // Returns temp breakpoint address, or 0 if invalid
+  void clearTempBreakpoint();
+  bool isTempBreakpointHit() const { return tempBreakpointHit_; }
+
   // CPU state access
   uint16_t getPC() const { return cpu_->getPC(); }
   uint8_t getSP() const { return cpu_->getSP(); }
@@ -235,6 +249,11 @@ private:
   uint16_t breakpointAddress_ = 0;
   bool paused_ = false;
   bool skipBreakpointOnce_ = false;
+
+  // Temp breakpoint for step over / step out
+  uint16_t tempBreakpoint_ = 0;
+  bool tempBreakpointActive_ = false;
+  bool tempBreakpointHit_ = false;
 
   // Watchpoints
   struct Watchpoint {

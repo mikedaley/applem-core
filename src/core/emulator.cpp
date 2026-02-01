@@ -103,6 +103,9 @@ void Emulator::reset() {
   lastFrameCycle_ = 0;
   frameReady_ = false;
   breakpointHit_ = false;
+  tempBreakpointActive_ = false;
+  tempBreakpoint_ = 0;
+  tempBreakpointHit_ = false;
   // Keep beam breakpoints across reset (same as regular breakpoints)
   for (auto& bp : beamBreakpoints_) {
     bp.lastFireFrame = UINT64_MAX;
@@ -133,6 +136,9 @@ void Emulator::warmReset() {
 
   breakpointHit_ = false;
   watchpointHit_ = false;
+  tempBreakpointActive_ = false;
+  tempBreakpoint_ = 0;
+  tempBreakpointHit_ = false;
   beamBreakHit_ = false;
   beamBreakHitId_ = -1;
   beamBreakHitScanline_ = -1;
@@ -163,13 +169,25 @@ void Emulator::runCycles(int cycles) {
   uint64_t targetCycles = startCycles + cycles;
 
   while (cpu_->getTotalCycles() < targetCycles) {
-    // Check breakpoints
-    if (!breakpoints_.empty()) {
-      if (skipBreakpointOnce_) {
-        skipBreakpointOnce_ = false;
-      } else {
-        uint16_t pc = cpu_->getPC();
-        if (breakpoints_.count(pc) && !disabledBreakpoints_.count(pc)) {
+    // Check breakpoints (user breakpoints and temp breakpoint)
+    {
+      uint16_t pc = cpu_->getPC();
+
+      // Check temp breakpoint (step over / step out)
+      if (tempBreakpointActive_ && pc == tempBreakpoint_) {
+        tempBreakpointHit_ = true;
+        clearTempBreakpoint();
+        breakpointHit_ = true;
+        breakpointAddress_ = pc;
+        paused_ = true;
+        return;
+      }
+
+      // Check user breakpoints
+      if (!breakpoints_.empty()) {
+        if (skipBreakpointOnce_) {
+          skipBreakpointOnce_ = false;
+        } else if (breakpoints_.count(pc) && !disabledBreakpoints_.count(pc)) {
           breakpointHit_ = true;
           breakpointAddress_ = pc;
           paused_ = true;
@@ -381,6 +399,98 @@ const char *Emulator::getDiskFilename(int drive) const {
   }
   return image->getFilename().c_str();
 }
+
+// ============================================================================
+// Beam Position
+// ============================================================================
+
+int Emulator::getFrameCycle() const {
+  return static_cast<int>(cpu_->getTotalCycles() % CYCLES_PER_FRAME);
+}
+
+int Emulator::getBeamScanline() const {
+  return getFrameCycle() / CYCLES_PER_SCANLINE;
+}
+
+int Emulator::getBeamHPos() const {
+  return getFrameCycle() % CYCLES_PER_SCANLINE;
+}
+
+int Emulator::getBeamColumn() const {
+  int hPos = getBeamHPos();
+  return hPos >= 25 ? hPos - 25 : -1;
+}
+
+bool Emulator::isInVBL() const {
+  return getBeamScanline() >= 192;
+}
+
+bool Emulator::isInHBLANK() const {
+  return getBeamHPos() < 25;
+}
+
+// ============================================================================
+// Step Over / Step Out
+// ============================================================================
+
+uint16_t Emulator::stepOver() {
+  clearTempBreakpoint();
+  uint16_t pc = cpu_->getPC();
+  uint8_t opcode = mmu_->peek(pc);
+
+  if (opcode == 0x20) {
+    // JSR - set temp breakpoint at instruction after JSR (PC + 3)
+    uint16_t returnAddr = (pc + 3) & 0xFFFF;
+    tempBreakpoint_ = returnAddr;
+    tempBreakpointActive_ = true;
+    setPaused(false);
+    return returnAddr;
+  } else if (opcode == 0x00) {
+    // BRK - treat like JSR but with PC+2 as return address
+    uint16_t returnAddr = (pc + 2) & 0xFFFF;
+    tempBreakpoint_ = returnAddr;
+    tempBreakpointActive_ = true;
+    setPaused(false);
+    return returnAddr;
+  } else {
+    // Not a JSR/BRK, just single step
+    stepInstruction();
+    return 0;
+  }
+}
+
+uint16_t Emulator::stepOut() {
+  clearTempBreakpoint();
+  uint8_t sp = cpu_->getSP();
+  uint8_t pcl = mmu_->peek(0x0100 + ((sp + 1) & 0xFF));
+  uint8_t pch = mmu_->peek(0x0100 + ((sp + 2) & 0xFF));
+  // RTS adds 1 to the address
+  uint16_t returnAddr = ((pch << 8) | pcl) + 1;
+
+  if (returnAddr > 0 && returnAddr <= 0xFFFF) {
+    returnAddr &= 0xFFFF;
+    tempBreakpoint_ = returnAddr;
+    tempBreakpointActive_ = true;
+    setPaused(false);
+    return returnAddr;
+  } else {
+    // Invalid return address, just step
+    stepInstruction();
+    return 0;
+  }
+}
+
+void Emulator::clearTempBreakpoint() {
+  if (tempBreakpointActive_) {
+    tempBreakpointActive_ = false;
+    tempBreakpoint_ = 0;
+    tempBreakpointHit_ = false;
+  }
+}
+
+// ============================================================================
+// Breakpoints
+// ============================================================================
 
 void Emulator::addBreakpoint(uint16_t address) { breakpoints_.insert(address); }
 

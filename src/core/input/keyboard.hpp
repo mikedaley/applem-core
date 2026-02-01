@@ -94,4 +94,11 @@ private:
   bool closedApplePressed_ = false;
 };
 
+/**
+ * Convert a Unicode character code to an Apple II key code (for paste input).
+ * @param charCode Unicode code point
+ * @return Apple II key code, or -1 if not mappable
+ */
+int charToAppleKey(int charCode);
+
 } // namespace a2e

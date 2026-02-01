@@ -200,4 +200,21 @@ int Keyboard::applyControl(int key) const {
   return key;
 }
 
+int charToAppleKey(int charCode) {
+  // Newline/CR -> CR
+  if (charCode == 0x0A || charCode == 0x0D) {
+    return 0x0D;
+  }
+  // Tab
+  if (charCode == 0x09) {
+    return 0x09;
+  }
+  // Printable ASCII (space through tilde)
+  if (charCode >= 0x20 && charCode <= 0x7E) {
+    return charCode;
+  }
+  // Not mappable
+  return -1;
+}
+
 } // namespace a2e

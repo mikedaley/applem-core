@@ -26,6 +26,10 @@ set(CORE_SOURCES
     src/core/cards/mockingboard_card.cpp
     src/core/cards/thunderclock_card.cpp
     src/core/cards/mouse_card.cpp
+    src/core/debug/condition_evaluator.cpp
+    src/core/filesystem/dos33.cpp
+    src/core/filesystem/prodos.cpp
+    src/core/basic/basic_detokenizer.cpp
     src/bindings/wasm_interface.cpp
 )
 
@@ -81,6 +85,7 @@ if(EMSCRIPTEN)
                 \"_keyUp\", \
                 \"_handleRawKeyDown\", \
                 \"_handleRawKeyUp\", \
+                \"_charToAppleKey\", \
                 \"_insertDisk\", \
                 \"_insertBlankDisk\", \
                 \"_ejectDisk\", \
@@ -170,7 +175,55 @@ if(EMSCRIPTEN)
                 \"_isBeamBreakpointHit\", \
                 \"_getBeamBreakpointHitId\", \
                 \"_getBeamBreakScanline\", \
-                \"_getBeamBreakHPos\" \
+                \"_getBeamBreakHPos\", \
+                \"_getFrameCycle\", \
+                \"_getBeamScanline\", \
+                \"_getBeamHPos\", \
+                \"_getBeamColumn\", \
+                \"_isInVBL\", \
+                \"_isInHBLANK\", \
+                \"_stepOver\", \
+                \"_stepOut\", \
+                \"_clearTempBreakpoint\", \
+                \"_isTempBreakpointHit\", \
+                \"_getOpcodeMnemonic\", \
+                \"_getCallStack\", \
+                \"_getCallStackBuffer\", \
+                \"_isLikelyReturnAddress\", \
+                \"_evaluateCondition\", \
+                \"_evaluateExpression\", \
+                \"_getConditionError\", \
+                \"_isDOS33Format\", \
+                \"_getDOS33Catalog\", \
+                \"_getDOS33CatalogBuffer\", \
+                \"_getDOS33CatalogEntrySize\", \
+                \"_getDOS33EntryFilename\", \
+                \"_getDOS33EntryFileType\", \
+                \"_getDOS33EntryFileTypeName\", \
+                \"_getDOS33EntryIsLocked\", \
+                \"_getDOS33EntrySectorCount\", \
+                \"_readDOS33File\", \
+                \"_getDOS33FileBuffer\", \
+                \"_isProDOSFormat\", \
+                \"_getProDOSVolumeInfo\", \
+                \"_getProDOSVolumeName\", \
+                \"_getProDOSTotalBlocks\", \
+                \"_getProDOSCatalog\", \
+                \"_getProDOSEntryFilename\", \
+                \"_getProDOSEntryPath\", \
+                \"_getProDOSEntryFileType\", \
+                \"_getProDOSEntryFileTypeName\", \
+                \"_getProDOSEntryStorageType\", \
+                \"_getProDOSEntryEOF\", \
+                \"_getProDOSEntryAuxType\", \
+                \"_getProDOSEntryIsLocked\", \
+                \"_getProDOSEntryBlocksUsed\", \
+                \"_getProDOSEntryIsDirectory\", \
+                \"_readProDOSFile\", \
+                \"_getProDOSFileBuffer\", \
+                \"_mapProDOSFileType\", \
+                \"_detokenizeApplesoft\", \
+                \"_detokenizeIntegerBasic\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
