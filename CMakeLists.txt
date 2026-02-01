@@ -162,7 +162,12 @@ if(EMSCRIPTEN)
                 \"_getTraceCapacity\", \
                 \"_setProfileEnabled\", \
                 \"_clearProfile\", \
-                \"_getProfileCycles\" \
+                \"_getProfileCycles\", \
+                \"_setBeamBreakpoint\", \
+                \"_clearBeamBreakpoint\", \
+                \"_isBeamBreakpointHit\", \
+                \"_getBeamBreakScanline\", \
+                \"_getBeamBreakHPos\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \

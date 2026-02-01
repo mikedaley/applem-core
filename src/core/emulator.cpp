@@ -103,6 +103,10 @@ void Emulator::reset() {
   lastFrameCycle_ = 0;
   frameReady_ = false;
   breakpointHit_ = false;
+  beamBreakHit_ = false;
+  beamBreakHitScanline_ = -1;
+  beamBreakHitHPos_ = -1;
+  beamBreakLastFireFrame_ = 0;
   paused_ = false;
 
   video_->beginNewFrame(0);
@@ -125,6 +129,10 @@ void Emulator::warmReset() {
 
   breakpointHit_ = false;
   watchpointHit_ = false;
+  beamBreakHit_ = false;
+  beamBreakHitScanline_ = -1;
+  beamBreakHitHPos_ = -1;
+  beamBreakLastFireFrame_ = 0;
   paused_ = false;
 }
 
@@ -134,6 +142,7 @@ void Emulator::setPaused(bool paused) {
   }
   breakpointHit_ = false;
   watchpointHit_ = false;
+  beamBreakHit_ = false;
   paused_ = paused;
 }
 
@@ -205,6 +214,28 @@ void Emulator::runCycles(int cycles) {
 
     // Check watchpoint hit (set by MMU callbacks during execution)
     if (watchpointHit_) return;
+
+    // Check beam breakpoint
+    if (beamBreak_.enabled) {
+      uint64_t fc = cpu_->getTotalCycles() - lastFrameCycle_;
+      if (fc >= CYCLES_PER_FRAME) fc %= CYCLES_PER_FRAME;
+      int16_t sl = static_cast<int16_t>(fc / 65);
+      int16_t hp = static_cast<int16_t>(fc % 65);
+      // Scanline: exact match (scanlines advance precisely)
+      bool scanOk = (beamBreak_.scanline < 0) || (sl == beamBreak_.scanline);
+      // hPos: >= match (instructions consume 2-7 cycles, exact match often missed)
+      bool hPosOk = (beamBreak_.hPos < 0) || (hp >= beamBreak_.hPos);
+      // Need at least one dimension specified
+      bool valid = (beamBreak_.scanline >= 0 || beamBreak_.hPos >= 0);
+      if (scanOk && hPosOk && valid && lastFrameCycle_ != beamBreakLastFireFrame_) {
+        beamBreakHit_ = true;
+        beamBreakHitScanline_ = sl;
+        beamBreakHitHPos_ = hp;
+        beamBreakLastFireFrame_ = lastFrameCycle_;
+        paused_ = true;
+        return;
+      }
+    }
   }
 }
 
@@ -414,6 +445,28 @@ void Emulator::onWatchpointWrite(uint16_t address, uint8_t value) {
 }
 
 // ============================================================================
+// Beam Breakpoints
+// ============================================================================
+
+void Emulator::setBeamBreakpoint(int16_t scanline, int16_t hPos) {
+  beamBreak_.scanline = scanline;
+  beamBreak_.hPos = hPos;
+  beamBreak_.enabled = true;
+  beamBreakHit_ = false;
+  beamBreakHitScanline_ = -1;
+  beamBreakHitHPos_ = -1;
+  beamBreakLastFireFrame_ = 0;
+}
+
+void Emulator::clearBeamBreakpoint() {
+  beamBreak_.enabled = false;
+  beamBreakHit_ = false;
+  beamBreakHitScanline_ = -1;
+  beamBreakHitHPos_ = -1;
+  beamBreakLastFireFrame_ = 0;
+}
+
+// ============================================================================
 // Trace Log
 // ============================================================================
 
@@ -462,6 +515,7 @@ void Emulator::recordTrace() {
 void Emulator::stepInstruction() {
   breakpointHit_ = false;
   watchpointHit_ = false;
+  beamBreakHit_ = false;
 
   // Record trace before execution
   if (traceEnabled_) recordTrace();

@@ -108,6 +108,13 @@ public:
   uint8_t getWatchpointValue() const { return watchpointValue_; }
   bool isWatchpointWrite() const { return watchpointIsWrite_; }
 
+  // Beam breakpoints
+  void setBeamBreakpoint(int16_t scanline, int16_t hPos);
+  void clearBeamBreakpoint();
+  bool isBeamBreakpointHit() const { return beamBreakHit_; }
+  int16_t getBeamBreakScanline() const { return beamBreakHitScanline_; }
+  int16_t getBeamBreakHPos() const { return beamBreakHitHPos_; }
+
   // Trace log
   struct TraceEntry {
     uint16_t pc;
@@ -239,6 +246,18 @@ private:
   uint16_t watchpointAddress_ = 0;
   uint8_t watchpointValue_ = 0;
   bool watchpointIsWrite_ = false;
+
+  // Beam breakpoints
+  struct BeamBreakpoint {
+    int16_t scanline;  // -1 = any/off
+    int16_t hPos;      // -1 = any/off (uses raw hPos 0-64)
+    bool enabled;
+  };
+  BeamBreakpoint beamBreak_{-1, -1, false};
+  bool beamBreakHit_ = false;
+  int16_t beamBreakHitScanline_ = -1;  // Scanline where break occurred (for display)
+  int16_t beamBreakHitHPos_ = -1;      // hPos where break occurred (for display)
+  uint64_t beamBreakLastFireFrame_ = 0; // Re-fire prevention: lastFrameCycle_ when last fired
 
   // Watchpoint callback for MMU
   void onWatchpointRead(uint16_t address, uint8_t value);
