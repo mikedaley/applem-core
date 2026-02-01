@@ -109,6 +109,8 @@ if(EMSCRIPTEN)
                 \"_writeMemory\", \
                 \"_disassembleAt\", \
                 \"_getSoftSwitchState\", \
+                \"_screenCodeToAscii\", \
+                \"_readScreenText\", \
                 \"_getDiskTrack\", \
                 \"_getDiskPhase\", \
                 \"_getDiskMotorOn\", \

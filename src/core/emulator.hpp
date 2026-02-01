@@ -176,6 +176,10 @@ public:
   // Soft switch state (64-bit packed state)
   uint64_t getSoftSwitchState() const;
 
+  // Screen text extraction (for text selection / copy)
+  static int screenCodeToAscii(uint8_t code);
+  const char* readScreenText(int startRow, int startCol, int endRow, int endCol);
+
   // State serialization for save/restore
   // Returns pointer to state data and sets size. Caller does not own the pointer.
   const uint8_t *exportState(size_t *size);
@@ -303,6 +307,9 @@ private:
 
   // Disassembly buffer
   mutable std::string disasmBuffer_;
+
+  // Screen text extraction buffer
+  mutable std::string screenTextBuffer_;
 
   // State serialization buffer
   mutable std::vector<uint8_t> stateBuffer_;

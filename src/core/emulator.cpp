@@ -1489,4 +1489,98 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
   return true;
 }
 
+// ==========================================================================
+// Screen text extraction
+// ==========================================================================
+
+// Apple II text screen row base addresses (non-linear memory layout)
+static constexpr uint16_t TEXT_ROW_BASES[24] = {
+  0x400, 0x480, 0x500, 0x580, 0x600, 0x680, 0x700, 0x780,
+  0x428, 0x4A8, 0x528, 0x5A8, 0x628, 0x6A8, 0x728, 0x7A8,
+  0x450, 0x4D0, 0x550, 0x5D0, 0x650, 0x6D0, 0x750, 0x7D0
+};
+
+int Emulator::screenCodeToAscii(uint8_t code) {
+  if (code >= 0xE0) return code - 0x80;        // Normal lowercase
+  if (code >= 0xC0) return code - 0x80;        // Normal uppercase / MouseText
+  if (code >= 0xA0) return code - 0x80;        // Normal symbols/digits
+  if (code >= 0x80) return code - 0x40;        // Normal uppercase @A-Z[\]^_
+  if (code >= 0x60) return code - 0x40;        // Flash symbols
+  if (code >= 0x40) return code;               // Flash uppercase
+  if (code >= 0x20) return code;               // Inverse symbols/digits
+  return code + 0x40;                          // Inverse uppercase
+}
+
+const char* Emulator::readScreenText(int startRow, int startCol,
+                                     int endRow, int endCol) {
+  screenTextBuffer_.clear();
+
+  const auto& sw = mmu_->getSoftSwitches();
+  if (!sw.text) {
+    return screenTextBuffer_.c_str();
+  }
+
+  bool col80 = sw.col80;
+  bool page2 = sw.page2;
+  int cols = col80 ? 80 : 40;
+  uint16_t page2Offset = page2 ? 0x400 : 0;
+
+  // Clamp
+  if (startRow < 0) startRow = 0;
+  if (startCol < 0) startCol = 0;
+  if (endRow > 23) endRow = 23;
+  if (endCol >= cols) endCol = cols - 1;
+
+  for (int row = startRow; row <= endRow; row++) {
+    int colStart = (row == startRow) ? startCol : 0;
+    int colEnd = (row == endRow) ? endCol : cols - 1;
+
+    int lineEnd = colEnd; // Track last non-space for trimming
+
+    // First pass: find last non-space character for trimming
+    for (int col = colEnd; col >= colStart; col--) {
+      uint8_t charCode;
+      if (col80) {
+        int memCol = col / 2;
+        bool isAux = (col % 2) == 0;
+        uint16_t addr = TEXT_ROW_BASES[row] + page2Offset + memCol;
+        charCode = isAux ? mmu_->peekAux(addr) : mmu_->peek(addr);
+      } else {
+        uint16_t addr = TEXT_ROW_BASES[row] + page2Offset + col;
+        charCode = mmu_->peek(addr);
+      }
+      int ascii = screenCodeToAscii(charCode);
+      if (ascii != 0x20) {
+        lineEnd = col;
+        break;
+      }
+      if (col == colStart) {
+        lineEnd = colStart - 1; // All spaces
+      }
+    }
+
+    // Second pass: emit characters up to lineEnd
+    for (int col = colStart; col <= lineEnd; col++) {
+      uint8_t charCode;
+      if (col80) {
+        int memCol = col / 2;
+        bool isAux = (col % 2) == 0;
+        uint16_t addr = TEXT_ROW_BASES[row] + page2Offset + memCol;
+        charCode = isAux ? mmu_->peekAux(addr) : mmu_->peek(addr);
+      } else {
+        uint16_t addr = TEXT_ROW_BASES[row] + page2Offset + col;
+        charCode = mmu_->peek(addr);
+      }
+      int ascii = screenCodeToAscii(charCode);
+      screenTextBuffer_ += static_cast<char>(ascii);
+    }
+
+    if (row < endRow) {
+      screenTextBuffer_ += '\n';
+    }
+  }
+
+  return screenTextBuffer_.c_str();
+}
+
 } // namespace a2e
