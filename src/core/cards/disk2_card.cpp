@@ -1,3 +1,10 @@
+/*
+ * disk2_card.cpp - Disk II controller card implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "disk2_card.hpp"
 #include "../disk-image/dsk_disk_image.hpp"
 #include "../disk-image/woz_disk_image.hpp"

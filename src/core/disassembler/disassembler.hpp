@@ -1,3 +1,10 @@
+/*
+ * disassembler.hpp - 65C02 instruction disassembler interface
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

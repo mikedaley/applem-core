@@ -1,3 +1,10 @@
+/*
+ * disk2_card.hpp - Disk II controller card
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "expansion_card.hpp"

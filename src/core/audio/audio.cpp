@@ -1,3 +1,10 @@
+/*
+ * audio.cpp - Speaker audio emulation implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "audio.hpp"
 #include "../cards/mockingboard_card.hpp"
 #include <cmath>

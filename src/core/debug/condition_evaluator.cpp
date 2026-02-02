@@ -1,3 +1,10 @@
+/*
+ * condition_evaluator.cpp - Expression parser for debugger breakpoint conditions and watches
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "condition_evaluator.hpp"
 #include "../emulator.hpp"
 #include <cctype>

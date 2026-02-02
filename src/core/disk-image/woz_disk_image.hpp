@@ -1,3 +1,10 @@
+/*
+ * woz_disk_image.hpp - WOZ 1.0/2.0 bit-accurate disk image format support
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "disk_image.hpp"

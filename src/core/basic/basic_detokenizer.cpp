@@ -1,3 +1,10 @@
+/*
+ * basic_detokenizer.cpp - Applesoft and Integer BASIC program detokenizer
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "basic_detokenizer.hpp"
 #include "basic_tokens.hpp"
 #include <cstdio>

@@ -1,3 +1,10 @@
+/*
+ * ay8910.hpp - AY-3-8910 sound chip emulation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

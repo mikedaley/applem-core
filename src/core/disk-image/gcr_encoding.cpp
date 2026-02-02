@@ -1,3 +1,10 @@
+/*
+ * gcr_encoding.cpp - 6-and-2 and 4-and-4 GCR encoding for Apple II disk data
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "gcr_encoding.hpp"
 #include <algorithm>
 #include <cstring>

@@ -1,3 +1,10 @@
+/*
+ * thunderclock_card.hpp - Thunderclock Plus real-time clock card
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "expansion_card.hpp"

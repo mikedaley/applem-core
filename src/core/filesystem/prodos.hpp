@@ -1,3 +1,10 @@
+/*
+ * prodos.hpp - ProDOS filesystem reader for disk image browsing
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

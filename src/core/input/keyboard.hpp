@@ -1,3 +1,10 @@
+/*
+ * keyboard.hpp - Apple IIe keyboard input handling
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

@@ -1,3 +1,10 @@
+/*
+ * disk_image.hpp - Abstract base class for disk image formats
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

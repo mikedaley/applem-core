@@ -1,3 +1,10 @@
+/*
+ * thunderclock_card.cpp - Thunderclock Plus real-time clock card implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "thunderclock_card.hpp"
 #include "roms.cpp" // For embedded ROM data
 #include <ctime>

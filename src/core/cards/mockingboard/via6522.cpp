@@ -1,3 +1,10 @@
+/*
+ * via6522.cpp - VIA 6522 timer chip emulation implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "via6522.hpp"
 #include "ay8910.hpp"
 #ifdef __EMSCRIPTEN__

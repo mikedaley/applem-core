@@ -1,3 +1,10 @@
+/*
+ * mockingboard_card.hpp - Mockingboard sound card
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "expansion_card.hpp"

@@ -1,3 +1,10 @@
+/*
+ * emulator.cpp - Core emulator coordinator tying together CPU, memory, video, audio, and peripherals
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "emulator.hpp"
 #include "cards/disk2_card.hpp"
 #include "cards/mockingboard_card.hpp"

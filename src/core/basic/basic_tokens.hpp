@@ -1,3 +1,10 @@
+/*
+ * basic_tokens.hpp - Applesoft and Integer BASIC token tables and keyword helpers
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstring>

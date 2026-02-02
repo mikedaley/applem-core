@@ -1,3 +1,10 @@
+/*
+ * video.hpp - Video output generation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "../mmu/mmu.hpp"

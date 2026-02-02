@@ -1,3 +1,10 @@
+/*
+ * prodos.cpp - ProDOS filesystem reader for disk image browsing
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "prodos.hpp"
 #include <cstring>
 #include <cstdio>

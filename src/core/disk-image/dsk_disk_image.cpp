@@ -1,3 +1,10 @@
+/*
+ * dsk_disk_image.cpp - DSK/DO/PO disk image format implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "dsk_disk_image.hpp"
 #include "gcr_encoding.hpp"
 #include <algorithm>

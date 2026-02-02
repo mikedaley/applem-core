@@ -1,3 +1,10 @@
+/*
+ * video.cpp - Video output generation implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "video.hpp"
 #include <algorithm>
 #include <cstring>

@@ -1,3 +1,10 @@
+/*
+ * woz_disk_image.cpp - WOZ 1.0/2.0 bit-accurate disk image implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "woz_disk_image.hpp"
 #include "gcr_encoding.hpp"
 #include <cstring>

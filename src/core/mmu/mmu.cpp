@@ -1,3 +1,10 @@
+/*
+ * mmu.cpp - Memory management unit implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "mmu.hpp"
 #include "../cards/expansion_card.hpp"
 #include <cstring>

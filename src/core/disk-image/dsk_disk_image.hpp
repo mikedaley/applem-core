@@ -1,3 +1,10 @@
+/*
+ * dsk_disk_image.hpp - DSK/DO/PO raw sector disk image format support
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "disk_image.hpp"

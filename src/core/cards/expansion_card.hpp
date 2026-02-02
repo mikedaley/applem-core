@@ -1,3 +1,10 @@
+/*
+ * expansion_card.hpp - Base class for expansion cards
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

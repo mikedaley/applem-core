@@ -1,3 +1,10 @@
+/*
+ * via6522.hpp - VIA 6522 timer chip emulation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

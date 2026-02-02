@@ -1,3 +1,10 @@
+/*
+ * mouse_card.cpp - Apple Mouse Interface card implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "mouse_card.hpp"
 #include "roms.cpp" // For embedded ROM data
 #include "../types.hpp"

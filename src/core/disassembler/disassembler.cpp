@@ -1,3 +1,10 @@
+/*
+ * disassembler.cpp - 65C02 instruction disassembler with flow analysis
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "disassembler.hpp"
 #include <algorithm>
 #include <queue>

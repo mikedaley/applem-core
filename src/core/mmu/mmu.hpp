@@ -1,3 +1,10 @@
+/*
+ * mmu.hpp - Memory management unit with soft switches
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "../types.hpp"

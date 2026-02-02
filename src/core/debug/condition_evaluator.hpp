@@ -1,3 +1,10 @@
+/*
+ * condition_evaluator.hpp - Expression parser for debugger breakpoint conditions and watches
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <cstdint>

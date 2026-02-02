@@ -1,3 +1,10 @@
+/*
+ * types.hpp - Shared constants, types, and color palettes for the Apple IIe emulator
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <array>

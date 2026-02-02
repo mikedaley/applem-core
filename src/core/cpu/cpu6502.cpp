@@ -1,3 +1,10 @@
+/*
+ * cpu6502.cpp - Cycle-accurate 65C02 CPU emulation implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "cpu6502.hpp"
 #include <iomanip>
 #include <sstream>

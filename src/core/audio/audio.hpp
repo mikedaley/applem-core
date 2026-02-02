@@ -1,3 +1,10 @@
+/*
+ * audio.hpp - Speaker audio emulation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "../types.hpp"

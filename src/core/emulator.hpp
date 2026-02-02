@@ -1,3 +1,10 @@
+/*
+ * emulator.hpp - Core emulator coordinator tying together CPU, memory, video, audio, and peripherals
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "audio/audio.hpp"

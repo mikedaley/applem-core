@@ -1,3 +1,10 @@
+/*
+ * keyboard.cpp - Browser keycode to Apple II ASCII translation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "keyboard.hpp"
 
 namespace a2e {

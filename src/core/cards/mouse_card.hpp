@@ -1,3 +1,10 @@
+/*
+ * mouse_card.hpp - Apple Mouse Interface card
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include "expansion_card.hpp"

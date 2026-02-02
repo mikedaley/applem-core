@@ -1,3 +1,10 @@
+/*
+ * ay8910.cpp - AY-3-8910 sound chip emulation implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "ay8910.hpp"
 #include <cmath>
 #ifdef __EMSCRIPTEN__

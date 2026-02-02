@@ -1,3 +1,10 @@
+/*
+ * gcr_encoding.hpp - GCR encoding tables and routines for Disk II emulation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <array>

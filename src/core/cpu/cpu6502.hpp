@@ -1,3 +1,10 @@
+/*
+ * cpu6502.hpp - Cycle-accurate 65C02 CPU emulation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #pragma once
 
 #include <array>

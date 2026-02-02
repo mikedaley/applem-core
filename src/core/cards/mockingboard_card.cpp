@@ -1,3 +1,10 @@
+/*
+ * mockingboard_card.cpp - Mockingboard sound card implementation
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
 #include "mockingboard_card.hpp"
 
 namespace a2e {
