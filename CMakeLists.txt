@@ -35,9 +35,11 @@ set(CORE_SOURCES
 
 # ROM embedding - generate C arrays from ROM files
 set(ROM_FILES
-    roms/342-0349-B-C0-FF.bin # Combined 16KB system ROM (C0-FF)
-    roms/342-0273-A-US-UK.bin # Character ROM (Apple IIe Enhanced)
-    roms/341-0027.bin         # Disk II ROM
+    roms/342-0349-B-C0-FF.bin                       # Combined 16KB system ROM (C0-FF)
+    roms/342-0273-A-US-UK.bin                       # Character ROM (Apple IIe Enhanced)
+    roms/341-0027.bin                               # Disk II ROM
+    "roms/Thunderclock Plus ROM.bin"                 # Thunderclock card ROM
+    "roms/Apple Mouse Interface Card ROM - 342-0270-C.bin"  # Mouse Interface Card ROM
 )
 
 # Custom command to generate ROM header
@@ -45,7 +47,7 @@ add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/generated/roms.cpp
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
     COMMAND ${CMAKE_SOURCE_DIR}/scripts/generate_roms.sh ${CMAKE_SOURCE_DIR}/roms ${CMAKE_BINARY_DIR}/generated/roms.cpp
-    DEPENDS ${ROM_FILES}
+    DEPENDS ${ROM_FILES} ${CMAKE_SOURCE_DIR}/scripts/generate_roms.sh
     COMMENT "Generating ROM data arrays"
 )
 
