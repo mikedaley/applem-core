@@ -73,6 +73,7 @@ void AY8910::reset() {
 
     phaseAccumulator_ = 0.0;
     lpfState_ = 0.0f;
+    dcState_ = 0.0f;
 
     // Clear any pending register writes
     pendingWrites_.clear();
@@ -88,18 +89,8 @@ void AY8910::writeRegister(uint8_t value) {
     lastWriteReg_ = currentRegister_;
     lastWriteVal_ = value;
 
-    // TEST: Always apply immediately to see if timing is causing issues
+    // Apply register write immediately
     applyRegisterWrite(currentRegister_, value);
-
-    // Original code (disabled for testing):
-    // If we have a cycle callback, queue the write for proper timing during sample generation
-    // if (cycleCallback_) {
-    //     uint64_t cycle = cycleCallback_();
-    //     pendingWrites_.push_back({cycle, currentRegister_, value});
-    // } else {
-    //     // No timing available, apply immediately
-    //     applyRegisterWrite(currentRegister_, value);
-    // }
 
 #ifdef __EMSCRIPTEN__
     if (debugLogging_) {
@@ -186,7 +177,6 @@ void AY8910::updateNoiseGenerator() {
     uint8_t period = getNoisePeriod();
 
     // Period 0 acts as period 1 (highest frequency noise)
-    // Hardware testing confirms noise does not halt on period 0
     if (period == 0) period = 1;
 
     noiseCounter_++;
@@ -195,14 +185,10 @@ void AY8910::updateNoiseGenerator() {
     if (noiseCounter_ >= static_cast<uint32_t>(period) * 2) {
         noiseCounter_ = 0;
 
-        // AppleWin/FUSE-derived noise generation:
-        // Toggle noise output based on bit0 XOR bit1
-        if ((noiseShiftReg_ & 1) ^ ((noiseShiftReg_ & 2) ? 1 : 0))
-            noiseToggle_ = !noiseToggle_;
-
-        // 17-bit LFSR: feedback = bit0 XOR bit2, inject at bit17, shift right
-        noiseShiftReg_ |= ((noiseShiftReg_ & 1) ^ ((noiseShiftReg_ & 4) ? 1 : 0)) ? 0x20000 : 0;
-        noiseShiftReg_ >>= 1;
+        // MAME-style 17-bit LFSR: feedback = bit0 XOR bit3, inject at bit16, shift right
+        // Noise output is directly bit 0 of the shift register (no toggle mechanism)
+        uint32_t feedback = (noiseShiftReg_ & 1) ^ ((noiseShiftReg_ >> 3) & 1);
+        noiseShiftReg_ = (noiseShiftReg_ >> 1) | (feedback << 16);
     }
 }
 
@@ -282,41 +268,27 @@ float AY8910::getChannelOutput(int channel) const {
     uint8_t mixer = registers_[REG_MIXER];
     uint8_t ampReg = registers_[REG_AMP_A + channel];
 
-    // Get volume first - if zero, skip all other processing
     uint8_t volume;
     if (ampReg & 0x10) {
-        // Use envelope
         volume = envVolume_;
     } else {
-        // Fixed amplitude
         volume = ampReg & 0x0F;
     }
 
-    // Early exit if volume is zero
     if (volume == 0) return 0.0f;
 
     float level = volumeTable_[volume];
 
-    // Check if tone and/or noise are enabled for this channel
-    // Note: bit=0 means enabled, bit=1 means disabled
-    bool toneDisabled = (mixer & (1 << channel)) != 0;
-    bool noiseEnabled = (mixer & (1 << (channel + 3))) == 0;
+    // MAME mixer: output = (tone_out | tone_disable) & (noise_out | noise_disable)
+    // Register bit = 1 means disabled (bypassed/always high)
+    // Unipolar output matching real hardware: 0 or +level (never negative)
+    bool toneDisable = (mixer & (1 << channel)) != 0;
+    bool noiseDisable = (mixer & (1 << (channel + 3))) != 0;
 
-    // AppleWin-style mixer: compute tone output, then zero if noise active
-    // 1. Tone output: bypass (always high) if disabled, else use toneOutput_
-    float chanVal;
-    if (toneDisabled) {
-        chanVal = level;  // Tone bypassed = always high
-    } else {
-        chanVal = toneOutput_[channel] ? level : -level;
-    }
+    bool toneOut = toneOutput_[channel] || toneDisable;
+    bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
 
-    // 2. If noise enabled and noiseToggle_ is true, zero the output
-    if (noiseEnabled && noiseToggle_) {
-        chanVal = 0.0f;
-    }
-
-    return chanVal;
+    return (toneOut && noiseOut) ? level : 0.0f;
 }
 
 void AY8910::setChannelMute(int channel, bool muted) {
@@ -347,29 +319,21 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
     float omega = 2.0f * 3.14159265f * LPF_CUTOFF_HZ;
     float alpha = omega / (static_cast<float>(sampleRate) + omega);
 
-    uint8_t mixer = registers_[REG_MIXER];
-
     for (int i = 0; i < count; i++) {
         phaseAccumulator_ += toneStepsPerSample;
 
-        // Track toggle counts per channel for sub-sample interpolation
-        int toneCount = 0;
-        int toggleCount[3] = {0, 0, 0};
-        // Save pre-tick tone state
-        bool preToneOutput[3] = {toneOutput_[0], toneOutput_[1], toneOutput_[2]};
-
+        // Advance PSG state
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
-            toneCount++;
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                bool prev = toneOutput_[ch];
                 updateToneGenerator(ch);
-                if (toneOutput_[ch] != prev) toggleCount[ch]++;
             }
             updateNoiseGenerator();
             updateEnvelopeGenerator();
         }
 
+        // Unipolar output matching MAME/real hardware: 0 or +level
+        uint8_t mixer = registers_[REG_MIXER];
         float sample = 0.0f;
         for (int ch = 0; ch < NUM_CHANNELS; ch++) {
             if (channelMuted_[ch]) continue;
@@ -379,38 +343,22 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
             if (volume == 0) continue;
 
             float level = volumeTable_[volume];
-            bool toneDisabled = (mixer & (1 << ch)) != 0;
-            bool noiseEnabled = (mixer & (1 << (ch + 3))) == 0;
 
-            float chanVal;
-            if (toneDisabled) {
-                chanVal = level;
-            } else if (toggleCount[ch] == 0) {
-                chanVal = toneOutput_[ch] ? level : -level;
-            } else if (toggleCount[ch] == 1) {
-                // Sub-sample interpolation: toneCounters_[ch] holds ticks since last toggle
-                float subval = level * 2.0f * static_cast<float>(toneCounters_[ch]) / static_cast<float>(toneCount);
-                if (toneOutput_[ch]) {
-                    // Was low, now high
-                    chanVal = -level + subval;
-                } else {
-                    // Was high, now low
-                    chanVal = level - subval;
-                }
-            } else {
-                // Multiple toggles - anti-aliasing
-                chanVal = -level;
-            }
+            bool toneDisable = (mixer & (1 << ch)) != 0;
+            bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
+            bool toneOut = toneOutput_[ch] || toneDisable;
+            bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
 
-            if (noiseEnabled && noiseToggle_) {
-                chanVal = 0.0f;
-            }
-
-            sample += chanVal;
+            sample += (toneOut && noiseOut) ? level : 0.0f;
         }
         sample /= 3.0f;
+
+        // LPF
         lpfState_ += alpha * (sample - lpfState_);
-        buffer[i] = lpfState_;
+
+        // DC offset removal (high-pass filter to remove unipolar DC bias)
+        dcState_ = DC_ALPHA * dcState_ + (1.0f - DC_ALPHA) * lpfState_;
+        buffer[i] = lpfState_ - dcState_;
     }
 }
 
@@ -440,27 +388,20 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             writeIdx++;
         }
 
-        uint8_t mixer = registers_[REG_MIXER];
-
-        // Advance PSG state with toggle tracking
+        // Advance PSG state
         phaseAccumulator_ += toneStepsPerSample;
-
-        int toneCount = 0;
-        int toggleCount[3] = {0, 0, 0};
 
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
-            toneCount++;
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                bool prev = toneOutput_[ch];
                 updateToneGenerator(ch);
-                if (toneOutput_[ch] != prev) toggleCount[ch]++;
             }
             updateNoiseGenerator();
             updateEnvelopeGenerator();
         }
 
-        // Sample with sub-sample interpolation
+        // Unipolar output matching MAME/real hardware
+        uint8_t mixer = registers_[REG_MIXER];
         float sample = 0.0f;
         for (int ch = 0; ch < NUM_CHANNELS; ch++) {
             if (channelMuted_[ch]) continue;
@@ -470,34 +411,22 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             if (volume == 0) continue;
 
             float level = volumeTable_[volume];
-            bool toneDisabled = (mixer & (1 << ch)) != 0;
-            bool noiseEnabled = (mixer & (1 << (ch + 3))) == 0;
 
-            float chanVal;
-            if (toneDisabled) {
-                chanVal = level;
-            } else if (toggleCount[ch] == 0) {
-                chanVal = toneOutput_[ch] ? level : -level;
-            } else if (toggleCount[ch] == 1) {
-                float subval = level * 2.0f * static_cast<float>(toneCounters_[ch]) / static_cast<float>(toneCount);
-                if (toneOutput_[ch]) {
-                    chanVal = -level + subval;
-                } else {
-                    chanVal = level - subval;
-                }
-            } else {
-                chanVal = -level;
-            }
+            bool toneDisable = (mixer & (1 << ch)) != 0;
+            bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
+            bool toneOut = toneOutput_[ch] || toneDisable;
+            bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
 
-            if (noiseEnabled && noiseToggle_) {
-                chanVal = 0.0f;
-            }
-
-            sample += chanVal;
+            sample += (toneOut && noiseOut) ? level : 0.0f;
         }
         sample /= 3.0f;
+
+        // LPF
         lpfState_ += alpha * (sample - lpfState_);
-        buffer[i] = lpfState_;
+
+        // DC offset removal
+        dcState_ = DC_ALPHA * dcState_ + (1.0f - DC_ALPHA) * lpfState_;
+        buffer[i] = lpfState_ - dcState_;
     }
 
     // Apply any remaining writes (for the end of the buffer)
@@ -508,6 +437,54 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
 
     // Clear processed writes
     pendingWrites_.clear();
+}
+
+float AY8910::generateSingleSample() {
+    // Precomputed constants for 48kHz sample rate
+    // toneStepsPerSample = PSG_CLOCK / (48000 * 8) = 1023000 / 384000 ≈ 2.6640625
+    static constexpr double TONE_STEPS = 1023000.0 / (48000.0 * 8.0);
+    // LPF alpha: ω = 2πf, α = ω/(sr+ω) where f=4000, sr=48000
+    static constexpr float ALPHA = (2.0f * 3.14159265f * 4000.0f) /
+                                   (48000.0f + 2.0f * 3.14159265f * 4000.0f);
+
+    // Advance PSG state
+    phaseAccumulator_ += TONE_STEPS;
+    while (phaseAccumulator_ >= 1.0) {
+        phaseAccumulator_ -= 1.0;
+        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+            updateToneGenerator(ch);
+        }
+        updateNoiseGenerator();
+        updateEnvelopeGenerator();
+    }
+
+    // Unipolar output matching MAME/real hardware: 0 or +level
+    uint8_t mixer = registers_[REG_MIXER];
+    float sample = 0.0f;
+    for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+        if (channelMuted_[ch]) continue;
+
+        uint8_t ampReg = registers_[REG_AMP_A + ch];
+        uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
+        if (volume == 0) continue;
+
+        float level = volumeTable_[volume];
+
+        bool toneDisable = (mixer & (1 << ch)) != 0;
+        bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
+        bool toneOut = toneOutput_[ch] || toneDisable;
+        bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
+
+        sample += (toneOut && noiseOut) ? level : 0.0f;
+    }
+    sample /= 3.0f;
+
+    // LPF
+    lpfState_ += ALPHA * (sample - lpfState_);
+
+    // DC offset removal (high-pass filter to remove unipolar DC bias)
+    dcState_ = DC_ALPHA * dcState_ + (1.0f - DC_ALPHA) * lpfState_;
+    return lpfState_ - dcState_;
 }
 
 void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, int channel) {
@@ -522,32 +499,21 @@ void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, in
     double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
     double toneStepsPerSample = cyclesPerSample / 8.0;
 
-    uint8_t mixer = registers_[REG_MIXER];
-
     for (int i = 0; i < count; i++) {
-        // Accumulate fractional cycles
         phaseAccumulator_ += toneStepsPerSample;
 
-        // Track toggles for sub-sample interpolation
-        int toneCount = 0;
-        int toggleCount[3] = {0, 0, 0};
-
-        // Process whole cycles
+        // Advance all generators (needed for accurate state)
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
-            toneCount++;
-
-            // Update all generators (needed for accurate state)
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                bool prev = toneOutput_[ch];
                 updateToneGenerator(ch);
-                if (toneOutput_[ch] != prev) toggleCount[ch]++;
             }
             updateNoiseGenerator();
             updateEnvelopeGenerator();
         }
 
-        // Output only the requested channel with interpolation
+        // Unipolar output for visualization (no DC removal - shows raw waveform)
+        uint8_t mixer = registers_[REG_MIXER];
         uint8_t ampReg = registers_[REG_AMP_A + channel];
         uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
         if (volume == 0) {
@@ -556,30 +522,13 @@ void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, in
         }
 
         float level = volumeTable_[volume];
-        bool toneDisabled = (mixer & (1 << channel)) != 0;
-        bool noiseEnabled = (mixer & (1 << (channel + 3))) == 0;
 
-        float chanVal;
-        if (toneDisabled) {
-            chanVal = level;
-        } else if (toggleCount[channel] == 0) {
-            chanVal = toneOutput_[channel] ? level : -level;
-        } else if (toggleCount[channel] == 1) {
-            float subval = level * 2.0f * static_cast<float>(toneCounters_[channel]) / static_cast<float>(toneCount);
-            if (toneOutput_[channel]) {
-                chanVal = -level + subval;
-            } else {
-                chanVal = level - subval;
-            }
-        } else {
-            chanVal = -level;
-        }
+        bool toneDisable = (mixer & (1 << channel)) != 0;
+        bool noiseDisable = (mixer & (1 << (channel + 3))) != 0;
+        bool toneOut = toneOutput_[channel] || toneDisable;
+        bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
 
-        if (noiseEnabled && noiseToggle_) {
-            chanVal = 0.0f;
-        }
-
-        buffer[i] = chanVal;
+        buffer[i] = (toneOut && noiseOut) ? level : 0.0f;
     }
 }
 
@@ -649,6 +598,9 @@ void AY8910::importState(const uint8_t* buffer) {
 
     // Clear any pending register writes from before state import
     pendingWrites_.clear();
+
+    // Reset filter states for clean audio restart
+    dcState_ = 0.0f;
 
     // 16 registers
     for (int i = 0; i < 16; i++) {

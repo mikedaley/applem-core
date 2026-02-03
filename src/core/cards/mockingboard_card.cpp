@@ -6,6 +6,8 @@
  */
 
 #include "mockingboard_card.hpp"
+#include <cstring>
+#include <algorithm>
 
 namespace a2e {
 
@@ -84,6 +86,9 @@ void MockingboardCard::reset() {
     via2_.reset();
     psg1_.reset();
     psg2_.reset();
+    cycleAccum_ = 0.0;
+    sampleAccum_.clear();
+    sampleReadPos_ = 0;
 }
 
 void MockingboardCard::update(int cycles) {
@@ -91,6 +96,20 @@ void MockingboardCard::update(int cycles) {
 
     via1_.update(cycles);
     via2_.update(cycles);
+
+    // Incremental audio generation: accumulate CPU cycles and generate
+    // audio samples at 48kHz rate. This ensures PSG register changes
+    // from VIA timer IRQ handlers are immediately reflected in output.
+    cycleAccum_ += cycles;
+    while (cycleAccum_ >= CYCLES_PER_SAMPLE) {
+        cycleAccum_ -= CYCLES_PER_SAMPLE;
+
+        float left = psg1_.generateSingleSample();
+        float right = psg2_.generateSingleSample();
+
+        sampleAccum_.push_back(left);
+        sampleAccum_.push_back(right);
+    }
 }
 
 void MockingboardCard::setIRQCallback(IRQCallback callback) {
@@ -237,6 +256,84 @@ void MockingboardCard::generateStereoSamples(float* buffer, int count, int sampl
         buffer[i * 2] = audioBuffer1_[i];
         buffer[i * 2 + 1] = audioBuffer2_[i];
     }
+}
+
+int MockingboardCard::consumeStereoSamples(float* buffer, int frameCount) {
+    if (!enabled_ || frameCount <= 0) {
+        for (int i = 0; i < frameCount * 2; i++) {
+            buffer[i] = 0.0f;
+        }
+        return frameCount;
+    }
+
+    int availableFrames = static_cast<int>((sampleAccum_.size() - sampleReadPos_) / 2);
+    int framesToCopy = std::min(frameCount, availableFrames);
+
+    // Copy available accumulated samples
+    if (framesToCopy > 0) {
+        std::memcpy(buffer, sampleAccum_.data() + sampleReadPos_,
+                    framesToCopy * 2 * sizeof(float));
+        sampleReadPos_ += framesToCopy * 2;
+    }
+
+    // If we need more samples than accumulated, generate the remainder on the spot
+    // (handles slight timing drift between CPU execution and audio requests)
+    for (int i = framesToCopy; i < frameCount; i++) {
+        buffer[i * 2] = psg1_.generateSingleSample();
+        buffer[i * 2 + 1] = psg2_.generateSingleSample();
+    }
+
+    // Compact the buffer: remove consumed samples
+    if (sampleReadPos_ > 0) {
+        size_t remaining = sampleAccum_.size() - sampleReadPos_;
+        if (remaining > 0) {
+            std::memmove(sampleAccum_.data(), sampleAccum_.data() + sampleReadPos_,
+                         remaining * sizeof(float));
+        }
+        sampleAccum_.resize(remaining);
+        sampleReadPos_ = 0;
+    }
+
+    return frameCount;
+}
+
+int MockingboardCard::consumeMonoSamples(float* buffer, int sampleCount) {
+    if (!enabled_ || sampleCount <= 0) {
+        for (int i = 0; i < sampleCount; i++) {
+            buffer[i] = 0.0f;
+        }
+        return sampleCount;
+    }
+
+    int availableFrames = static_cast<int>((sampleAccum_.size() - sampleReadPos_) / 2);
+    int framesToCopy = std::min(sampleCount, availableFrames);
+
+    // Mix stereo to mono from accumulated samples
+    for (int i = 0; i < framesToCopy; i++) {
+        float left = sampleAccum_[sampleReadPos_++];
+        float right = sampleAccum_[sampleReadPos_++];
+        buffer[i] = (left + right) * 0.5f;
+    }
+
+    // Generate remainder on the spot if needed
+    for (int i = framesToCopy; i < sampleCount; i++) {
+        float left = psg1_.generateSingleSample();
+        float right = psg2_.generateSingleSample();
+        buffer[i] = (left + right) * 0.5f;
+    }
+
+    // Compact
+    if (sampleReadPos_ > 0) {
+        size_t remaining = sampleAccum_.size() - sampleReadPos_;
+        if (remaining > 0) {
+            std::memmove(sampleAccum_.data(), sampleAccum_.data() + sampleReadPos_,
+                         remaining * sizeof(float));
+        }
+        sampleAccum_.resize(remaining);
+        sampleReadPos_ = 0;
+    }
+
+    return sampleCount;
 }
 
 } // namespace a2e

@@ -47,6 +47,11 @@ public:
     void generateSamples(float* buffer, int count, int sampleRate);
     void generateChannelSamples(float* buffer, int count, int sampleRate, int channel);
 
+    // Generate a single audio sample at 48kHz using current register state.
+    // Advances PSG internal state by the appropriate number of ticks.
+    // Used for per-instruction incremental audio generation.
+    float generateSingleSample();
+
     // Channel muting (for debug/mixing purposes)
     void setChannelMute(int channel, bool muted);
     bool isChannelMuted(int channel) const;
@@ -103,7 +108,7 @@ private:
     // Noise generator state
     uint32_t noiseCounter_ = 0;
     uint32_t noiseShiftReg_ = 1;  // 17-bit LFSR, must not be 0
-    bool noiseToggle_ = false;    // AppleWin/FUSE-style toggle output
+    bool noiseToggle_ = false;    // Legacy (kept for state serialization compat)
 
     // Envelope generator state
     uint32_t envCounter_ = 0;
@@ -121,6 +126,11 @@ private:
     // Cutoff ~4kHz — tames square wave harmonics for a warmer/bassier sound
     static constexpr float LPF_CUTOFF_HZ = 4000.0f;
     float lpfState_ = 0.0f;
+
+    // DC offset removal state (high-pass filter)
+    // Removes DC bias from unipolar PSG output
+    float dcState_ = 0.0f;
+    static constexpr float DC_ALPHA = 0.995f;
 
     // Volume table (4-bit to amplitude)
     static const float volumeTable_[16];

@@ -106,6 +106,19 @@ public:
     void generateStereoSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle);
 
     /**
+     * Consume accumulated stereo samples (from incremental generation).
+     * Returns actual number of sample frames consumed.
+     * If fewer samples available than requested, generates remaining on the spot.
+     */
+    int consumeStereoSamples(float* buffer, int frameCount);
+
+    /**
+     * Consume accumulated mono samples (mixed from stereo).
+     * Returns actual number of samples consumed.
+     */
+    int consumeMonoSamples(float* buffer, int sampleCount);
+
+    /**
      * Enable/disable debug logging
      * @param enabled true to enable
      */
@@ -137,6 +150,13 @@ private:
     // Preallocated audio buffers to avoid heap allocations in audio hot path
     mutable std::vector<float> audioBuffer1_;
     mutable std::vector<float> audioBuffer2_;
+
+    // Incremental audio generation state
+    // CPU cycles per audio sample at 48kHz: 1,023,000 / 48,000 ≈ 21.3125
+    static constexpr double CYCLES_PER_SAMPLE = 1023000.0 / 48000.0;
+    double cycleAccum_ = 0.0;                   // Fractional CPU cycle accumulator
+    std::vector<float> sampleAccum_;             // Accumulated stereo samples (interleaved L/R)
+    size_t sampleReadPos_ = 0;                   // Read position in accumulated buffer
 };
 
 } // namespace a2e
