@@ -116,6 +116,7 @@ void Emulator::reset() {
   // Keep beam breakpoints across reset (same as regular breakpoints)
   for (auto& bp : beamBreakpoints_) {
     bp.lastFireFrame = UINT64_MAX;
+    bp.lastFireScanline = -1;
   }
   beamBreakHit_ = false;
   beamBreakHitId_ = -1;
@@ -153,6 +154,7 @@ void Emulator::warmReset() {
   // Keep breakpoints but reset per-breakpoint fire tracking
   for (auto& bp : beamBreakpoints_) {
     bp.lastFireFrame = UINT64_MAX;
+    bp.lastFireScanline = -1;
   }
   paused_ = false;
 }
@@ -260,12 +262,23 @@ void Emulator::runCycles(int cycles) {
         bool scanOk = (bp.scanline < 0) || (sl == bp.scanline);
         bool hPosOk = (bp.hPos < 0) || (hp >= bp.hPos);
         bool valid = (bp.scanline >= 0 || bp.hPos >= 0);
-        if (scanOk && hPosOk && valid && lastFrameCycle_ != bp.lastFireFrame) {
+        if (!scanOk || !hPosOk || !valid) continue;
+
+        // For wildcard-scanline breakpoints (HBLANK, Column), fire once per scanline.
+        // For specific-scanline breakpoints (VBL, Scanline, ScanCol), fire once per frame.
+        bool alreadyFired;
+        if (bp.scanline < 0) {
+          alreadyFired = (lastFrameCycle_ == bp.lastFireFrame && sl == bp.lastFireScanline);
+        } else {
+          alreadyFired = (lastFrameCycle_ == bp.lastFireFrame);
+        }
+        if (!alreadyFired) {
           beamBreakHit_ = true;
           beamBreakHitId_ = bp.id;
           beamBreakHitScanline_ = sl;
           beamBreakHitHPos_ = hp;
           bp.lastFireFrame = lastFrameCycle_;
+          bp.lastFireScanline = sl;
           paused_ = true;
           return;
         }
@@ -578,7 +591,7 @@ void Emulator::onWatchpointWrite(uint16_t address, uint8_t value) {
 int32_t Emulator::addBeamBreakpoint(int16_t scanline, int16_t hPos) {
   if (beamBreakpoints_.size() >= MAX_BEAM_BREAKPOINTS) return -1;
   int32_t id = beamBreakNextId_++;
-  beamBreakpoints_.push_back({scanline, hPos, true, id, UINT64_MAX});
+  beamBreakpoints_.push_back({scanline, hPos, true, id, UINT64_MAX, -1});
   return id;
 }
 

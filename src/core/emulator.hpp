@@ -286,7 +286,8 @@ private:
     int16_t hPos;           // -1 = any (raw 0-64)
     bool enabled;
     int32_t id;
-    uint64_t lastFireFrame; // per-breakpoint re-fire prevention
+    uint64_t lastFireFrame;    // per-breakpoint re-fire prevention
+    int16_t lastFireScanline;  // for wildcard-scanline breakpoints (fire once per scanline)
   };
   std::vector<BeamBreakpoint> beamBreakpoints_;
   int32_t beamBreakNextId_ = 1;
