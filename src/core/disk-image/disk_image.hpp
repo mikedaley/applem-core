@@ -157,6 +157,24 @@ public:
    */
   virtual void writeNibble(uint8_t nibble) = 0;
 
+  /**
+   * Read a single bit from the disk at the current position
+   * Advances the bit position by one.
+   * Used by the Logic State Sequencer for cycle-accurate disk access.
+   *
+   * @return 0 or 1
+   */
+  virtual uint8_t readBit() = 0;
+
+  /**
+   * Write a single bit to the disk at the current position
+   * Advances the bit position by one.
+   * Used by the Logic State Sequencer for cycle-accurate disk access.
+   *
+   * @param bit The bit value (0 or 1)
+   */
+  virtual void writeBit(uint8_t bit) = 0;
+
   // ===== Status =====
 
   /**

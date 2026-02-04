@@ -195,10 +195,20 @@ public:
     bool getQ7() const { return q7_; }
 
     /**
-     * Get the data latch value (last nibble read/written)
-     * @return Current data latch value
+     * Get the data register value (LSS shift register)
+     * @return Current data register value
      */
-    uint8_t getDataLatch() const { return dataLatch_; }
+    uint8_t getDataLatch() const { return dataRegister_; }
+
+    /**
+     * Get the sequencer state (4-bit, 0-15)
+     */
+    uint8_t getSequencerState() const { return sequencerState_; }
+
+    /**
+     * Get the bus data value (last value written by CPU)
+     */
+    uint8_t getBusData() const { return busData_; }
 
     // ===== State Restoration Methods =====
 
@@ -206,8 +216,12 @@ public:
     void setQ6(bool q6) { q6_ = q6; }
     void setQ7(bool q7) { q7_ = q7; }
     void setPhaseStates(uint8_t states) { phaseStates_ = states; }
-    void setDataLatch(uint8_t latch) { dataLatch_ = latch; }
+    void setDataLatch(uint8_t latch) { dataRegister_ = latch; }
     void setMotorOn(bool on) { motorOn_ = on; }
+    void setSequencerState(uint8_t s) { sequencerState_ = s & 0x0F; }
+    void setBusData(uint8_t d) { busData_ = d; }
+    uint8_t getLSSClock() const { return lssClock_; }
+    void setLSSClock(uint8_t c) { lssClock_ = c & 0x07; }
 
 private:
     // Soft switch offsets
@@ -231,8 +245,14 @@ private:
     // Motor timeout: ~1 second at 1.023 MHz
     static constexpr uint64_t MOTOR_OFF_DELAY_CYCLES = 1023000;
 
-    // Nibble timing: ~31 cycles per nibble
-    static constexpr uint64_t CYCLES_PER_NIBBLE = 31;
+    // LSS timing: 4 CPU cycles per bit cell
+    static constexpr int CYCLES_PER_BIT = 4;
+
+    // Maximum catch-up: ~one disk revolution (~51200 bits for standard track)
+    static constexpr uint32_t MAX_CATCHUP_BITS = 53000;
+
+    // P6 sequencer ROM (341-0028, 256x4 bits, de-scrambled to logical format)
+    static const uint8_t P6_ROM[256];
 
     // P5A ROM (256 bytes)
     std::array<uint8_t, 256> rom_;
@@ -247,12 +267,13 @@ private:
 
     // Timing state
     uint64_t totalCycles_ = 0;
-    uint64_t lastReadCycle_[2] = {0, 0};
 
-    // Data latches
-    uint8_t dataLatch_ = 0;
-    bool latchValid_ = false;
-    uint8_t writeLatch_ = 0;
+    // LSS state (P6 ROM clocked at 2x CPU rate = 8 ticks per bit cell)
+    uint8_t sequencerState_ = 0;    // 4-bit state (0-15)
+    uint8_t dataRegister_ = 0;      // 8-bit shift register
+    uint64_t lastLSSCycle_ = 0;     // Last cycle LSS was clocked
+    uint8_t busData_ = 0;           // CPU bus data for LOAD operations
+    uint8_t lssClock_ = 0;         // 8-phase clock (0-7), disk I/O at phase 4
 
     // Disk images for each drive
     std::unique_ptr<DiskImage> diskImages_[2];
@@ -279,15 +300,16 @@ private:
     uint8_t handleSoftSwitch(uint8_t offset, bool isWrite);
 
     /**
-     * Read a byte from the current disk
-     * @return The data latch value
+     * Clock the Logic State Sequencer by one tick (runs at 2x CPU rate).
+     * 8 ticks = 1 bit cell. Disk read/write occurs at phase 4 only.
      */
-    uint8_t readDiskData();
+    void clockLSS();
 
     /**
-     * Write a byte to the current disk
+     * Advance the LSS to the current CPU cycle
+     * @param currentCycle Current total CPU cycle count
      */
-    void writeDiskData();
+    void catchUpLSS(uint64_t currentCycle);
 };
 
 } // namespace a2e

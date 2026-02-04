@@ -1,6 +1,10 @@
 /*
  * disk2_card.cpp - Disk II controller card implementation
  *
+ * Cycle-accurate Logic State Sequencer (LSS) driven by the P6 ROM (341-0028).
+ * The sequencer clocks at 2x CPU rate (8 ticks per 4-cycle bit cell), with
+ * disk read/write occurring at phase 4 of each 8-phase cycle.
+ *
  * Written by
  *  Mike Daley <michael_daley@icloud.com>
  */
@@ -12,6 +16,47 @@
 #include <cstring>
 
 namespace a2e {
+
+// ===== P6 Sequencer ROM (341-0028, 16-sector) =====
+//
+// De-scrambled to BAPD (Beneath Apple ProDOS) logical format.
+// Source ROM CRC32: b72a2c70
+//
+// Address: (state << 4) | (Q7 << 3) | (Q6 << 2) | (QA << 1) | pulse
+//   state  = 4-bit sequencer state (0-F)
+//   Q7/Q6  = mode select (00=read, 01=WP sense, 10=write, 11=load)
+//   QA     = data register bit 7 (MSB feedback)
+//   pulse  = read bit from disk (1=flux transition)
+//
+// Data byte: high nibble = next state, low nibble = action code
+//   Actions: 0-7=CLR, 8/C=NOP, 9=SL0, A/E=SR+WP, B/F=LOAD, D=SL1
+//
+const uint8_t Disk2Card::P6_ROM[256] = {
+    // State 0                                          State 1
+    0x18,0x18,0x18,0x18,0x0A,0x0A,0x0A,0x0A,  0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,
+    0x2D,0x2D,0x38,0x38,0x0A,0x0A,0x0A,0x0A,  0x28,0x28,0x28,0x28,0x28,0x28,0x28,0x28,
+    // State 2                                          State 3
+    0xD8,0x38,0x08,0x28,0x0A,0x0A,0x0A,0x0A,  0x39,0x39,0x39,0x39,0x3B,0x3B,0x3B,0x3B,
+    0xD8,0x48,0x48,0x48,0x0A,0x0A,0x0A,0x0A,  0x48,0x48,0x48,0x48,0x48,0x48,0x48,0x48,
+    // State 4                                          State 5
+    0xD8,0x58,0xD8,0x58,0x0A,0x0A,0x0A,0x0A,  0x58,0x58,0x58,0x58,0x58,0x58,0x58,0x58,
+    0xD8,0x68,0xD8,0x68,0x0A,0x0A,0x0A,0x0A,  0x68,0x68,0x68,0x68,0x68,0x68,0x68,0x68,
+    // State 6                                          State 7
+    0xD8,0x78,0xD8,0x78,0x0A,0x0A,0x0A,0x0A,  0x78,0x78,0x78,0x78,0x78,0x78,0x78,0x78,
+    0xD8,0x88,0xD8,0x88,0x0A,0x0A,0x0A,0x0A,  0x08,0x08,0x88,0x88,0x08,0x08,0x88,0x88,
+    // State 8                                          State 9
+    0xD8,0x98,0xD8,0x98,0x0A,0x0A,0x0A,0x0A,  0x98,0x98,0x98,0x98,0x98,0x98,0x98,0x98,
+    0xD8,0x29,0xD8,0xA8,0x0A,0x0A,0x0A,0x0A,  0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,0xA8,
+    // State A                                          State B
+    0xCD,0xBD,0xD8,0xB8,0x0A,0x0A,0x0A,0x0A,  0xB9,0xB9,0xB9,0xB9,0xBB,0xBB,0xBB,0xBB,
+    0xD9,0x59,0xD8,0xC8,0x0A,0x0A,0x0A,0x0A,  0xC8,0xC8,0xC8,0xC8,0xC8,0xC8,0xC8,0xC8,
+    // State C                                          State D
+    0xD9,0xD9,0xD8,0xA0,0x0A,0x0A,0x0A,0x0A,  0xD8,0xD8,0xD8,0xD8,0xD8,0xD8,0xD8,0xD8,
+    0xD8,0x08,0xE8,0xE8,0x0A,0x0A,0x0A,0x0A,  0xE8,0xE8,0xE8,0xE8,0xE8,0xE8,0xE8,0xE8,
+    // State E                                          State F
+    0xFD,0xFD,0xF8,0xF8,0x0A,0x0A,0x0A,0x0A,  0xF8,0xF8,0xF8,0xF8,0xF8,0xF8,0xF8,0xF8,
+    0xDD,0x4D,0xE0,0xE0,0x0A,0x0A,0x0A,0x0A,  0x88,0x88,0x08,0x08,0x88,0x88,0x08,0x08,
+};
 
 Disk2Card::Disk2Card() {
     rom_.fill(0xFF);
@@ -39,14 +84,8 @@ uint8_t Disk2Card::readIO(uint8_t offset) {
 }
 
 void Disk2Card::writeIO(uint8_t offset, uint8_t value) {
-    uint8_t off = offset & 0x0F;
-
-    // In write mode, any write loads data into the shift register
-    if (q7_) {
-        writeLatch_ = value;
-    }
-
-    handleSoftSwitch(off, true);
+    handleSoftSwitch(offset & 0x0F, true);
+    busData_ = value;
 }
 
 uint8_t Disk2Card::peekIO(uint8_t offset) const {
@@ -72,7 +111,7 @@ uint8_t Disk2Card::peekIO(uint8_t offset) const {
         return selectedDrive_ == 1 ? 0x80 : 0x00;
 
     case Q6L:
-        return dataLatch_;
+        return dataRegister_;
 
     case Q6H:
         if (hasDisk(selectedDrive_)) {
@@ -105,11 +144,11 @@ void Disk2Card::reset() {
     phaseStates_ = 0;
 
     totalCycles_ = 0;
-    lastReadCycle_[0] = 0;
-    lastReadCycle_[1] = 0;
-    dataLatch_ = 0;
-    latchValid_ = false;
-    writeLatch_ = 0;
+    sequencerState_ = 0;
+    dataRegister_ = 0;
+    lastLSSCycle_ = 0;
+    busData_ = 0;
+    lssClock_ = 0;
 
     // Reset disk image track positions (but preserve loaded disks)
     for (int i = 0; i < 2; i++) {
@@ -141,7 +180,7 @@ size_t Disk2Card::serialize(uint8_t* buffer, size_t maxSize) const {
     buffer[offset++] = q6_ ? 1 : 0;
     buffer[offset++] = q7_ ? 1 : 0;
     buffer[offset++] = phaseStates_;
-    buffer[offset++] = dataLatch_;
+    buffer[offset++] = dataRegister_;
 
     // Track positions for both drives
     int track0 = 0, track1 = 0;
@@ -155,6 +194,11 @@ size_t Disk2Card::serialize(uint8_t* buffer, size_t maxSize) const {
     }
     buffer[offset++] = static_cast<uint8_t>(track0);
     buffer[offset++] = static_cast<uint8_t>(track1);
+
+    // LSS state (new in state version 7)
+    buffer[offset++] = sequencerState_;
+    buffer[offset++] = busData_;
+    buffer[offset++] = lssClock_;
 
     return offset;
 }
@@ -181,6 +225,13 @@ size_t Disk2Card::deserialize(const uint8_t* buffer, size_t size) {
     if (hasDisk(1)) {
         DiskImage* img = getMutableDiskImage(1);
         if (img) img->setQuarterTrack(track1);
+    }
+
+    // LSS state (new in state version 7)
+    if (offset + 3 <= size) {
+        setSequencerState(buffer[offset++]);
+        setBusData(buffer[offset++]);
+        setLSSClock(buffer[offset++]);
     }
 
     return offset;
@@ -224,11 +275,9 @@ bool Disk2Card::insertDisk(int drive, const uint8_t* data, size_t size,
 
     diskImages_[drive] = std::move(image);
 
-    // Reset timing state for this drive
-    lastReadCycle_[drive] = 0;
+    // Reset LSS timing for this drive
     if (drive == selectedDrive_) {
-        latchValid_ = false;
-        dataLatch_ = 0;
+        lastLSSCycle_ = getCycles();
     }
 
     return true;
@@ -298,7 +347,7 @@ DiskImage* Disk2Card::getMutableDiskImage(int drive) {
 
 bool Disk2Card::isMotorOn() const {
     if (motorOn_ && motorOffCycle_ != 0) {
-        if (totalCycles_ >= motorOffCycle_ + MOTOR_OFF_DELAY_CYCLES) {
+        if (getCycles() >= motorOffCycle_ + MOTOR_OFF_DELAY_CYCLES) {
             motorOn_ = false;
             motorOffCycle_ = 0;
         }
@@ -325,12 +374,93 @@ int Disk2Card::getQuarterTrack() const {
     return -1;
 }
 
-// ===== Private Methods =====
+// ===== Logic State Sequencer =====
+
+void Disk2Card::clockLSS() {
+    DiskImage* disk = diskImages_[selectedDrive_].get();
+    if (!disk || !disk->hasData()) {
+        if (++lssClock_ > 7) lssClock_ = 0;
+        return;
+    }
+
+    // Read pulse from disk only at phase 4 of the 8-phase clock.
+    // On all other phases, pulse is 0 (inverted -> 1 in address).
+    // When Q7=1 (write mode), pulse never affects P6 ROM output,
+    // so we skip the read and let writeBit handle head advance.
+    uint8_t readPulse = 0;
+    if (lssClock_ == 4 && !q7_) {
+        readPulse = disk->readBit();  // reads and advances head
+    }
+
+    // P6 ROM lookup (every tick, BAPD format with inverted pulse)
+    uint8_t qa = (dataRegister_ >> 7) & 1;
+    uint8_t addr = (sequencerState_ << 4) | (uint8_t(q7_) << 3) |
+                   (uint8_t(q6_) << 2) | (qa << 1) | (readPulse ? 0x00 : 0x01);
+    uint8_t opcode = P6_ROM[addr];
+    uint8_t nextState = (opcode >> 4) & 0x0F;
+
+    // Execute data register action (MAME-derived P6 ROM action decoding)
+    switch (opcode & 0x0F) {
+    case 0: case 1: case 2: case 3:
+    case 4: case 5: case 6: case 7:
+        dataRegister_ = 0x00;           // CLR
+        break;
+    case 0x8: case 0xC:
+        break;                           // NOP
+    case 0x9:
+        dataRegister_ <<= 1;            // SL0 (shift left, 0 in)
+        break;
+    case 0xA: case 0xE:
+        dataRegister_ = (dataRegister_ >> 1) |
+            (disk->isWriteProtected() ? 0x80 : 0x00);  // SR + WP sense
+        break;
+    case 0xB: case 0xF:
+        dataRegister_ = busData_;        // LOAD from CPU bus
+        break;
+    case 0xD:
+        dataRegister_ = (dataRegister_ << 1) | 0x01;  // SL1 (shift left, 1 in)
+        break;
+    }
+
+    // Write mode: output bit and advance head at phase 4
+    if (lssClock_ == 4 && q7_) {
+        disk->writeBit((nextState >> 3) & 1);
+    }
+
+    sequencerState_ = nextState;
+    if (++lssClock_ > 7) lssClock_ = 0;
+}
+
+void Disk2Card::catchUpLSS(uint64_t currentCycle) {
+    if (!isMotorOn() || !hasDisk(selectedDrive_)) return;
+    if (currentCycle <= lastLSSCycle_) {
+        lastLSSCycle_ = currentCycle;
+        return;
+    }
+
+    // LSS runs at 2x CPU rate (2 ticks per CPU cycle, 8 ticks per bit cell)
+    uint64_t elapsedCycles = currentCycle - lastLSSCycle_;
+    uint64_t ticks = elapsedCycles * 2;
+
+    // Cap to approximately one disk revolution
+    static constexpr uint64_t MAX_CATCHUP_TICKS =
+        static_cast<uint64_t>(MAX_CATCHUP_BITS) * 8;
+    if (ticks > MAX_CATCHUP_TICKS) ticks = MAX_CATCHUP_TICKS;
+
+    for (uint64_t i = 0; i < ticks; i++) {
+        clockLSS();
+    }
+
+    lastLSSCycle_ = currentCycle;
+}
+
+// ===== Soft Switch Handler =====
 
 uint8_t Disk2Card::handleSoftSwitch(uint8_t offset, bool isWrite) {
-    (void)isWrite;
+    uint64_t currentCycle = getCycles();
 
-    auto setPhase = [this](int phase, bool on) {
+    auto setPhase = [this, currentCycle](int phase, bool on) {
+        catchUpLSS(currentCycle);
         if (hasDisk(selectedDrive_)) {
             diskImages_[selectedDrive_]->setPhase(phase, on);
         }
@@ -371,144 +501,58 @@ uint8_t Disk2Card::handleSoftSwitch(uint8_t offset, bool isWrite) {
         break;
 
     case MOTOR_OFF:
-        if (isMotorOn() && !q7_) {
-            uint8_t result = readDiskData();
-            if (motorOn_ && motorOffCycle_ == 0) {
-                motorOffCycle_ = totalCycles_;
-            }
-            return result;
-        }
+        catchUpLSS(currentCycle);
         if (motorOn_ && motorOffCycle_ == 0) {
-            motorOffCycle_ = totalCycles_;
+            motorOffCycle_ = currentCycle;
         }
-        break;
+        return dataRegister_;
+
     case MOTOR_ON:
         motorOffCycle_ = 0;
         if (!motorOn_) {
-            lastReadCycle_[selectedDrive_] = 0;
-            latchValid_ = false;
+            lastLSSCycle_ = currentCycle;
         }
         motorOn_ = true;
         break;
 
     case DRIVE1_SELECT:
+        catchUpLSS(currentCycle);
         selectedDrive_ = 0;
         break;
     case DRIVE2_SELECT:
+        catchUpLSS(currentCycle);
         selectedDrive_ = 1;
         break;
 
     case Q6L:
+        catchUpLSS(currentCycle);
         q6_ = false;
-        if (!q7_) {
-            return readDiskData();
-        } else {
-            writeDiskData();
-        }
-        break;
+        return dataRegister_;
 
     case Q6H:
+        catchUpLSS(currentCycle);
         q6_ = true;
         if (!q7_) {
-            if (isMotorOn() && hasDisk(selectedDrive_)) {
-                dataLatch_ = 0;
-                latchValid_ = false;
-                uint64_t currentCycle = getCycles();
-                uint64_t& lastCycle = lastReadCycle_[selectedDrive_];
-                if (lastCycle != 0) {
-                    uint64_t elapsed = currentCycle - lastCycle;
-                    uint64_t nibbles = elapsed / CYCLES_PER_NIBBLE;
-                    if (nibbles > 0) {
-                        DiskImage* disk = diskImages_[selectedDrive_].get();
-                        for (uint64_t i = 0; i < nibbles && i < 50; i++) {
-                            disk->readNibble();
-                        }
-                    }
-                }
-                lastCycle = currentCycle;
+            // Sense write protect
+            if (hasDisk(selectedDrive_)) {
                 return diskImages_[selectedDrive_]->isWriteProtected() ? 0x80 : 0x00;
             }
-            return 0x80;
+            return 0x00;
         }
         break;
 
     case Q7L:
-        if (q7_) {
-            lastReadCycle_[selectedDrive_] = getCycles();
-            latchValid_ = false;
-        }
+        catchUpLSS(currentCycle);
         q7_ = false;
-        break;
+        return dataRegister_;
 
     case Q7H:
+        catchUpLSS(currentCycle);
         q7_ = true;
         break;
     }
 
     return 0x00;
-}
-
-uint8_t Disk2Card::readDiskData() {
-    if (!isMotorOn() || !hasDisk(selectedDrive_)) {
-        return 0;
-    }
-
-    DiskImage* disk = diskImages_[selectedDrive_].get();
-
-    if (!disk->hasData()) {
-        return 0;
-    }
-
-    uint64_t currentCycle = getCycles();
-    uint64_t& lastCycle = lastReadCycle_[selectedDrive_];
-
-    bool newNibbleReady =
-        (lastCycle == 0) || (currentCycle >= lastCycle + CYCLES_PER_NIBBLE);
-
-    if (newNibbleReady) {
-        if (lastCycle != 0 && currentCycle > lastCycle) {
-            uint64_t elapsed = currentCycle - lastCycle;
-            uint64_t extraNibbles = (elapsed / CYCLES_PER_NIBBLE);
-            if (extraNibbles > 1) {
-                if (extraNibbles > 10) {
-                    extraNibbles = 1;
-                }
-                for (uint64_t i = 1; i < extraNibbles; i++) {
-                    disk->readNibble();
-                }
-            }
-        }
-
-        dataLatch_ = disk->readNibble();
-        lastCycle = currentCycle;
-        latchValid_ = true;
-    }
-
-    if (latchValid_) {
-        latchValid_ = false;
-        return dataLatch_;
-    } else {
-        return dataLatch_ & 0x7F;
-    }
-}
-
-void Disk2Card::writeDiskData() {
-    if (!isMotorOn() || !hasDisk(selectedDrive_) || !q7_) {
-        return;
-    }
-
-    DiskImage* disk = diskImages_[selectedDrive_].get();
-
-    if (disk->isWriteProtected()) {
-        return;
-    }
-
-    if (!disk->hasData()) {
-        return;
-    }
-
-    disk->writeNibble(writeLatch_);
-    lastReadCycle_[selectedDrive_] = getCycles();
 }
 
 } // namespace a2e

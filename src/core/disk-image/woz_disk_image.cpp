@@ -526,6 +526,24 @@ std::string WozDiskImage::getDiskTypeString() const {
   }
 }
 
+// ===== Bit-Level Access (for LSS) =====
+
+uint8_t WozDiskImage::readBit() {
+  const TrackData *track = getCurrentTrackData();
+  if (!track || track->bit_count == 0) return 0;
+  uint8_t bit = readBitInternal();
+  bit_position_ = (bit_position_ + 1) % track->bit_count;
+  return bit;
+}
+
+void WozDiskImage::writeBit(uint8_t bit) {
+  TrackData *track = getMutableCurrentTrackData();
+  if (!track || track->bit_count == 0) return;
+  writeBitInternal(bit);
+  bit_position_ = (bit_position_ + 1) % track->bit_count;
+  modified_ = true;
+}
+
 // ===== Write Operations =====
 
 WozDiskImage::TrackData *WozDiskImage::getMutableCurrentTrackData() {

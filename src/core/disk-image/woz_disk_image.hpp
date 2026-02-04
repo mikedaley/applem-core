@@ -65,6 +65,10 @@ public:
   // Write operations
   void writeNibble(uint8_t nibble) override;
 
+  // Bit-level access (for LSS)
+  uint8_t readBit() override;
+  void writeBit(uint8_t bit) override;
+
   bool isWriteProtected() const override;
   bool isModified() const override { return modified_; }
   std::string getFormatName() const override;

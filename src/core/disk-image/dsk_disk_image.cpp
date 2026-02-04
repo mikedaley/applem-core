@@ -62,11 +62,17 @@ bool DskDiskImage::load(const uint8_t *data, size_t size,
   // Detect format from disk content (not file extension)
   format_ = detectFormat(filename);
 
-  // Invalidate all nibble tracks (will be regenerated on demand)
+  // Invalidate all nibble and bit tracks (will be regenerated on demand)
   for (auto &track : nibble_tracks_) {
     track.valid = false;
     track.dirty = false;
     track.nibbles.clear();
+  }
+  for (auto &track : bit_tracks_) {
+    track.valid = false;
+    track.dirty = false;
+    track.bits.clear();
+    track.bit_count = 0;
   }
 
   // Reset head position
@@ -74,6 +80,7 @@ bool DskDiskImage::load(const uint8_t *data, size_t size,
   phase_states_ = 0;
   current_phase_ = 0; // Reset to phase 0 for correct stepper tracking
   nibble_position_ = 0;
+  bit_position_ = 0;
   last_cycle_count_ = 0;
 
   return true;
@@ -178,7 +185,21 @@ void DskDiskImage::nibblizeTrack(int track) {
 
   auto &nt = nibble_tracks_[track];
   nt.nibbles.clear();
+  nt.is_sync.clear();
   nt.nibbles.reserve(NIBBLES_PER_TRACK);
+  nt.is_sync.reserve(NIBBLES_PER_TRACK);
+
+  // Helper: push a data byte (8-bit in bit stream)
+  auto pushData = [&](uint8_t val) {
+    nt.nibbles.push_back(val);
+    nt.is_sync.push_back(false);
+  };
+
+  // Helper: push a sync byte (10-bit self-sync FF in bit stream)
+  auto pushSync = [&]() {
+    nt.nibbles.push_back(0xFF);
+    nt.is_sync.push_back(true);
+  };
 
   // Build each sector using the exact structure from the working version
   for (int physical_sector = 0; physical_sector < SECTORS_PER_TRACK;
@@ -198,19 +219,19 @@ void DskDiskImage::nibblizeTrack(int track) {
       gap = (track == 0) ? 0x28 : 0x26; // Gap 3: 40 or 38 bytes
     }
     for (int i = 0; i < gap; ++i) {
-      nt.nibbles.push_back(0xFF);
+      pushSync();
     }
 
     // === Address Field ===
     // Prologue
-    nt.nibbles.push_back(0xD5);
-    nt.nibbles.push_back(0xAA);
-    nt.nibbles.push_back(0x96);
+    pushData(0xD5);
+    pushData(0xAA);
+    pushData(0x96);
 
     // 4-and-4 encoded values
     auto encode44 = [&](uint8_t val) {
-      nt.nibbles.push_back((val >> 1) | 0xAA);
-      nt.nibbles.push_back(val | 0xAA);
+      pushData((val >> 1) | 0xAA);
+      pushData(val | 0xAA);
     };
 
     uint8_t checksum = volume_number_ ^ track ^ physical_sector;
@@ -220,44 +241,53 @@ void DskDiskImage::nibblizeTrack(int track) {
     encode44(checksum);
 
     // Epilogue
-    nt.nibbles.push_back(0xDE);
-    nt.nibbles.push_back(0xAA);
-    nt.nibbles.push_back(0xEB);
+    pushData(0xDE);
+    pushData(0xAA);
+    pushData(0xEB);
 
     // Gap 2: 5 bytes
     for (int i = 0; i < 5; ++i) {
-      nt.nibbles.push_back(0xFF);
+      pushSync();
     }
 
     // === Data Field ===
     // Prologue
-    nt.nibbles.push_back(0xD5);
-    nt.nibbles.push_back(0xAA);
-    nt.nibbles.push_back(0xAD);
+    pushData(0xD5);
+    pushData(0xAA);
+    pushData(0xAD);
 
     // 6-and-2 encode the sector data
     auto encoded = GCR::encode6and2(data);
-    nt.nibbles.insert(nt.nibbles.end(), encoded.begin(), encoded.end());
+    for (auto byte : encoded) {
+      pushData(byte);
+    }
 
     // Epilogue
-    nt.nibbles.push_back(0xDE);
-    nt.nibbles.push_back(0xAA);
-    nt.nibbles.push_back(0xEB);
+    pushData(0xDE);
+    pushData(0xAA);
+    pushData(0xEB);
 
     // Gap 3 end: 1 byte
-    nt.nibbles.push_back(0xFF);
+    pushSync();
   }
 
   // Pad or truncate to standard track size
   while (nt.nibbles.size() < NIBBLES_PER_TRACK) {
-    nt.nibbles.push_back(0xFF);
+    pushSync();
   }
   if (nt.nibbles.size() > NIBBLES_PER_TRACK) {
     nt.nibbles.resize(NIBBLES_PER_TRACK);
+    nt.is_sync.resize(NIBBLES_PER_TRACK);
   }
 
   nt.valid = true;
   nt.dirty = false;
+
+  // Invalidate corresponding bit track (will be regenerated on demand)
+  bit_tracks_[track].valid = false;
+  bit_tracks_[track].dirty = false;
+  bit_tracks_[track].bits.clear();
+  bit_tracks_[track].bit_count = 0;
 }
 
 uint8_t DskDiskImage::decode4and4(uint8_t odd, uint8_t even) {
@@ -572,13 +602,172 @@ void DskDiskImage::writeNibble(uint8_t nibble) {
   nibble_position_ = (nibble_position_ + 1) % nt.nibbles.size();
 }
 
+// ===== Bit-Level Access (for LSS) =====
+
+void DskDiskImage::ensureTrackBitified() {
+  int track = quarter_track_ / 4;
+  if (track < 0 || track >= TRACKS) return;
+
+  auto &bt = bit_tracks_[track];
+  if (bt.valid) return;
+
+  // Ensure nibble track is ready first
+  ensureTrackNibblized();
+
+  const auto &nt = nibble_tracks_[track];
+  if (!nt.valid || nt.nibbles.empty()) return;
+
+  // Calculate total bit count: sync bytes = 10 bits, data bytes = 8 bits
+  uint32_t total_bits = 0;
+  bool have_sync_flags = (nt.is_sync.size() == nt.nibbles.size());
+  for (size_t i = 0; i < nt.nibbles.size(); i++) {
+    total_bits += (have_sync_flags && nt.is_sync[i]) ? 10 : 8;
+  }
+
+  bt.bit_count = total_bits;
+  size_t byte_count = (total_bits + 7) / 8;
+  bt.bits.assign(byte_count, 0);
+
+  // Helper: set a bit in the packed array
+  auto setBit = [&](uint32_t bit_idx) {
+    uint32_t byte_off = bit_idx / 8;
+    uint8_t bit_off = 7 - (bit_idx % 8);
+    bt.bits[byte_off] |= (1 << bit_off);
+  };
+
+  // Convert nibbles to packed bit stream
+  uint32_t bit_pos = 0;
+  for (size_t i = 0; i < nt.nibbles.size(); i++) {
+    uint8_t nibble = nt.nibbles[i];
+    // Write 8 data bits MSB first
+    for (int b = 7; b >= 0; b--) {
+      if (nibble & (1 << b)) {
+        setBit(bit_pos);
+      }
+      bit_pos++;
+    }
+    // Sync bytes get 2 extra zero bits (already 0 in the cleared array)
+    if (have_sync_flags && nt.is_sync[i]) {
+      bit_pos += 2;
+    }
+  }
+
+  bt.dirty = false;
+  bt.valid = true;
+}
+
+void DskDiskImage::bitTrackToNibbleTrack(int track) {
+  if (track < 0 || track >= TRACKS) return;
+
+  auto &bt = bit_tracks_[track];
+  if (!bt.valid || !bt.dirty) return;
+
+  auto &nt = nibble_tracks_[track];
+  bool have_sync_flags = (nt.is_sync.size() == nt.nibbles.size());
+
+  // Read nibbles back from bit stream, respecting sync byte widths
+  uint32_t bit_pos = 0;
+  size_t nibble_count = nt.nibbles.size();
+  if (nibble_count == 0) {
+    // Fallback: estimate nibble count from bit count
+    nibble_count = bt.bit_count / 8;
+    nt.nibbles.resize(nibble_count);
+    nt.is_sync.assign(nibble_count, false);
+    have_sync_flags = true;
+  }
+
+  auto getBit = [&](uint32_t idx) -> uint8_t {
+    if (idx >= bt.bit_count) return 0;
+    uint32_t byte_off = idx / 8;
+    uint8_t bit_off = 7 - (idx % 8);
+    return (byte_off < bt.bits.size() && (bt.bits[byte_off] & (1 << bit_off))) ? 1 : 0;
+  };
+
+  for (size_t i = 0; i < nibble_count && bit_pos < bt.bit_count; i++) {
+    uint8_t nibble = 0;
+    for (int b = 7; b >= 0; b--) {
+      if (getBit(bit_pos)) {
+        nibble |= (1 << b);
+      }
+      bit_pos++;
+    }
+    nt.nibbles[i] = nibble;
+    // Skip the 2 extra zero bits for sync bytes
+    if (have_sync_flags && i < nt.is_sync.size() && nt.is_sync[i]) {
+      bit_pos += 2;
+    }
+  }
+
+  nt.valid = true;
+  nt.dirty = true;  // Mark nibble track dirty so denibblizeTrack() will process it
+  bt.dirty = false;
+}
+
+uint8_t DskDiskImage::readBit() {
+  if (!loaded_) return 0;
+
+  int track = quarter_track_ / 4;
+  if (track < 0 || track >= TRACKS) return 0;
+
+  ensureTrackBitified();
+
+  const auto &bt = bit_tracks_[track];
+  if (!bt.valid || bt.bit_count == 0) return 0;
+
+  uint32_t pos = bit_position_ % bt.bit_count;
+  uint32_t byte_off = pos / 8;
+  uint8_t bit_off = 7 - (pos % 8);
+
+  uint8_t bit = 0;
+  if (byte_off < bt.bits.size()) {
+    bit = (bt.bits[byte_off] >> bit_off) & 1;
+  }
+
+  bit_position_ = (bit_position_ + 1) % bt.bit_count;
+  return bit;
+}
+
+void DskDiskImage::writeBit(uint8_t bit) {
+  if (!loaded_ || write_protected_) return;
+
+  int track = quarter_track_ / 4;
+  if (track < 0 || track >= TRACKS) return;
+
+  ensureTrackBitified();
+
+  auto &bt = bit_tracks_[track];
+  if (!bt.valid || bt.bit_count == 0) return;
+
+  uint32_t pos = bit_position_ % bt.bit_count;
+  uint32_t byte_off = pos / 8;
+  uint8_t bit_off = 7 - (pos % 8);
+
+  if (byte_off < bt.bits.size()) {
+    bt.bits[byte_off] &= ~(1 << bit_off);
+    if (bit) {
+      bt.bits[byte_off] |= (1 << bit_off);
+    }
+  }
+
+  bt.dirty = true;
+  modified_ = true;
+  bit_position_ = (bit_position_ + 1) % bt.bit_count;
+}
+
 const uint8_t *DskDiskImage::getSectorData(size_t *size) const {
   if (!loaded_) {
     *size = 0;
     return nullptr;
   }
 
-  // First denibblize any dirty tracks
+  // First flush any dirty bit tracks back to nibble tracks
+  for (int t = 0; t < TRACKS; t++) {
+    if (bit_tracks_[t].dirty) {
+      const_cast<DskDiskImage *>(this)->bitTrackToNibbleTrack(t);
+    }
+  }
+
+  // Then denibblize any dirty nibble tracks
   for (int t = 0; t < TRACKS; t++) {
     if (nibble_tracks_[t].dirty) {
       const_cast<DskDiskImage *>(this)->denibblizeTrack(t);

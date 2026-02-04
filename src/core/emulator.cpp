@@ -991,7 +991,7 @@ bool Emulator::isSlotEmpty(uint8_t slot) const {
 // ============================================================================
 
 // State format version - increment when format changes
-static constexpr uint32_t STATE_VERSION = 5;  // Added expansion card states
+static constexpr uint32_t STATE_VERSION = 7;  // LSS 8-phase clock
 static constexpr uint32_t STATE_MAGIC = 0x53324541; // "A2ES" in little-endian
 
 // Helper to write little-endian values
@@ -1125,6 +1125,9 @@ const uint8_t *Emulator::exportState(size_t *size) {
   stateBuffer_.push_back(disk.getQ7() ? 1 : 0);
   stateBuffer_.push_back(disk.getPhaseStates());
   stateBuffer_.push_back(disk.getDataLatch());
+  stateBuffer_.push_back(disk.getSequencerState());
+  stateBuffer_.push_back(disk.getBusData());
+  stateBuffer_.push_back(disk.getLSSClock());
 
   // Per-drive state (track positions, disk image data, and filenames)
   for (int drive = 0; drive < 2; drive++) {
@@ -1370,13 +1373,16 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
   offset += 4;
 
   // Disk controller state
-  if (offset + 6 > size) return false;
+  if (offset + 9 > size) return false;
   bool motorOn = data[offset++] != 0;
   int selectedDrive = data[offset++];
   bool q6 = data[offset++] != 0;
   bool q7 = data[offset++] != 0;
   uint8_t phaseStates = data[offset++];
   uint8_t dataLatch = data[offset++];
+  uint8_t seqState = data[offset++];
+  uint8_t busDataVal = data[offset++];
+  uint8_t lssClockVal = data[offset++];
 
   // Restore disk controller state (including motor for mid-load restores)
   if (disk_) {
@@ -1386,6 +1392,9 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
     disk_->setQ7(q7);
     disk_->setPhaseStates(phaseStates);
     disk_->setDataLatch(dataLatch);
+    disk_->setSequencerState(seqState);
+    disk_->setBusData(busDataVal);
+    disk_->setLSSClock(lssClockVal);
   }
 
   // Per-drive state (disk images and track positions)

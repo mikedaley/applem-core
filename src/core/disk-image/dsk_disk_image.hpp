@@ -69,6 +69,10 @@ public:
   // ===== Write Operations =====
   void writeNibble(uint8_t nibble) override;
 
+  // ===== Bit-Level Access (for LSS) =====
+  uint8_t readBit() override;
+  void writeBit(uint8_t bit) override;
+
   // ===== Status =====
   bool isWriteProtected() const override { return write_protected_; }
   bool isModified() const override { return modified_; }
@@ -79,7 +83,7 @@ public:
   // ===== Debug Methods =====
   uint8_t getNibbleAt(int track, int position) const override;
   int getTrackNibbleCount(int track) const override;
-  size_t getCurrentNibblePosition() const override { return nibble_position_; }
+  size_t getCurrentNibblePosition() const override { return bit_position_ / 8; }
 
   // ===== DSK-specific =====
 
@@ -105,6 +109,7 @@ private:
   // Nibblized track cache
   struct NibbleTrack {
     std::vector<uint8_t> nibbles;
+    std::vector<bool> is_sync;  // true = 10-bit self-sync byte
     bool dirty = false; // Track has been modified
     bool valid = false; // Track has been nibblized
   };
@@ -124,6 +129,16 @@ private:
 
   // Nibble position within current track
   size_t nibble_position_ = 0;
+
+  // Bit stream cache (parallel to nibble cache, for LSS bit-level access)
+  struct BitTrack {
+    std::vector<uint8_t> bits;   // Packed bit data, MSB first (same as WOZ)
+    uint32_t bit_count = 0;
+    bool dirty = false;
+    bool valid = false;
+  };
+  std::array<BitTrack, TRACKS> bit_tracks_{};
+  uint32_t bit_position_ = 0;
 
   // Cycle count for disk rotation timing
   uint64_t last_cycle_count_ = 0;
@@ -161,6 +176,16 @@ private:
    * Ensure the current track is nibblized
    */
   void ensureTrackNibblized();
+
+  /**
+   * Ensure the current track has a valid bit stream cache
+   */
+  void ensureTrackBitified();
+
+  /**
+   * Convert a dirty bit track back to nibbles for denibblization
+   */
+  void bitTrackToNibbleTrack(int track);
 
   /**
    * Decode a 4-and-4 encoded byte pair
