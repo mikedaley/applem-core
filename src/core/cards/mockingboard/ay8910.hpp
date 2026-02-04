@@ -129,8 +129,10 @@ private:
 
     // DC offset removal state (high-pass filter)
     // Removes DC bias from unipolar PSG output
+    // Slow time constant (~200ms) avoids tracking noise-rate level fluctuations
+    // that cause perceived pitch instability when noise gates a tone channel
     float dcState_ = 0.0f;
-    static constexpr float DC_ALPHA = 0.995f;
+    static constexpr float DC_ALPHA = 0.9999f;
 
     // Volume table (4-bit to amplitude)
     static const float volumeTable_[16];
@@ -162,6 +164,8 @@ private:
     void updateEnvelopeGenerator();
     void handleEnvelopeCycleEnd();
     float getChannelOutput(int channel) const;
+    // Compute raw mixer output (sum of all unmuted channels, normalized)
+    float computeMixerOutput() const;
 };
 
 } // namespace a2e

@@ -304,6 +304,28 @@ bool AY8910::isChannelMuted(int channel) const {
     return false;
 }
 
+float AY8910::computeMixerOutput() const {
+    uint8_t mixer = registers_[REG_MIXER];
+    float sample = 0.0f;
+    for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+        if (channelMuted_[ch]) continue;
+
+        uint8_t ampReg = registers_[REG_AMP_A + ch];
+        uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
+        if (volume == 0) continue;
+
+        float level = volumeTable_[volume];
+
+        bool toneDisable = (mixer & (1 << ch)) != 0;
+        bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
+        bool toneOut = toneOutput_[ch] || toneDisable;
+        bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
+
+        sample += (toneOut && noiseOut) ? level : 0.0f;
+    }
+    return sample / 3.0f;
+}
+
 void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
     // Legacy version - apply any pending writes immediately and generate
     for (const auto& write : pendingWrites_) {
@@ -322,7 +344,10 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
     for (int i = 0; i < count; i++) {
         phaseAccumulator_ += toneStepsPerSample;
 
-        // Advance PSG state
+        // Advance PSG state and average output across all ticks
+        // This properly captures noise-tone gate interactions at clock resolution
+        float sampleAccum = 0.0f;
+        int ticks = 0;
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
@@ -330,28 +355,11 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
             }
             updateNoiseGenerator();
             updateEnvelopeGenerator();
+            sampleAccum += computeMixerOutput();
+            ticks++;
         }
 
-        // Unipolar output matching MAME/real hardware: 0 or +level
-        uint8_t mixer = registers_[REG_MIXER];
-        float sample = 0.0f;
-        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-            if (channelMuted_[ch]) continue;
-
-            uint8_t ampReg = registers_[REG_AMP_A + ch];
-            uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
-            if (volume == 0) continue;
-
-            float level = volumeTable_[volume];
-
-            bool toneDisable = (mixer & (1 << ch)) != 0;
-            bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
-            bool toneOut = toneOutput_[ch] || toneDisable;
-            bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
-
-            sample += (toneOut && noiseOut) ? level : 0.0f;
-        }
-        sample /= 3.0f;
+        float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
 
         // LPF
         lpfState_ += alpha * (sample - lpfState_);
@@ -388,9 +396,11 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             writeIdx++;
         }
 
-        // Advance PSG state
+        // Advance PSG state and average output across all ticks
         phaseAccumulator_ += toneStepsPerSample;
 
+        float sampleAccum = 0.0f;
+        int ticks = 0;
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
             for (int ch = 0; ch < NUM_CHANNELS; ch++) {
@@ -398,28 +408,11 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
             }
             updateNoiseGenerator();
             updateEnvelopeGenerator();
+            sampleAccum += computeMixerOutput();
+            ticks++;
         }
 
-        // Unipolar output matching MAME/real hardware
-        uint8_t mixer = registers_[REG_MIXER];
-        float sample = 0.0f;
-        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-            if (channelMuted_[ch]) continue;
-
-            uint8_t ampReg = registers_[REG_AMP_A + ch];
-            uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
-            if (volume == 0) continue;
-
-            float level = volumeTable_[volume];
-
-            bool toneDisable = (mixer & (1 << ch)) != 0;
-            bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
-            bool toneOut = toneOutput_[ch] || toneDisable;
-            bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
-
-            sample += (toneOut && noiseOut) ? level : 0.0f;
-        }
-        sample /= 3.0f;
+        float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
 
         // LPF
         lpfState_ += alpha * (sample - lpfState_);
@@ -447,8 +440,13 @@ float AY8910::generateSingleSample() {
     static constexpr float ALPHA = (2.0f * 3.14159265f * 4000.0f) /
                                    (48000.0f + 2.0f * 3.14159265f * 4000.0f);
 
-    // Advance PSG state
+    // Advance PSG state and average output across all ticks
+    // Evaluating the mixer at each tick captures noise-tone gate interactions
+    // at the PSG clock resolution, preventing aliased modulation artifacts
     phaseAccumulator_ += TONE_STEPS;
+
+    float sampleAccum = 0.0f;
+    int ticks = 0;
     while (phaseAccumulator_ >= 1.0) {
         phaseAccumulator_ -= 1.0;
         for (int ch = 0; ch < NUM_CHANNELS; ch++) {
@@ -456,28 +454,11 @@ float AY8910::generateSingleSample() {
         }
         updateNoiseGenerator();
         updateEnvelopeGenerator();
+        sampleAccum += computeMixerOutput();
+        ticks++;
     }
 
-    // Unipolar output matching MAME/real hardware: 0 or +level
-    uint8_t mixer = registers_[REG_MIXER];
-    float sample = 0.0f;
-    for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-        if (channelMuted_[ch]) continue;
-
-        uint8_t ampReg = registers_[REG_AMP_A + ch];
-        uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
-        if (volume == 0) continue;
-
-        float level = volumeTable_[volume];
-
-        bool toneDisable = (mixer & (1 << ch)) != 0;
-        bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
-        bool toneOut = toneOutput_[ch] || toneDisable;
-        bool noiseOut = ((noiseShiftReg_ & 1) != 0) || noiseDisable;
-
-        sample += (toneOut && noiseOut) ? level : 0.0f;
-    }
-    sample /= 3.0f;
+    float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
 
     // LPF
     lpfState_ += ALPHA * (sample - lpfState_);
