@@ -66,16 +66,17 @@ private:
   uint64_t lastSampleCycle_ = 0;
 
   // Simple low-pass filter state
+  // Alpha ~0.15 gives cutoff ~7.8kHz at 48kHz, preserving speaker harmonics
   float filterState_ = 0.0f;
-  static constexpr float FILTER_ALPHA = 0.4f;
+  static constexpr float FILTER_ALPHA = 0.15f;
 
   // Volume
   float volume_ = 0.5f;
   bool muted_ = false;
 
-  // DC offset removal
+  // DC offset removal - matches real hardware AC coupling time constant (~200ms)
   float dcOffset_ = 0.0f;
-  static constexpr float DC_ALPHA = 0.995f;
+  static constexpr float DC_ALPHA = 0.9999f;
 
   // Mockingboard
   MockingboardCard* mockingboard_ = nullptr;

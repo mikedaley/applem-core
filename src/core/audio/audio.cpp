@@ -34,15 +34,7 @@ void Audio::toggleSpeaker(uint64_t cycleCount) {
 
 int Audio::generateSamples(float *buffer, int sampleCount,
                            uint64_t currentCycle) {
-  if (muted_ || sampleCount <= 0) {
-    // Fill with silence
-    for (int i = 0; i < sampleCount; i++) {
-      buffer[i] = 0.0f;
-    }
-    // Clear toggle events
-    toggleCycles_.clear();
-    toggleReadIndex_ = 0;
-    lastSampleCycle_ = currentCycle;
+  if (sampleCount <= 0) {
     return sampleCount;
   }
 
@@ -122,9 +114,8 @@ int Audio::generateSamples(float *buffer, int sampleCount,
     dcOffset_ = DC_ALPHA * dcOffset_ + (1.0f - DC_ALPHA) * filterState_;
     float dcCorrected = filterState_ - dcOffset_;
 
-    // Apply volume and clamp
-    float sample = dcCorrected * volume_;
-    sample = std::max(-1.0f, std::min(1.0f, sample));
+    // Clamp to valid range
+    float sample = std::max(-1.0f, std::min(1.0f, dcCorrected));
 
     buffer[i] = sample;
   }
@@ -138,16 +129,27 @@ int Audio::generateSamples(float *buffer, int sampleCount,
 
   lastSampleCycle_ = currentCycle;
 
+  // When muted, zero the output but keep speaker state tracking intact
+  if (muted_) {
+    for (int i = 0; i < sampleCount; i++) {
+      buffer[i] = 0.0f;
+    }
+    // Still consume Mockingboard samples to keep them in sync
+    if (mockingboard_) {
+      std::vector<float> mbDiscard(sampleCount);
+      mockingboard_->consumeMonoSamples(mbDiscard.data(), sampleCount);
+    }
+    return sampleCount;
+  }
+
   // Mix in Mockingboard audio if present
   if (mockingboard_) {
     std::vector<float> mbBuffer(sampleCount);
     // Use incrementally generated samples (produced during CPU execution)
     mockingboard_->consumeMonoSamples(mbBuffer.data(), sampleCount);
     for (int i = 0; i < sampleCount; i++) {
-      // Mix speaker and Mockingboard
-      float mbSample = mbBuffer[i] * volume_;
       // Additive mix - speaker clicks are transient, MB is sustained
-      buffer[i] = buffer[i] + mbSample;
+      buffer[i] = buffer[i] + mbBuffer[i];
       // Clamp to valid range
       buffer[i] = std::max(-1.0f, std::min(1.0f, buffer[i]));
     }
@@ -158,14 +160,7 @@ int Audio::generateSamples(float *buffer, int sampleCount,
 
 int Audio::generateStereoSamples(float *buffer, int sampleCount,
                                   uint64_t currentCycle) {
-  if (muted_ || sampleCount <= 0) {
-    // Fill with silence (interleaved stereo)
-    for (int i = 0; i < sampleCount * 2; i++) {
-      buffer[i] = 0.0f;
-    }
-    toggleCycles_.clear();
-    toggleReadIndex_ = 0;
-    lastSampleCycle_ = currentCycle;
+  if (sampleCount <= 0) {
     return sampleCount;
   }
 
@@ -233,8 +228,7 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
     filterState_ = filterState_ + FILTER_ALPHA * (rawValue - filterState_);
     dcOffset_ = DC_ALPHA * dcOffset_ + (1.0f - DC_ALPHA) * filterState_;
     float dcCorrected = filterState_ - dcOffset_;
-    float sample = dcCorrected * volume_;
-    sample = std::max(-1.0f, std::min(1.0f, sample));
+    float sample = std::max(-1.0f, std::min(1.0f, dcCorrected));
 
     speakerBuffer[i] = sample;
   }
@@ -247,6 +241,19 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
 
   lastSampleCycle_ = currentCycle;
 
+  // When muted, zero the output but keep speaker state tracking intact
+  if (muted_) {
+    for (int i = 0; i < sampleCount * 2; i++) {
+      buffer[i] = 0.0f;
+    }
+    // Still consume Mockingboard samples to keep them in sync
+    if (mockingboard_) {
+      std::vector<float> mbDiscard(sampleCount * 2);
+      mockingboard_->consumeStereoSamples(mbDiscard.data(), sampleCount);
+    }
+    return sampleCount;
+  }
+
   // Get stereo Mockingboard samples (incrementally generated during CPU execution)
   std::vector<float> mbBuffer(sampleCount * 2, 0.0f);
   if (mockingboard_) {
@@ -258,8 +265,8 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
     float speakerSample = speakerBuffer[i];
 
     // Mockingboard: PSG1 left, PSG2 right (already properly normalized)
-    float mbLeft = mbBuffer[i * 2] * volume_;
-    float mbRight = mbBuffer[i * 2 + 1] * volume_;
+    float mbLeft = mbBuffer[i * 2];
+    float mbRight = mbBuffer[i * 2 + 1];
 
     // Mix: speaker goes to both channels
     float left = speakerSample + mbLeft;
