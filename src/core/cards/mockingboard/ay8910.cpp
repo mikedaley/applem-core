@@ -72,8 +72,6 @@ void AY8910::reset() {
     envHold_ = false;
 
     phaseAccumulator_ = 0.0;
-    lpfState_ = 0.0f;
-    dcState_ = 0.0f;
 
     // Clear any pending register writes
     pendingWrites_.clear();
@@ -337,10 +335,6 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
     double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
     double toneStepsPerSample = cyclesPerSample / 8.0;
 
-    // Low-pass filter coefficient: α = 2πfc / (sr + 2πfc)
-    float omega = 2.0f * 3.14159265f * LPF_CUTOFF_HZ;
-    float alpha = omega / (static_cast<float>(sampleRate) + omega);
-
     for (int i = 0; i < count; i++) {
         phaseAccumulator_ += toneStepsPerSample;
 
@@ -361,12 +355,7 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
 
         float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
 
-        // LPF
-        lpfState_ += alpha * (sample - lpfState_);
-
-        // DC offset removal (high-pass filter to remove unipolar DC bias)
-        dcState_ = DC_ALPHA * dcState_ + (1.0f - DC_ALPHA) * lpfState_;
-        buffer[i] = lpfState_ - dcState_;
+        buffer[i] = sample;
     }
 }
 
@@ -374,10 +363,6 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
     // PSG clock cycles per audio sample
     double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
     double toneStepsPerSample = cyclesPerSample / 8.0;
-
-    // Low-pass filter coefficient
-    float omega = 2.0f * 3.14159265f * LPF_CUTOFF_HZ;
-    float alpha = omega / (static_cast<float>(sampleRate) + omega);
 
     // Calculate CPU cycles per sample for timing
     double cpuCyclesTotal = static_cast<double>(endCycle - startCycle);
@@ -414,12 +399,7 @@ void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t 
 
         float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
 
-        // LPF
-        lpfState_ += alpha * (sample - lpfState_);
-
-        // DC offset removal
-        dcState_ = DC_ALPHA * dcState_ + (1.0f - DC_ALPHA) * lpfState_;
-        buffer[i] = lpfState_ - dcState_;
+        buffer[i] = sample;
     }
 
     // Apply any remaining writes (for the end of the buffer)
@@ -436,9 +416,6 @@ float AY8910::generateSingleSample() {
     // Precomputed constants for 48kHz sample rate
     // toneStepsPerSample = PSG_CLOCK / (48000 * 8) = 1023000 / 384000 ≈ 2.6640625
     static constexpr double TONE_STEPS = 1023000.0 / (48000.0 * 8.0);
-    // LPF alpha: ω = 2πf, α = ω/(sr+ω) where f=4000, sr=48000
-    static constexpr float ALPHA = (2.0f * 3.14159265f * 4000.0f) /
-                                   (48000.0f + 2.0f * 3.14159265f * 4000.0f);
 
     // Advance PSG state and average output across all ticks
     // Evaluating the mixer at each tick captures noise-tone gate interactions
@@ -458,14 +435,7 @@ float AY8910::generateSingleSample() {
         ticks++;
     }
 
-    float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
-
-    // LPF
-    lpfState_ += ALPHA * (sample - lpfState_);
-
-    // DC offset removal (high-pass filter to remove unipolar DC bias)
-    dcState_ = DC_ALPHA * dcState_ + (1.0f - DC_ALPHA) * lpfState_;
-    return lpfState_ - dcState_;
+    return (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
 }
 
 void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, int channel) {
@@ -579,9 +549,6 @@ void AY8910::importState(const uint8_t* buffer) {
 
     // Clear any pending register writes from before state import
     pendingWrites_.clear();
-
-    // Reset filter states for clean audio restart
-    dcState_ = 0.0f;
 
     // 16 registers
     for (int i = 0; i < 16; i++) {

@@ -293,20 +293,6 @@ void Emulator::setSpeedMultiplier(int multiplier) {
   speedMultiplier_ = multiplier;
 }
 
-int Emulator::generateAudioSamples(float *buffer, int sampleCount) {
-  // Calculate cycles needed for this audio buffer, scaled by speed multiplier
-  int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE * speedMultiplier_);
-
-  // Run emulation for the required cycles
-  runCycles(cyclesToRun);
-
-  // Track samples for frame synchronization
-  samplesGenerated_ += sampleCount;
-
-  // Generate audio samples
-  return audio_->generateSamples(buffer, sampleCount, cpu_->getTotalCycles());
-}
-
 int Emulator::generateStereoAudioSamples(float *buffer, int sampleCount) {
   // Calculate cycles needed for this audio buffer, scaled by speed multiplier
   int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE * speedMultiplier_);

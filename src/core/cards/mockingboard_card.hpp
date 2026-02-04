@@ -86,16 +86,6 @@ public:
     // ===== Audio Generation =====
 
     /**
-     * Generate mono audio samples (legacy, no timing)
-     */
-    void generateSamples(float* buffer, int count, int sampleRate);
-
-    /**
-     * Generate mono audio samples with proper timing
-     */
-    void generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle);
-
-    /**
      * Generate stereo audio samples (legacy, no timing)
      */
     void generateStereoSamples(float* buffer, int count, int sampleRate);
@@ -111,12 +101,6 @@ public:
      * If fewer samples available than requested, generates remaining on the spot.
      */
     int consumeStereoSamples(float* buffer, int frameCount);
-
-    /**
-     * Consume accumulated mono samples (mixed from stereo).
-     * Returns actual number of samples consumed.
-     */
-    int consumeMonoSamples(float* buffer, int sampleCount);
 
     /**
      * Enable/disable debug logging
@@ -150,6 +134,19 @@ private:
     // Preallocated audio buffers to avoid heap allocations in audio hot path
     mutable std::vector<float> audioBuffer1_;
     mutable std::vector<float> audioBuffer2_;
+
+    // Phase coherence: when both PSGs have identical sound registers (0-13),
+    // use PSG1's output for both channels. This eliminates phase cancellation
+    // caused by independent tone counters producing anti-phase waveforms
+    // when Mockingboard music mirrors content to both PSGs.
+    bool arePsgsIdentical() const;
+
+    // Per-channel DC offset removal (high-pass filter)
+    // Converts unipolar PSG output to bipolar for audio playback.
+    // Slow time constant (~200ms at 48kHz) avoids tracking musical content.
+    static constexpr float DC_ALPHA = 0.9999f;
+    float dcStateL_ = 0.0f;
+    float dcStateR_ = 0.0f;
 
     // Incremental audio generation state
     // CPU cycles per audio sample at 48kHz: 1,023,000 / 48,000 ≈ 21.3125

@@ -122,18 +122,6 @@ private:
     // Fractional accumulator for sample rate conversion
     double phaseAccumulator_ = 0.0;
 
-    // Single-pole low-pass filter to emulate analog output roll-off
-    // Cutoff ~4kHz — tames square wave harmonics for a warmer/bassier sound
-    static constexpr float LPF_CUTOFF_HZ = 4000.0f;
-    float lpfState_ = 0.0f;
-
-    // DC offset removal state (high-pass filter)
-    // Removes DC bias from unipolar PSG output
-    // Slow time constant (~200ms) avoids tracking noise-rate level fluctuations
-    // that cause perceived pitch instability when noise gates a tone channel
-    float dcState_ = 0.0f;
-    static constexpr float DC_ALPHA = 0.9999f;
-
     // Volume table (4-bit to amplitude)
     static const float volumeTable_[16];
 

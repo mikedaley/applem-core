@@ -89,6 +89,16 @@ void MockingboardCard::reset() {
     cycleAccum_ = 0.0;
     sampleAccum_.clear();
     sampleReadPos_ = 0;
+    dcStateL_ = 0.0f;
+    dcStateR_ = 0.0f;
+}
+
+bool MockingboardCard::arePsgsIdentical() const {
+    // Compare sound registers 0-13 (skip I/O ports 14-15)
+    for (int i = 0; i < 14; i++) {
+        if (psg1_.getRegister(i) != psg2_.getRegister(i)) return false;
+    }
+    return true;
 }
 
 void MockingboardCard::update(int cycles) {
@@ -106,6 +116,13 @@ void MockingboardCard::update(int cycles) {
 
         float left = psg1_.generateSingleSample();
         float right = psg2_.generateSingleSample();
+
+        // When both PSGs are programmed identically, use PSG1's output
+        // for both channels to eliminate phase cancellation from
+        // independent tone counters
+        if (arePsgsIdentical()) {
+            right = left;
+        }
 
         sampleAccum_.push_back(left);
         sampleAccum_.push_back(right);
@@ -165,48 +182,11 @@ size_t MockingboardCard::deserialize(const uint8_t* buffer, size_t size) {
     psg2_.importState(buffer + offset);
     offset += AY8910::STATE_SIZE;
 
+    // Reset DC filter state for clean audio restart
+    dcStateL_ = 0.0f;
+    dcStateR_ = 0.0f;
+
     return offset;
-}
-
-void MockingboardCard::generateSamples(float* buffer, int count, int sampleRate) {
-    if (!enabled_ || count <= 0) {
-        for (int i = 0; i < count; i++) {
-            buffer[i] = 0.0f;
-        }
-        return;
-    }
-
-    if (static_cast<int>(audioBuffer1_.size()) < count) {
-        audioBuffer1_.resize(count);
-    }
-
-    psg1_.generateSamples(buffer, count, sampleRate);
-    psg2_.generateSamples(audioBuffer1_.data(), count, sampleRate);
-
-    for (int i = 0; i < count; i++) {
-        buffer[i] = (buffer[i] + audioBuffer1_[i]) * 0.5f;
-    }
-}
-
-void MockingboardCard::generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle) {
-    if (!enabled_ || count <= 0) {
-        for (int i = 0; i < count; i++) {
-            buffer[i] = 0.0f;
-        }
-        return;
-    }
-
-    if (static_cast<int>(audioBuffer1_.size()) < count) {
-        audioBuffer1_.resize(count);
-    }
-
-    // Generate with proper timing
-    psg1_.generateSamples(buffer, count, sampleRate, startCycle, endCycle);
-    psg2_.generateSamples(audioBuffer1_.data(), count, sampleRate, startCycle, endCycle);
-
-    for (int i = 0; i < count; i++) {
-        buffer[i] = (buffer[i] + audioBuffer1_[i]) * 0.5f;
-    }
 }
 
 void MockingboardCard::generateStereoSamples(float* buffer, int count, int sampleRate) {
@@ -227,9 +207,16 @@ void MockingboardCard::generateStereoSamples(float* buffer, int count, int sampl
     psg1_.generateSamples(audioBuffer1_.data(), count, sampleRate);
     psg2_.generateSamples(audioBuffer2_.data(), count, sampleRate);
 
+    bool identical = arePsgsIdentical();
     for (int i = 0; i < count; i++) {
-        buffer[i * 2] = audioBuffer1_[i];
-        buffer[i * 2 + 1] = audioBuffer2_[i];
+        float left  = audioBuffer1_[i];
+        float right = identical ? left : audioBuffer2_[i];
+
+        // DC offset removal
+        dcStateL_ = DC_ALPHA * dcStateL_ + (1.0f - DC_ALPHA) * left;
+        dcStateR_ = DC_ALPHA * dcStateR_ + (1.0f - DC_ALPHA) * right;
+        buffer[i * 2]     = left - dcStateL_;
+        buffer[i * 2 + 1] = right - dcStateR_;
     }
 }
 
@@ -252,9 +239,16 @@ void MockingboardCard::generateStereoSamples(float* buffer, int count, int sampl
     psg1_.generateSamples(audioBuffer1_.data(), count, sampleRate, startCycle, endCycle);
     psg2_.generateSamples(audioBuffer2_.data(), count, sampleRate, startCycle, endCycle);
 
+    bool identical = arePsgsIdentical();
     for (int i = 0; i < count; i++) {
-        buffer[i * 2] = audioBuffer1_[i];
-        buffer[i * 2 + 1] = audioBuffer2_[i];
+        float left  = audioBuffer1_[i];
+        float right = identical ? left : audioBuffer2_[i];
+
+        // DC offset removal
+        dcStateL_ = DC_ALPHA * dcStateL_ + (1.0f - DC_ALPHA) * left;
+        dcStateR_ = DC_ALPHA * dcStateR_ + (1.0f - DC_ALPHA) * right;
+        buffer[i * 2]     = left - dcStateL_;
+        buffer[i * 2 + 1] = right - dcStateR_;
     }
 }
 
@@ -278,9 +272,27 @@ int MockingboardCard::consumeStereoSamples(float* buffer, int frameCount) {
 
     // If we need more samples than accumulated, generate the remainder on the spot
     // (handles slight timing drift between CPU execution and audio requests)
-    for (int i = framesToCopy; i < frameCount; i++) {
-        buffer[i * 2] = psg1_.generateSingleSample();
-        buffer[i * 2 + 1] = psg2_.generateSingleSample();
+    if (framesToCopy < frameCount) {
+        bool identical = arePsgsIdentical();
+        for (int i = framesToCopy; i < frameCount; i++) {
+            float left = psg1_.generateSingleSample();
+            float right = identical ? left : psg2_.generateSingleSample();
+            buffer[i * 2] = left;
+            buffer[i * 2 + 1] = right;
+        }
+    }
+
+    // DC offset removal converts unipolar PSG output to bipolar for audio playback.
+    // Identity check was already applied during accumulation in update() and
+    // in the overflow path above.
+    for (int i = 0; i < frameCount; i++) {
+        float left  = buffer[i * 2];
+        float right = buffer[i * 2 + 1];
+
+        dcStateL_ = DC_ALPHA * dcStateL_ + (1.0f - DC_ALPHA) * left;
+        dcStateR_ = DC_ALPHA * dcStateR_ + (1.0f - DC_ALPHA) * right;
+        buffer[i * 2]     = left - dcStateL_;
+        buffer[i * 2 + 1] = right - dcStateR_;
     }
 
     // Compact the buffer: remove consumed samples
@@ -295,45 +307,6 @@ int MockingboardCard::consumeStereoSamples(float* buffer, int frameCount) {
     }
 
     return frameCount;
-}
-
-int MockingboardCard::consumeMonoSamples(float* buffer, int sampleCount) {
-    if (!enabled_ || sampleCount <= 0) {
-        for (int i = 0; i < sampleCount; i++) {
-            buffer[i] = 0.0f;
-        }
-        return sampleCount;
-    }
-
-    int availableFrames = static_cast<int>((sampleAccum_.size() - sampleReadPos_) / 2);
-    int framesToCopy = std::min(sampleCount, availableFrames);
-
-    // Mix stereo to mono from accumulated samples
-    for (int i = 0; i < framesToCopy; i++) {
-        float left = sampleAccum_[sampleReadPos_++];
-        float right = sampleAccum_[sampleReadPos_++];
-        buffer[i] = (left + right) * 0.5f;
-    }
-
-    // Generate remainder on the spot if needed
-    for (int i = framesToCopy; i < sampleCount; i++) {
-        float left = psg1_.generateSingleSample();
-        float right = psg2_.generateSingleSample();
-        buffer[i] = (left + right) * 0.5f;
-    }
-
-    // Compact
-    if (sampleReadPos_ > 0) {
-        size_t remaining = sampleAccum_.size() - sampleReadPos_;
-        if (remaining > 0) {
-            std::memmove(sampleAccum_.data(), sampleAccum_.data() + sampleReadPos_,
-                         remaining * sizeof(float));
-        }
-        sampleAccum_.resize(remaining);
-        sampleReadPos_ = 0;
-    }
-
-    return sampleCount;
 }
 
 } // namespace a2e
