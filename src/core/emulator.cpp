@@ -163,7 +163,11 @@ void Emulator::setPaused(bool paused) {
   if (!paused && paused_ && breakpointHit_) {
     skipBreakpointOnce_ = true;
   }
+  if (!paused && paused_ && basicBreakpointHit_) {
+    skipBasicBreakpointOnce_ = true;
+  }
   breakpointHit_ = false;
+  basicBreakpointHit_ = false;
   watchpointHit_ = false;
   beamBreakHit_ = false;
   beamBreakHitId_ = -1;
@@ -204,6 +208,38 @@ void Emulator::runCycles(int cycles) {
         }
       }
     }
+
+    // Check BASIC stepping and breakpoints
+    uint8_t runmod = mmu_->peek(0x9D);  // RUNMOD - non-zero when BASIC is running
+    if (runmod != 0) {
+      uint16_t curlin = mmu_->peek(0x75) | (mmu_->peek(0x76) << 8);  // CURLIN
+
+      // BASIC stepping mode - pause when line changes
+      if (basicStepMode_) {
+        if (curlin != basicStepFromLine_ && curlin != 0xFFFF) {
+          basicStepMode_ = false;
+          basicBreakpointHit_ = true;
+          basicBreakLine_ = curlin;
+          paused_ = true;
+          return;
+        }
+      }
+
+      // Check BASIC line breakpoints
+      if (!basicBreakpoints_.empty() && basicBreakpoints_.count(curlin)) {
+        // Skip if we're stepping from this line or if skip flag is set
+        if (basicStepMode_ || skipBasicBreakpointOnce_) {
+          skipBasicBreakpointOnce_ = false;
+        } else {
+          basicBreakpointHit_ = true;
+          basicBreakLine_ = curlin;
+          paused_ = true;
+          return;
+        }
+      }
+    }
+    // Note: Don't cancel step mode when RUNMOD is 0 - it may briefly be 0
+    // between lines. Step mode is only cleared when we actually pause at a new line.
 
     // Record trace before execution
     if (traceEnabled_) recordTrace();
@@ -513,6 +549,37 @@ void Emulator::enableBreakpoint(uint16_t address, bool enabled) {
       disabledBreakpoints_.insert(address);
     }
   }
+}
+
+// ============================================================================
+// BASIC Breakpoints
+// ============================================================================
+
+void Emulator::addBasicBreakpoint(uint16_t lineNumber) {
+  basicBreakpoints_.insert(lineNumber);
+}
+
+void Emulator::removeBasicBreakpoint(uint16_t lineNumber) {
+  basicBreakpoints_.erase(lineNumber);
+}
+
+void Emulator::clearBasicBreakpoints() {
+  basicBreakpoints_.clear();
+  basicBreakpointHit_ = false;
+}
+
+void Emulator::stepBasicLine() {
+  // Get current BASIC line
+  uint16_t curlin = mmu_->peek(0x75) | (mmu_->peek(0x76) << 8);
+
+  // Set up stepping mode - will pause when CURLIN changes
+  basicStepFromLine_ = curlin;
+  basicStepMode_ = true;
+
+  // Clear any hit flags and resume
+  basicBreakpointHit_ = false;
+  paused_ = false;
+  basicBreakLine_ = 0;
 }
 
 // ============================================================================

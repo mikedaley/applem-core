@@ -84,6 +84,18 @@ public:
   bool isBreakpointHit() const { return breakpointHit_; }
   uint16_t getBreakpointAddress() const { return breakpointAddress_; }
 
+  // BASIC line breakpoints
+  void addBasicBreakpoint(uint16_t lineNumber);
+  void removeBasicBreakpoint(uint16_t lineNumber);
+  void clearBasicBreakpoints();
+  bool hasBasicBreakpoints() const { return !basicBreakpoints_.empty(); }
+  bool isBasicBreakpointHit() const { return basicBreakpointHit_; }
+  uint16_t getBasicBreakLine() const { return basicBreakLine_; }
+
+  // BASIC stepping - execute current line and stop at next line
+  void stepBasicLine();
+  bool isBasicStepping() const { return basicStepMode_; }
+
   // Beam position (derived from cycle count)
   int getFrameCycle() const;
   int getBeamScanline() const;
@@ -259,6 +271,16 @@ private:
   uint16_t breakpointAddress_ = 0;
   bool paused_ = false;
   bool skipBreakpointOnce_ = false;
+
+  // BASIC breakpoints
+  std::set<uint16_t> basicBreakpoints_;
+  bool basicBreakpointHit_ = false;
+  uint16_t basicBreakLine_ = 0;
+  bool skipBasicBreakpointOnce_ = false;
+
+  // BASIC stepping - run until CURLIN changes
+  bool basicStepMode_ = false;
+  uint16_t basicStepFromLine_ = 0xFFFF;
 
   // Temp breakpoint for step over / step out
   uint16_t tempBreakpoint_ = 0;

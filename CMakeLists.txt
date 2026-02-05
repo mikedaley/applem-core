@@ -97,6 +97,13 @@ if(EMSCRIPTEN)
                 \"_enableBreakpoint\", \
                 \"_isBreakpointHit\", \
                 \"_getBreakpointAddress\", \
+                \"_addBasicBreakpoint\", \
+                \"_removeBasicBreakpoint\", \
+                \"_clearBasicBreakpoints\", \
+                \"_hasBasicBreakpoints\", \
+                \"_isBasicBreakpointHit\", \
+                \"_getBasicBreakLine\", \
+                \"_stepBasicLine\", \
                 \"_getPC\", \
                 \"_getSP\", \
                 \"_getA\", \
