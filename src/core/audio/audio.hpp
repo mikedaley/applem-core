@@ -70,9 +70,9 @@ private:
   float volume_ = 0.5f;
   bool muted_ = false;
 
-  // DC offset removal - matches real hardware AC coupling time constant (~200ms)
+  // DC offset removal - fast enough to track speaker state changes
   float dcOffset_ = 0.0f;
-  static constexpr float DC_ALPHA = 0.9999f;
+  static constexpr float DC_ALPHA = 0.995f;
 
   // Mockingboard
   MockingboardCard* mockingboard_ = nullptr;
