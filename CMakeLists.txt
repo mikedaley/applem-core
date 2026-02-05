@@ -30,6 +30,7 @@ set(CORE_SOURCES
     src/core/filesystem/dos33.cpp
     src/core/filesystem/prodos.cpp
     src/core/basic/basic_detokenizer.cpp
+    src/core/assembler/assembler.cpp
     src/bindings/wasm_interface.cpp
 )
 
@@ -78,7 +79,6 @@ if(EMSCRIPTEN)
                 \"_reset\", \
                 \"_warmReset\", \
                 \"_runCycles\", \
-                \"_generateAudioSamples\", \
                 \"_consumeFrameSamples\", \
                 \"_getFramebuffer\", \
                 \"_getFramebufferSize\", \
@@ -227,7 +227,18 @@ if(EMSCRIPTEN)
                 \"_getProDOSFileBuffer\", \
                 \"_mapProDOSFileType\", \
                 \"_detokenizeApplesoft\", \
-                \"_detokenizeIntegerBasic\" \
+                \"_detokenizeIntegerBasic\", \
+                \"_assembleSource\", \
+                \"_getAsmOutputSize\", \
+                \"_getAsmOutputBuffer\", \
+                \"_getAsmOrigin\", \
+                \"_getAsmErrorCount\", \
+                \"_getAsmErrorLine\", \
+                \"_getAsmErrorMessage\", \
+                \"_loadAsmIntoMemory\", \
+                \"_getAsmSymbolCount\", \
+                \"_getAsmSymbolName\", \
+                \"_getAsmSymbolValue\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \

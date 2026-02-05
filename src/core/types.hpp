@@ -123,21 +123,21 @@ struct DriveState {
 // Color palette for Apple II
 constexpr std::array<uint32_t, 16> LORES_COLORS = {{
     0xFF000000, // 0: Black
-    0xFF9F1B48, // 1: Magenta
-    0xFF4832EB, // 2: Dark Blue
-    0xFFD643FF, // 3: Purple
-    0xFF197544, // 4: Dark Green
-    0xFF818181, // 5: Grey 1
-    0xFF3692FF, // 6: Medium Blue
-    0xFFB89EFF, // 7: Light Blue
-    0xFF496500, // 8: Brown
-    0xFFD87300, // 9: Orange
-    0xFF818181, // 10: Grey 2
-    0xFFFB8FBC, // 11: Pink
-    0xFF3CCC00, // 12: Light Green
-    0xFFBCD600, // 13: Yellow
-    0xFF6CE6B8, // 14: Aqua
-    0xFFF1F1F1  // 15: White
+    0xFFE31E60, // 1: Magenta
+    0xFF604EBD, // 2: Dark Blue
+    0xFFFF44FD, // 3: Purple
+    0xFF00A360, // 4: Dark Green
+    0xFF9C9C9C, // 5: Grey 1
+    0xFF14CFFD, // 6: Medium Blue
+    0xFFD0C3FF, // 7: Light Blue
+    0xFF607203, // 8: Brown
+    0xFFFF6A3C, // 9: Orange
+    0xFF9C9C9C, // 10: Grey 2
+    0xFFFFA0D0, // 11: Pink
+    0xFF14F53C, // 12: Light Green
+    0xFFD0DD8D, // 13: Yellow
+    0xFF72FFD0, // 14: Aqua
+    0xFFFFFFFF  // 15: White
 }};
 
 // HiRes artifact colors (NTSC-accurate values)
@@ -145,11 +145,11 @@ constexpr std::array<uint32_t, 16> LORES_COLORS = {{
 // Group 2 (high bit = 1): Black, Orange, Blue, White
 constexpr std::array<uint32_t, 6> HIRES_COLORS = {{
     0xFF000000, // 0: Black
-    0xFF3CCC00, // 1: Green (odd pixels, high bit = 0)
-    0xFFD643FF, // 2: Violet (even pixels, high bit = 0)
-    0xFFF1F1F1, // 3: White
-    0xFF3692FF, // 4: Blue (even pixels, high bit = 1)
-    0xFFD87300  // 5: Orange (odd pixels, high bit = 1)
+    0xFF14F53C, // 1: Green (odd pixels, high bit = 0)
+    0xFFFF44FD, // 2: Violet (even pixels, high bit = 0)
+    0xFFFFFFFF, // 3: White
+    0xFF14CFFD, // 4: Blue (even pixels, high bit = 1)
+    0xFFFF6A3C  // 5: Orange (odd pixels, high bit = 1)
 }};
 
 // Double Lo-Res / Double Hi-Res color palette
@@ -158,21 +158,21 @@ constexpr std::array<uint32_t, 6> HIRES_COLORS = {{
 // https://github.com/AppleWin/AppleWin/blob/master/source/RGBMonitor.cpp
 constexpr std::array<uint32_t, 16> DLGR_COLORS = {{
     0xFF000000, // 0: Black        (LORES[0])
-    0xFF4832EB, // 1: Dark Blue    (LORES[2])
-    0xFF197544, // 2: Dark Green   (LORES[4])
-    0xFF3692FF, // 3: Medium Blue  (LORES[6])
-    0xFF496500, // 4: Brown        (LORES[8])
-    0xFF818181, // 5: Grey         (LORES[10])
-    0xFF3CCC00, // 6: Light Green  (LORES[12])
-    0xFF6CE6B8, // 7: Aqua         (LORES[14])
-    0xFF9F1B48, // 8: Magenta      (LORES[1])
-    0xFFD643FF, // 9: Purple       (LORES[3])
-    0xFF818181, // 10: Grey        (LORES[5])
-    0xFFB89EFF, // 11: Light Blue  (LORES[7])
-    0xFFD87300, // 12: Orange      (LORES[9])
-    0xFFFB8FBC, // 13: Pink        (LORES[11])
-    0xFFBCD600, // 14: Yellow      (LORES[13])
-    0xFFF1F1F1  // 15: White       (LORES[15])
+    0xFF604EBD, // 1: Dark Blue    (LORES[2])
+    0xFF00A360, // 2: Dark Green   (LORES[4])
+    0xFF14CFFD, // 3: Medium Blue  (LORES[6])
+    0xFF607203, // 4: Brown        (LORES[8])
+    0xFF9C9C9C, // 5: Grey         (LORES[10])
+    0xFF14F53C, // 6: Light Green  (LORES[12])
+    0xFF72FFD0, // 7: Aqua         (LORES[14])
+    0xFFE31E60, // 8: Magenta      (LORES[1])
+    0xFFFF44FD, // 9: Purple       (LORES[3])
+    0xFF9C9C9C, // 10: Grey        (LORES[5])
+    0xFFD0C3FF, // 11: Light Blue  (LORES[7])
+    0xFFFF6A3C, // 12: Orange      (LORES[9])
+    0xFFFFA0D0, // 13: Pink        (LORES[11])
+    0xFFD0DD8D, // 14: Yellow      (LORES[13])
+    0xFFFFFFFF  // 15: White       (LORES[15])
 }};
 
 // Snapshot of video-relevant soft switch state for per-scanline rendering

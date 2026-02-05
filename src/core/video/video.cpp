@@ -438,10 +438,10 @@ void Video::renderDoubleLoResScanline(int scanline, int startCol, int endCol,
 void Video::renderDoubleHiResScanline(int scanline, int startCol, int endCol,
                                        const VideoSwitchState &vs) {
   static const uint32_t DHGR_COLORS[16] = {
-    0xFF000000, 0xFF9F1B48, 0xFF496500, 0xFFD87300,
-    0xFF197544, 0xFF818181, 0xFF3CCC00, 0xFFBCD600,
-    0xFF4832EB, 0xFFD643FF, 0xFF818181, 0xFFFB8FBC,
-    0xFF3692FF, 0xFFB89EFF, 0xFF6CE6B8, 0xFFF1F1F1
+    0xFF000000, 0xFFE31E60, 0xFF607203, 0xFFFF6A3C,
+    0xFF00A360, 0xFF9C9C9C, 0xFF14F53C, 0xFFD0DD8D,
+    0xFF604EBD, 0xFFFF44FD, 0xFF9C9C9C, 0xFFFFA0D0,
+    0xFF14CFFD, 0xFFD0C3FF, 0xFF72FFD0, 0xFFFFFFFF
   };
 
   if (scanline >= 192) return;

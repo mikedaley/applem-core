@@ -22,12 +22,7 @@ enum CategoryInt {
   CAT_BRANCH = 0, CAT_LOAD, CAT_MATH, CAT_STACK, CAT_FLAG, CAT_UNKNOWN
 };
 
-// Opcode info structure
-struct OpcodeInfo {
-  uint8_t mnemonicIndex;
-  uint8_t mode;
-  uint8_t category;
-};
+// OpcodeInfo is defined in disassembler.hpp
 
 // Mnemonic table - index corresponds to mnemonicIndex in DisasmInstruction
 static const char* MNEMONICS[] = {
@@ -283,6 +278,14 @@ AddrMode getAddressingMode(uint8_t opcode) {
 
 InstrCategory getInstructionCategory(uint8_t opcode) {
   return static_cast<InstrCategory>(opcodes[opcode].category);
+}
+
+const OpcodeInfo* getOpcodeTable() {
+  return opcodes;
+}
+
+int getMnemonicCount() {
+  return static_cast<int>(sizeof(MNEMONICS) / sizeof(MNEMONICS[0]));
 }
 
 DisasmInstruction disassembleInstruction(const uint8_t *data, size_t size,

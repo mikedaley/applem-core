@@ -48,6 +48,23 @@ enum class InstrCategory : uint8_t {
   UNKNOWN = 5   // Unknown/illegal opcodes
 };
 
+// Opcode info structure (maps opcode byte to mnemonic, mode, category)
+struct OpcodeInfo {
+  uint8_t mnemonicIndex;
+  uint8_t mode;      // AddrMode enum value
+  uint8_t category;  // InstrCategory enum value
+};
+
+/**
+ * Get pointer to the 256-entry opcode table
+ */
+const OpcodeInfo* getOpcodeTable();
+
+/**
+ * Get the number of mnemonics in the mnemonic table
+ */
+int getMnemonicCount();
+
 // Disassembled instruction data - 16 bytes per instruction
 // Layout: [address:2][target:2][length:1][opcode:1][op1:1][op2:1][mode:1][cat:1][mnem:4][pad:2]
 struct DisasmInstruction {
