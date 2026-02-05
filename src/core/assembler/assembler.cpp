@@ -54,7 +54,7 @@ static void skipSpaces(const char*& p) {
 }
 
 static bool isIdentChar(char c) {
-  return isalnum(c) || c == '_' || c == '.';
+  return isalnum(c) || c == '_' || c == '.' || c == ':' || c == ']';
 }
 
 // ============================================================================
