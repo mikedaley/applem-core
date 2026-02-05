@@ -135,18 +135,21 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
   }
 
   // Mix speaker (center) with Mockingboard stereo
+  // Scale both sources by 0.5 to prevent clipping when both are active
+  constexpr float MIX_SCALE = 0.5f;
+
   for (int i = 0; i < sampleCount; i++) {
-    float speakerSample = speakerBuffer[i];
+    float speakerSample = speakerBuffer[i] * MIX_SCALE;
 
     // Mockingboard: PSG1 left, PSG2 right (already properly normalized)
-    float mbLeft = mbBuffer[i * 2];
-    float mbRight = mbBuffer[i * 2 + 1];
+    float mbLeft = mbBuffer[i * 2] * MIX_SCALE;
+    float mbRight = mbBuffer[i * 2 + 1] * MIX_SCALE;
 
     // Mix: speaker goes to both channels
     float left = speakerSample + mbLeft;
     float right = speakerSample + mbRight;
 
-    // Clamp to valid range
+    // Clamp to valid range (should rarely clip now)
     buffer[i * 2] = std::max(-1.0f, std::min(1.0f, left));
     buffer[i * 2 + 1] = std::max(-1.0f, std::min(1.0f, right));
   }
