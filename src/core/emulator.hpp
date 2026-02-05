@@ -27,6 +27,9 @@ namespace a2e {
 
 class Emulator {
 public:
+  // BASIC stepping modes
+  enum class BasicStepMode { None, Line, Statement };
+
   Emulator();
   ~Emulator();
 
@@ -88,13 +91,17 @@ public:
   void addBasicBreakpoint(uint16_t lineNumber);
   void removeBasicBreakpoint(uint16_t lineNumber);
   void clearBasicBreakpoints();
+  void clearBasicBreakpointHit();  // Clear hit state for fresh run
   bool hasBasicBreakpoints() const { return !basicBreakpoints_.empty(); }
   bool isBasicBreakpointHit() const { return basicBreakpointHit_; }
   uint16_t getBasicBreakLine() const { return basicBreakLine_; }
 
-  // BASIC stepping - execute current line and stop at next line
+  // BASIC stepping - execute current line/statement and stop at next
   void stepBasicLine();
-  bool isBasicStepping() const { return basicStepMode_; }
+  void stepBasicStatement();
+  bool isBasicStepping() const { return basicStepMode_ != BasicStepMode::None; }
+  uint16_t getBasicTxtptr() const;  // Get current TXTPTR for statement highlighting
+  int getBasicStatementIndex();     // Get current statement index (0-based)
 
   // Beam position (derived from cycle count)
   int getFrameCycle() const;
@@ -276,11 +283,22 @@ private:
   std::set<uint16_t> basicBreakpoints_;
   bool basicBreakpointHit_ = false;
   uint16_t basicBreakLine_ = 0;
-  bool skipBasicBreakpointOnce_ = false;
+  uint16_t skipBasicBreakpointLine_ = 0xFFFF;  // Line to skip (0xFFFF = none)
 
-  // BASIC stepping - run until CURLIN changes
-  bool basicStepMode_ = false;
+  // BASIC stepping
+  BasicStepMode basicStepMode_ = BasicStepMode::None;
   uint16_t basicStepFromLine_ = 0xFFFF;
+  uint16_t basicStepFromTxtptr_ = 0;
+  int basicStepFromStmtIndex_ = 0;
+  uint16_t basicStepLineStart_ = 0;  // Address where current line's tokens start
+  uint16_t basicStepNextColon_ = 0;  // Address of next colon after starting position (0 if none)
+
+  // Helper to count colons (statement separators) between lineStart and txtptr
+  int countColonsBetween(uint16_t lineStart, uint16_t txtptr);
+  // Helper to find the start address of tokenized text for a BASIC line
+  uint16_t findCurrentLineStart(uint16_t lineNumber);
+  // Helper to find the next colon address after a given position within a line
+  uint16_t findNextColonAfter(uint16_t lineStart, uint16_t afterPos);
 
   // Temp breakpoint for step over / step out
   uint16_t tempBreakpoint_ = 0;

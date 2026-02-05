@@ -164,7 +164,8 @@ void Emulator::setPaused(bool paused) {
     skipBreakpointOnce_ = true;
   }
   if (!paused && paused_ && basicBreakpointHit_) {
-    skipBasicBreakpointOnce_ = true;
+    // Skip this BASIC line until we move to a different line
+    skipBasicBreakpointLine_ = basicBreakLine_;
   }
   breakpointHit_ = false;
   basicBreakpointHit_ = false;
@@ -210,14 +211,21 @@ void Emulator::runCycles(int cycles) {
     }
 
     // Check BASIC stepping and breakpoints
-    uint8_t runmod = mmu_->peek(0x9D);  // RUNMOD - non-zero when BASIC is running
-    if (runmod != 0) {
-      uint16_t curlin = mmu_->peek(0x75) | (mmu_->peek(0x76) << 8);  // CURLIN
+    // CURLIN ($75-$76) holds current line number; $FFFF means direct/immediate mode
+    // Use readRAM to bypass ALTZP switch - BASIC always uses main RAM for zero page
+    uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
 
-      // BASIC stepping mode - pause when line changes
-      if (basicStepMode_) {
-        if (curlin != basicStepFromLine_ && curlin != 0xFFFF) {
-          basicStepMode_ = false;
+    // Clear skip line when program ends (CURLIN = 0xFFFF)
+    // This handles the case where breakpoint was on the last line
+    if (curlin == 0xFFFF && skipBasicBreakpointLine_ != 0xFFFF) {
+      skipBasicBreakpointLine_ = 0xFFFF;
+    }
+
+    if (curlin != 0xFFFF) {
+      // BASIC line stepping - pause when CURLIN changes
+      if (basicStepMode_ == BasicStepMode::Line) {
+        if (curlin != basicStepFromLine_) {
+          basicStepMode_ = BasicStepMode::None;
           basicBreakpointHit_ = true;
           basicBreakLine_ = curlin;
           paused_ = true;
@@ -225,11 +233,51 @@ void Emulator::runCycles(int cycles) {
         }
       }
 
+      // BASIC statement stepping - pause when TXTPTR crosses a colon (statement separator)
+      if (basicStepMode_ == BasicStepMode::Statement) {
+        uint16_t txtptr = mmu_->readRAM(0x7A, false) | (mmu_->readRAM(0x7B, false) << 8);
+
+        // Check if line changed (definitely new statement)
+        if (curlin != basicStepFromLine_) {
+          basicStepMode_ = BasicStepMode::None;
+          basicBreakpointHit_ = true;
+          basicBreakLine_ = curlin;
+          paused_ = true;
+          return;
+        }
+
+        // Check if TXTPTR has crossed the next colon position
+        // This directly detects when we've moved to a new statement
+        if (basicStepNextColon_ > 0 && txtptr > basicStepNextColon_) {
+          basicStepMode_ = BasicStepMode::None;
+          basicBreakpointHit_ = true;
+          basicBreakLine_ = curlin;
+          paused_ = true;
+          return;
+        }
+
+        // If there's no next colon (last statement on line), we'll pause when line changes
+        // But also pause if TXTPTR has reached end of line (byte 0x00)
+        if (basicStepNextColon_ == 0 && basicStepLineStart_ > 0 && txtptr > basicStepFromTxtptr_) {
+          // Check if we've reached the end of line marker
+          uint8_t currentByte = mmu_->readRAM(txtptr, false);
+          if (currentByte == 0x00) {
+            // At end of line - will move to next line on next instruction
+            // Let the line change check handle it
+          }
+        }
+      }
+
+      // Clear skip-line when we move to a different line
+      if (skipBasicBreakpointLine_ != 0xFFFF && curlin != skipBasicBreakpointLine_) {
+        skipBasicBreakpointLine_ = 0xFFFF;
+      }
+
       // Check BASIC line breakpoints
       if (!basicBreakpoints_.empty() && basicBreakpoints_.count(curlin)) {
-        // Skip if we're stepping from this line or if skip flag is set
-        if (basicStepMode_ || skipBasicBreakpointOnce_) {
-          skipBasicBreakpointOnce_ = false;
+        // Skip if we're stepping or if we're still on the skip line
+        if (basicStepMode_ != BasicStepMode::None || curlin == skipBasicBreakpointLine_) {
+          // Don't clear skip line here - keep skipping until line changes
         } else {
           basicBreakpointHit_ = true;
           basicBreakLine_ = curlin;
@@ -238,8 +286,6 @@ void Emulator::runCycles(int cycles) {
         }
       }
     }
-    // Note: Don't cancel step mode when RUNMOD is 0 - it may briefly be 0
-    // between lines. Step mode is only cleared when we actually pause at a new line.
 
     // Record trace before execution
     if (traceEnabled_) recordTrace();
@@ -568,18 +614,191 @@ void Emulator::clearBasicBreakpoints() {
   basicBreakpointHit_ = false;
 }
 
-void Emulator::stepBasicLine() {
-  // Get current BASIC line
-  uint16_t curlin = mmu_->peek(0x75) | (mmu_->peek(0x76) << 8);
+void Emulator::clearBasicBreakpointHit() {
+  basicBreakpointHit_ = false;
+  // Don't clear skipBasicBreakpointLine_ here - let it be cleared naturally
+  // when CURLIN changes. This allows Run to work from a breakpoint by:
+  // 1. setPaused(false) sets skip line
+  // 2. clearBasicBreakpointHit() clears step mode but keeps skip
+  // 3. Program continues, types RUN, skip cleared when line changes
+  basicStepMode_ = BasicStepMode::None;
+}
 
-  // Set up stepping mode - will pause when CURLIN changes
+void Emulator::stepBasicLine() {
+  // Get current BASIC line (use readRAM to bypass ALTZP)
+  uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
+
+  // Set up line stepping mode - will pause when CURLIN changes
   basicStepFromLine_ = curlin;
-  basicStepMode_ = true;
+  basicStepLineStart_ = 0;  // Not used for line stepping, but reset for cleanliness
+  basicStepNextColon_ = 0;   // Not used for line stepping
+  basicStepMode_ = BasicStepMode::Line;
 
   // Clear any hit flags and resume
   basicBreakpointHit_ = false;
   paused_ = false;
   basicBreakLine_ = 0;
+}
+
+void Emulator::stepBasicStatement() {
+  // Get current line and TXTPTR (use readRAM to bypass ALTZP)
+  uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
+  uint16_t txtptr = mmu_->readRAM(0x7A, false) | (mmu_->readRAM(0x7B, false) << 8);
+
+  // Find line start for the current line
+  basicStepLineStart_ = findCurrentLineStart(curlin);
+
+  // Set up statement stepping mode
+  basicStepFromLine_ = curlin;
+  basicStepFromTxtptr_ = txtptr;
+
+  // Determine current statement index
+  if (basicStepLineStart_ == 0 || txtptr < basicStepLineStart_) {
+    basicStepFromStmtIndex_ = 0;
+  } else {
+    basicStepFromStmtIndex_ = countColonsBetween(basicStepLineStart_, txtptr);
+  }
+
+  // Find the next colon position after current TXTPTR
+  // This is the position we need to cross to reach the next statement
+  basicStepNextColon_ = findNextColonAfter(basicStepLineStart_, txtptr);
+
+  basicStepMode_ = BasicStepMode::Statement;
+
+  // Clear any hit flags and resume
+  basicBreakpointHit_ = false;
+  paused_ = false;
+  basicBreakLine_ = 0;
+}
+
+uint16_t Emulator::getBasicTxtptr() const {
+  // Read TXTPTR respecting current ALTZP state - BASIC writes to whichever
+  // bank is active, so we need to read from the same bank
+  return mmu_->peek(0x7A) | (mmu_->peek(0x7B) << 8);
+}
+
+int Emulator::getBasicStatementIndex() {
+  // Use readRAM to bypass ALTZP - BASIC always uses main RAM for zero page
+  uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
+  uint16_t txtptr = mmu_->readRAM(0x7A, false) | (mmu_->readRAM(0x7B, false) << 8);
+
+  // Find line start for the current line
+  uint16_t lineStart = findCurrentLineStart(curlin);
+
+  // If TXTPTR hasn't entered the current line's text area yet, we're at statement 0
+  if (lineStart == 0 || txtptr < lineStart) {
+    return 0;
+  }
+
+  return countColonsBetween(lineStart, txtptr);
+}
+
+int Emulator::countColonsBetween(uint16_t lineStart, uint16_t txtptr) {
+  // If TXTPTR is at or before line start, we're at statement 0
+  if (lineStart == 0 || txtptr <= lineStart) return 0;
+
+  // Count colons from line start to TXTPTR, respecting strings
+  // Use readRAM to ensure we read from main RAM where BASIC program is stored
+  int colonCount = 0;
+  bool inQuote = false;
+  bool inRem = false;
+
+  for (uint16_t a = lineStart; a < txtptr; a++) {
+    uint8_t byte = mmu_->readRAM(a, false);
+
+    if (byte == 0) break;  // End of line
+
+    if (inRem) continue;  // Skip everything after REM
+
+    if (byte == 0x22) {  // Quote
+      inQuote = !inQuote;
+      continue;
+    }
+
+    if (inQuote) continue;  // Skip string contents
+
+    if (byte == 0xB2) {  // REM token
+      inRem = true;
+      continue;
+    }
+
+    if (byte == 0x3A) {  // Colon
+      colonCount++;
+    }
+  }
+
+  return colonCount;
+}
+
+uint16_t Emulator::findNextColonAfter(uint16_t lineStart, uint16_t afterPos) {
+  // Find the address of the next colon after afterPos within the line
+  // Returns 0 if no colon found (i.e., afterPos is in the last statement)
+  if (lineStart == 0) return 0;
+
+  // Start searching from afterPos (or lineStart if afterPos is before it)
+  uint16_t searchStart = (afterPos >= lineStart) ? afterPos : lineStart;
+  bool inQuote = false;
+  bool inRem = false;
+
+  // First, establish quote/REM state at searchStart by scanning from lineStart
+  for (uint16_t a = lineStart; a < searchStart; a++) {
+    uint8_t byte = mmu_->readRAM(a, false);
+    if (byte == 0) return 0;  // Already past end of line
+    if (inRem) continue;
+    if (byte == 0x22) inQuote = !inQuote;
+    if (!inQuote && byte == 0xB2) inRem = true;
+  }
+
+  // Now search for the next colon
+  for (uint16_t a = searchStart; a < searchStart + 256; a++) {  // Limit search
+    uint8_t byte = mmu_->readRAM(a, false);
+
+    if (byte == 0) return 0;  // End of line, no more colons
+
+    if (inRem) continue;
+
+    if (byte == 0x22) {
+      inQuote = !inQuote;
+      continue;
+    }
+
+    if (inQuote) continue;
+
+    if (byte == 0xB2) {
+      inRem = true;
+      continue;
+    }
+
+    if (byte == 0x3A) {  // Found a colon!
+      return a;
+    }
+  }
+
+  return 0;  // No colon found
+}
+
+uint16_t Emulator::findCurrentLineStart(uint16_t lineNumber) {
+  // Get TXTTAB (start of BASIC program)
+  // Use readRAM to bypass ALTZP - BASIC always uses main RAM for zero page
+  uint16_t txttab = mmu_->readRAM(0x67, false) | (mmu_->readRAM(0x68, false) << 8);
+
+  if (lineNumber == 0xFFFF) return 0;  // Not running
+
+  // Find the specified line in the program
+  uint16_t addr = txttab;
+
+  while (addr < 0xC000) {  // Reasonable upper bound
+    uint16_t nextPtr = mmu_->readRAM(addr, false) | (mmu_->readRAM(addr + 1, false) << 8);
+    if (nextPtr == 0) break;  // End of program
+
+    uint16_t lineNum = mmu_->readRAM(addr + 2, false) | (mmu_->readRAM(addr + 3, false) << 8);
+    if (lineNum == lineNumber) {
+      return addr + 4;  // Start of tokenized text (after nextPtr and lineNum)
+    }
+    addr = nextPtr;
+  }
+
+  return 0;  // Line not found
 }
 
 // ============================================================================

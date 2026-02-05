@@ -100,10 +100,15 @@ if(EMSCRIPTEN)
                 \"_addBasicBreakpoint\", \
                 \"_removeBasicBreakpoint\", \
                 \"_clearBasicBreakpoints\", \
+                \"_clearBasicBreakpointHit\", \
                 \"_hasBasicBreakpoints\", \
                 \"_isBasicBreakpointHit\", \
                 \"_getBasicBreakLine\", \
                 \"_stepBasicLine\", \
+                \"_stepBasicStatement\", \
+                \"_getBasicTxtptr\", \
+                \"_getBasicStatementIndex\", \
+                \"_getBasicLineBytes\", \
                 \"_getPC\", \
                 \"_getSP\", \
                 \"_getA\", \
@@ -163,6 +168,7 @@ if(EMSCRIPTEN)
                 \"_setRegPC\", \
                 \"_setRegP\", \
                 \"_peekMemory\", \
+                \"_readMainRAM\", \
                 \"_addWatchpoint\", \
                 \"_removeWatchpoint\", \
                 \"_clearWatchpoints\", \
