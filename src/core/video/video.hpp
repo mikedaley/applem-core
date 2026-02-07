@@ -24,6 +24,11 @@ public:
   // Render a complete frame to the framebuffer
   void renderFrame();
 
+  // Force a full frame render from current memory using current video switch
+  // state, independent of beam position or CPU cycle count. Useful for
+  // debugger screen refresh after stepping.
+  void forceRenderFrame();
+
   // Progressive rendering: render all scanlines up to the current CPU cycle
   void renderUpToCycle(uint64_t currentCycle);
 

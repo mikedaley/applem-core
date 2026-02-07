@@ -620,6 +620,14 @@ void Video::renderFrame() {
   frameDirty_ = true;
 }
 
+void Video::forceRenderFrame() {
+  VideoSwitchState vs = captureVideoState();
+  for (int scanline = 0; scanline < 192; scanline++) {
+    renderScanlineSegment(scanline, 0, 40, vs);
+  }
+  frameDirty_ = true;
+}
+
 // ============================================================================
 // Pixel and color helpers
 // ============================================================================

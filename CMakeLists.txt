@@ -82,6 +82,7 @@ if(EMSCRIPTEN)
                 \"_consumeFrameSamples\", \
                 \"_getFramebuffer\", \
                 \"_getFramebufferSize\", \
+                \"_forceRenderFrame\", \
                 \"_isFrameReady\", \
                 \"_keyDown\", \
                 \"_keyUp\", \
