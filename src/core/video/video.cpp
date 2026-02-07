@@ -411,13 +411,17 @@ void Video::renderDoubleLoResScanline(int scanline, int startCol, int endCol,
     uint8_t auxByte = mmu_.readRAM(addr, true);
     uint8_t mainByte = mmu_.readRAM(addr, false);
 
-    uint8_t auxColor = (lineInRow < 4) ? (auxByte & 0x0F)
+    uint8_t auxNibble = (lineInRow < 4) ? (auxByte & 0x0F)
                                         : ((auxByte >> 4) & 0x0F);
     uint8_t mainColor = (lineInRow < 4) ? (mainByte & 0x0F)
                                          : ((mainByte >> 4) & 0x0F);
 
-    uint32_t auxRGB = monochrome_ ? getMonochromeColor(auxColor != 0) : DLGR_COLORS[auxColor];
-    uint32_t mainRGB = monochrome_ ? getMonochromeColor(mainColor != 0) : DLGR_COLORS[mainColor];
+    // Aux nibbles need 4-bit left rotation by 1 to compensate for
+    // half-color-clock phase shift in auxiliary video memory
+    uint8_t auxColor = ((auxNibble << 1) & 0x0F) | (auxNibble >> 3);
+
+    uint32_t auxRGB = monochrome_ ? getMonochromeColor(auxColor != 0) : LORES_COLORS[auxColor];
+    uint32_t mainRGB = monochrome_ ? getMonochromeColor(mainColor != 0) : LORES_COLORS[mainColor];
 
     int screenX = col * 14;
 
