@@ -189,7 +189,7 @@ Assembler::ParsedLine Assembler::parseLine(const char* line, int lineNumber) {
 
   // Skip whitespace to opcode
   skipSpaces(p);
-  if (!*p || *p == ';' || *p == '*') return result;
+  if (!*p || *p == ';') return result;
 
   // Extract opcode/mnemonic
   const char* opcStart = p;
@@ -198,7 +198,7 @@ Assembler::ParsedLine Assembler::parseLine(const char* line, int lineNumber) {
 
   // Skip whitespace to operand
   skipSpaces(p);
-  if (!*p || *p == ';' || *p == '*') return result;
+  if (!*p || *p == ';') return result;
 
   // Extract operand (up to comment or end of line)
   // Respect string delimiters
