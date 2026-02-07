@@ -104,6 +104,7 @@ if(EMSCRIPTEN)
                 \"_hasBasicBreakpoints\", \
                 \"_isBasicBreakpointHit\", \
                 \"_getBasicBreakLine\", \
+                \"_isBasicProgramRunning\", \
                 \"_stepBasicLine\", \
                 \"_stepBasicStatement\", \
                 \"_getBasicTxtptr\", \

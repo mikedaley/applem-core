@@ -172,6 +172,10 @@ void Emulator::setPaused(bool paused) {
   watchpointHit_ = false;
   beamBreakHit_ = false;
   beamBreakHitId_ = -1;
+  // Reset frame sample counter when unpausing to prevent backlog
+  if (!paused && paused_) {
+    samplesGenerated_ = 0;
+  }
   paused_ = paused;
 }
 
@@ -210,18 +214,32 @@ void Emulator::runCycles(int cycles) {
       }
     }
 
-    // Check BASIC stepping and breakpoints
-    // CURLIN ($75-$76) holds current line number; $FFFF means direct/immediate mode
-    // Use readRAM to bypass ALTZP switch - BASIC always uses main RAM for zero page
-    uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
+    // Track BASIC program running state by monitoring ROM entry points.
+    // $D912 (RUN command) = program starting, $D43C (RESTART) = returning to ] prompt.
+    // This is definitive because it hooks into the ROM's own execution flow.
+    {
+      uint16_t pc = cpu_->getPC();
+      if (pc == 0xD912 && !basicProgramRunning_) {
+        basicProgramRunning_ = true;
+      } else if (pc == 0xD43C && basicProgramRunning_) {
+        basicProgramRunning_ = false;
+      }
+    }
 
-    // Clear skip line when program ends (CURLIN = 0xFFFF)
-    // This handles the case where breakpoint was on the last line
-    if (curlin == 0xFFFF && skipBasicBreakpointLine_ != 0xFFFF) {
+    // Check BASIC stepping and breakpoints
+    // CURLIN+1 ($76) = $FF means direct/immediate mode (only high byte matters,
+    // matching how the ROM checks it at NEWSTT $D7DC: LDX CURLIN+1 / INX / BEQ)
+    // Use readRAM to bypass ALTZP switch - BASIC always uses main RAM for zero page
+    uint8_t curlinHi = mmu_->readRAM(0x76, false);
+    bool basicDirectMode = (curlinHi == 0xFF);
+    uint16_t curlin = mmu_->readRAM(0x75, false) | (static_cast<uint16_t>(curlinHi) << 8);
+
+    // Clear skip line when returning to direct mode
+    if (basicDirectMode && skipBasicBreakpointLine_ != 0xFFFF) {
       skipBasicBreakpointLine_ = 0xFFFF;
     }
 
-    if (curlin != 0xFFFF) {
+    if (!basicDirectMode) {
       // BASIC line stepping - pause when CURLIN changes
       if (basicStepMode_ == BasicStepMode::Line) {
         if (curlin != basicStepFromLine_) {
@@ -634,8 +652,9 @@ void Emulator::stepBasicLine() {
   basicStepNextColon_ = 0;   // Not used for line stepping
   basicStepMode_ = BasicStepMode::Line;
 
-  // Clear any hit flags and resume
+  // Clear any hit flags, reset sample counter to prevent backlog, and resume
   basicBreakpointHit_ = false;
+  samplesGenerated_ = 0;
   paused_ = false;
   basicBreakLine_ = 0;
 }

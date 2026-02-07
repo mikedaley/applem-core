@@ -100,6 +100,7 @@ public:
   void stepBasicLine();
   void stepBasicStatement();
   bool isBasicStepping() const { return basicStepMode_ != BasicStepMode::None; }
+  bool isBasicProgramRunning() const { return basicProgramRunning_; }
   uint16_t getBasicTxtptr() const;  // Get current TXTPTR for statement highlighting
   int getBasicStatementIndex();     // Get current statement index (0-based)
 
@@ -284,6 +285,10 @@ private:
   bool basicBreakpointHit_ = false;
   uint16_t basicBreakLine_ = 0;
   uint16_t skipBasicBreakpointLine_ = 0xFFFF;  // Line to skip (0xFFFF = none)
+
+  // BASIC program execution tracking - set by monitoring ROM entry points
+  // $D912 (RUN) sets true, $D43C (RESTART/] prompt) sets false
+  bool basicProgramRunning_ = false;
 
   // BASIC stepping
   BasicStepMode basicStepMode_ = BasicStepMode::None;
