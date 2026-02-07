@@ -251,37 +251,20 @@ void Emulator::runCycles(int cycles) {
         }
       }
 
-      // BASIC statement stepping - pause when TXTPTR crosses a colon (statement separator)
+      // BASIC statement stepping - pause when PC hits $D820 (JSR EXECUTE_STATEMENT)
+      // At $D820, both new-line and colon paths have converged: CURLIN is correct
+      // and TXTPTR points to the first token of the statement about to execute.
       if (basicStepMode_ == BasicStepMode::Statement) {
-        uint16_t txtptr = mmu_->readRAM(0x7A, false) | (mmu_->readRAM(0x7B, false) << 8);
-
-        // Check if line changed (definitely new statement)
-        if (curlin != basicStepFromLine_) {
-          basicStepMode_ = BasicStepMode::None;
-          basicBreakpointHit_ = true;
-          basicBreakLine_ = curlin;
-          paused_ = true;
-          return;
-        }
-
-        // Check if TXTPTR has crossed the next colon position
-        // This directly detects when we've moved to a new statement
-        if (basicStepNextColon_ > 0 && txtptr > basicStepNextColon_) {
-          basicStepMode_ = BasicStepMode::None;
-          basicBreakpointHit_ = true;
-          basicBreakLine_ = curlin;
-          paused_ = true;
-          return;
-        }
-
-        // If there's no next colon (last statement on line), we'll pause when line changes
-        // But also pause if TXTPTR has reached end of line (byte 0x00)
-        if (basicStepNextColon_ == 0 && basicStepLineStart_ > 0 && txtptr > basicStepFromTxtptr_) {
-          // Check if we've reached the end of line marker
-          uint8_t currentByte = mmu_->readRAM(txtptr, false);
-          if (currentByte == 0x00) {
-            // At end of line - will move to next line on next instruction
-            // Let the line change check handle it
+        uint16_t pc = cpu_->getPC();
+        if (pc == 0xD820) {
+          if (basicStepSkipFirst_) {
+            basicStepSkipFirst_ = false;
+          } else {
+            basicStepMode_ = BasicStepMode::None;
+            basicBreakpointHit_ = true;
+            basicBreakLine_ = curlin;
+            paused_ = true;
+            return;
           }
         }
       }
@@ -660,32 +643,16 @@ void Emulator::stepBasicLine() {
 }
 
 void Emulator::stepBasicStatement() {
-  // Get current line and TXTPTR (use readRAM to bypass ALTZP)
-  uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
-  uint16_t txtptr = mmu_->readRAM(0x7A, false) | (mmu_->readRAM(0x7B, false) << 8);
-
-  // Find line start for the current line
-  basicStepLineStart_ = findCurrentLineStart(curlin);
-
-  // Set up statement stepping mode
-  basicStepFromLine_ = curlin;
-  basicStepFromTxtptr_ = txtptr;
-
-  // Determine current statement index
-  if (basicStepLineStart_ == 0 || txtptr < basicStepLineStart_) {
-    basicStepFromStmtIndex_ = 0;
-  } else {
-    basicStepFromStmtIndex_ = countColonsBetween(basicStepLineStart_, txtptr);
-  }
-
-  // Find the next colon position after current TXTPTR
-  // This is the position we need to cross to reach the next statement
-  basicStepNextColon_ = findNextColonAfter(basicStepLineStart_, txtptr);
-
+  // Step to the next BASIC statement by waiting for PC to hit $D820
+  // (JSR EXECUTE_STATEMENT in the ROM). Both new-line and colon paths
+  // converge there with correct CURLIN and TXTPTR.
+  uint16_t pc = cpu_->getPC();
+  basicStepSkipFirst_ = (pc == 0xD820);
   basicStepMode_ = BasicStepMode::Statement;
 
-  // Clear any hit flags and resume
+  // Clear any hit flags, reset sample counter to prevent backlog, and resume
   basicBreakpointHit_ = false;
+  samplesGenerated_ = 0;
   paused_ = false;
   basicBreakLine_ = 0;
 }
@@ -693,13 +660,13 @@ void Emulator::stepBasicStatement() {
 uint16_t Emulator::getBasicTxtptr() const {
   // Read TXTPTR respecting current ALTZP state - BASIC writes to whichever
   // bank is active, so we need to read from the same bank
-  return mmu_->peek(0x7A) | (mmu_->peek(0x7B) << 8);
+  return mmu_->peek(0xB8) | (mmu_->peek(0xB9) << 8);
 }
 
 int Emulator::getBasicStatementIndex() {
   // Use readRAM to bypass ALTZP - BASIC always uses main RAM for zero page
   uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
-  uint16_t txtptr = mmu_->readRAM(0x7A, false) | (mmu_->readRAM(0x7B, false) << 8);
+  uint16_t txtptr = mmu_->readRAM(0xB8, false) | (mmu_->readRAM(0xB9, false) << 8);
 
   // Find line start for the current line
   uint16_t lineStart = findCurrentLineStart(curlin);

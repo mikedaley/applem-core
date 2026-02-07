@@ -297,6 +297,7 @@ private:
   int basicStepFromStmtIndex_ = 0;
   uint16_t basicStepLineStart_ = 0;  // Address where current line's tokens start
   uint16_t basicStepNextColon_ = 0;  // Address of next colon after starting position (0 if none)
+  bool basicStepSkipFirst_ = false;  // Skip first EXECUTE_STATEMENT hit when already there
 
   // Helper to count colons (statement separators) between lineStart and txtptr
   int countColonsBetween(uint16_t lineStart, uint16_t txtptr);
