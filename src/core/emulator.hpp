@@ -14,6 +14,7 @@
 #include "input/keyboard.hpp"
 #include "cards/mockingboard_card.hpp"
 #include "cards/mouse_card.hpp"
+#include "cards/smartport/smartport_card.hpp"
 #include "mmu/mmu.hpp"
 #include "types.hpp"
 #include "video/video.hpp"
@@ -226,6 +227,16 @@ public:
   Disk2Card &getDisk() { return *disk_; }
   MockingboardCard &getMockingboard() { return *mockingboard_; }
   MouseCard* getMouseCard() { return mouse_; }
+  SmartPortCard* getSmartPortCard() { return smartport_; }
+
+  // SmartPort hard drive management
+  bool insertSmartPortImage(int device, const uint8_t* data, size_t size, const char* filename);
+  void ejectSmartPortImage(int device);
+  bool isSmartPortImageInserted(int device) const;
+  const char* getSmartPortImageFilename(int device) const;
+  bool isSmartPortImageModified(int device) const;
+  const uint8_t* exportSmartPortImageData(int device, size_t* size) const;
+  bool isSmartPortCardInstalled() const { return smartport_ != nullptr; }
 
   // Slot management
   const char* getSlotCardName(uint8_t slot) const;
@@ -255,6 +266,7 @@ private:
   Disk2Card* disk_ = nullptr;
   MockingboardCard* mockingboard_ = nullptr;
   MouseCard* mouse_ = nullptr;
+  SmartPortCard* smartport_ = nullptr;
 
   // Storage for cards when removed from slots
   std::unique_ptr<ExpansionCard> diskStorage_;

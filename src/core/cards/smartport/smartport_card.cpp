@@ -1,0 +1,538 @@
+/*
+ * smartport_card.cpp - SmartPort expansion card for ProDOS block devices
+ *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ */
+
+#include "smartport_card.hpp"
+#include <cstring>
+
+namespace a2e {
+
+const std::string SmartPortCard::emptyString_;
+
+// ProDOS block device entry point offset in slot ROM
+static constexpr uint8_t PRODOS_ENTRY = 0x10;
+// SmartPort entry = ProDOS entry + 3
+static constexpr uint8_t SMARTPORT_ENTRY = 0x13;
+// Boot trigger offset in I/O space
+static constexpr uint8_t BOOT_IO_OFFSET = 0x00;
+
+// SmartPort error codes
+static constexpr uint8_t SP_OK = 0x00;
+static constexpr uint8_t SP_IO_ERROR = 0x27;
+static constexpr uint8_t SP_NO_DEVICE = 0x28;
+static constexpr uint8_t SP_WRITE_PROTECTED = 0x2B;
+
+SmartPortCard::SmartPortCard() {
+    rom_.fill(0);
+    buildROM();
+}
+
+void SmartPortCard::setSlotNumber(uint8_t slot) {
+    if (slot < 1 || slot > 7) return;
+    slotNum_ = slot;
+    buildROM();
+}
+
+void SmartPortCard::buildROM() {
+    rom_.fill(0);
+
+    // Signature bytes for ProDOS device discovery.
+    // ProDOS checks odd bytes at $Cn01, $Cn03, $Cn05, $Cn07.
+    // We embed them as LDA# operands so they occupy the right offsets.
+
+    // $00: LDA #$20  -> $Cn01 = $20 (ProDOS signature)
+    rom_[0x00] = 0xA9; rom_[0x01] = 0x20;
+    // $02: LDA #$00  -> $Cn03 = $00 (block device)
+    rom_[0x02] = 0xA9; rom_[0x03] = 0x00;
+    // $04: LDA #$03  -> $Cn05 = $03 (identifies as SmartPort-capable)
+    rom_[0x04] = 0xA9; rom_[0x05] = 0x03;
+    // $06: LDA #$00  -> $Cn07 = $00 (SmartPort present)
+    rom_[0x06] = 0xA9; rom_[0x07] = 0x00;
+
+    // Boot code at $08: set X to slot*16, trigger I/O boot, JMP $0801
+    // This path is used by PR#n from BASIC (execution falls through from $Cn00)
+    uint8_t slotOffset = slotNum_ << 4; // slot * 16
+    uint8_t ioAddr = 0x80 + slotOffset; // $C0n0 base
+
+    // LDX #$n0 (set X to slot*16, needed by ProDOS boot block)
+    rom_[0x08] = 0xA2;
+    rom_[0x09] = slotOffset;
+    // STX $C0n0 (trigger I/O trap for boot block load)
+    rom_[0x0A] = 0x8E;
+    rom_[0x0B] = ioAddr;
+    rom_[0x0C] = 0xC0;
+    // JMP $0801
+    rom_[0x0D] = 0x4C;
+    rom_[0x0E] = 0x01;
+    rom_[0x0F] = 0x08;
+
+    // ProDOS block device entry at $10: SEC + RTS (trapped by readROM)
+    rom_[PRODOS_ENTRY] = 0x38;     // SEC
+    rom_[PRODOS_ENTRY + 1] = 0x60; // RTS
+
+    // Padding byte at $12
+    rom_[0x12] = 0xEA; // NOP
+
+    // SmartPort entry at $13: SEC + RTS (trapped by readROM)
+    rom_[SMARTPORT_ENTRY] = 0x38;     // SEC
+    rom_[SMARTPORT_ENTRY + 1] = 0x60; // RTS
+
+    // $FF: ProDOS entry point offset (used by both autostart ROM boot and ProDOS driver)
+    // The readROM trap at $Cn10 distinguishes boot vs ProDOS calls via the booted_ flag.
+    rom_[0xFF] = PRODOS_ENTRY;
+}
+
+void SmartPortCard::reset() {
+    booted_ = false;
+    activity_ = false;
+    activityWrite_ = false;
+}
+
+uint8_t SmartPortCard::readIO(uint8_t offset) {
+    (void)offset;
+    return 0xFF;
+}
+
+void SmartPortCard::writeIO(uint8_t offset, uint8_t value) {
+    if (offset == BOOT_IO_OFFSET) {
+        // Boot trap: load block 0 of device 0 into $0800
+        if (!devices_[0].isLoaded() || !memWrite_) return;
+
+        uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
+        if (devices_[0].readBlock(0, blockBuf)) {
+            for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
+                memWrite_(static_cast<uint16_t>(0x0800 + i), blockBuf[i]);
+            }
+            activity_ = true;
+            activityWrite_ = false;
+        }
+    }
+}
+
+uint8_t SmartPortCard::readROM(uint8_t offset) {
+    // Check if the CPU is executing at this ROM address (not just reading data).
+    // The CPU's fetch() does read(pc_++) so by the time the read callback fires,
+    // PC has already been incremented by 1. We account for this by comparing
+    // against expectedPC + 1.
+    uint16_t expectedPC = (0xC000 | (static_cast<uint16_t>(slotNum_) << 8)) + offset;
+
+    if (getPC_ && getPC_() == static_cast<uint16_t>(expectedPC + 1)) {
+        if (offset == PRODOS_ENTRY) {
+            if (!booted_) {
+                // First call to entry point = boot (from autostart ROM or PR#n fallthrough)
+                handleBoot();
+            } else {
+                // Subsequent calls = ProDOS block driver calls
+                handleProDOSBlock();
+            }
+            return 0x60; // RTS
+        }
+        if (offset == SMARTPORT_ENTRY) {
+            handleSmartPort();
+            return 0x60; // RTS
+        }
+    }
+
+    return rom_[offset];
+}
+
+void SmartPortCard::handleBoot() {
+    // Called when the autostart ROM or PR#n reaches the entry point for the first time.
+    // Load block 0 of device 0 into $0800, set X to slot*16, and arrange
+    // for the CPU to jump to $0801 (ProDOS boot block entry) via RTS.
+    booted_ = true;
+
+    if (!devices_[0].isLoaded() || !memWrite_ || !getSP_ || !setSP_) return;
+
+    // Load block 0 into $0800
+    uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
+    if (!devices_[0].readBlock(0, blockBuf)) return;
+
+    for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
+        memWrite_(static_cast<uint16_t>(0x0800 + i), blockBuf[i]);
+    }
+
+    activity_ = true;
+    activityWrite_ = false;
+
+    // Set X to slot*16 (ProDOS boot block expects this)
+    if (setX_) setX_(slotNum_ << 4);
+
+    // Push $0800 onto the stack so RTS goes to $0801 (RTS adds 1 to popped address)
+    uint8_t sp = getSP_();
+    memWrite_(0x0100 + sp, 0x08);       // high byte
+    sp = static_cast<uint8_t>(sp - 1);
+    memWrite_(0x0100 + sp, 0x00);       // low byte
+    sp = static_cast<uint8_t>(sp - 1);
+    setSP_(sp);
+}
+
+void SmartPortCard::setErrorResult(uint8_t errorCode) {
+    if (!setA_ || !getP_ || !setP_) return;
+
+    setA_(errorCode);
+
+    uint8_t p = getP_();
+    if (errorCode != SP_OK) {
+        p |= 0x01;  // Set carry (error)
+    } else {
+        p &= ~0x01; // Clear carry (success)
+    }
+    setP_(p);
+}
+
+void SmartPortCard::handleProDOSBlock() {
+    // ProDOS block call convention:
+    // $42 = command (0=STATUS, 1=READ, 2=WRITE, 3=FORMAT)
+    // $43 = unit number (bit 7: 0=device 0, 1=device 1; bits 4-6: slot)
+    // $44-$45 = buffer pointer (lo/hi)
+    // $46-$47 = block number (lo/hi)
+    if (!memRead_ || !memWrite_ || !setA_ || !setP_) return;
+
+    uint8_t command = memRead_(0x42);
+    uint8_t unitNum = memRead_(0x43);
+    uint16_t bufPtr = memRead_(0x44) | (memRead_(0x45) << 8);
+    uint16_t blockNum = memRead_(0x46) | (memRead_(0x47) << 8);
+
+    // Device index from unit number bit 7
+    int device = (unitNum & 0x80) ? 1 : 0;
+
+    activity_ = true;
+    activityWrite_ = (command == 2);
+
+    switch (command) {
+        case 0: { // STATUS
+            if (!devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+            // ProDOS expects block count in X (lo) and Y (hi) registers
+            uint16_t blocks = devices_[device].getTotalBlocks();
+            if (setX_) setX_(blocks & 0xFF);
+            if (setY_) setY_((blocks >> 8) & 0xFF);
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        case 1: { // READ
+            if (!devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+            uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
+            if (!devices_[device].readBlock(blockNum, blockBuf)) {
+                setErrorResult(SP_IO_ERROR);
+                return;
+            }
+            for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
+                memWrite_(static_cast<uint16_t>(bufPtr + i), blockBuf[i]);
+            }
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        case 2: { // WRITE
+            if (!devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+            if (devices_[device].isWriteProtected()) {
+                setErrorResult(SP_WRITE_PROTECTED);
+                return;
+            }
+            uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
+            for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
+                blockBuf[i] = memRead_(static_cast<uint16_t>(bufPtr + i));
+            }
+            if (!devices_[device].writeBlock(blockNum, blockBuf)) {
+                setErrorResult(SP_IO_ERROR);
+                return;
+            }
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        case 3: { // FORMAT
+            // We don't actually format - just return OK if device is present
+            if (!devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        default:
+            setErrorResult(SP_IO_ERROR);
+            return;
+    }
+}
+
+void SmartPortCard::handleSmartPort() {
+    // SmartPort call convention:
+    // After JSR $Cn13, the inline bytes are:
+    //   +0: command byte
+    //   +1,+2: parameter list pointer (lo/hi)
+    // We need to read these from after the JSR instruction,
+    // then adjust the return address on the stack by +3.
+    if (!memRead_ || !memWrite_ || !setA_ || !setP_ || !getSP_ || !setSP_) return;
+
+    uint8_t sp = getSP_();
+
+    // Read return address from stack (points to byte before inline params)
+    uint8_t retLo = memRead_(0x0100 + ((sp + 1) & 0xFF));
+    uint8_t retHi = memRead_(0x0100 + ((sp + 2) & 0xFF));
+    uint16_t retAddr = (retHi << 8) | retLo;
+
+    // Inline params start at retAddr + 1
+    uint16_t inlineAddr = retAddr + 1;
+    uint8_t command = memRead_(inlineAddr);
+    uint16_t paramPtr = memRead_(inlineAddr + 1) | (memRead_(inlineAddr + 2) << 8);
+
+    // Adjust return address past the 3 inline bytes
+    uint16_t newRet = retAddr + 3;
+    memWrite_(0x0100 + ((sp + 1) & 0xFF), newRet & 0xFF);
+    memWrite_(0x0100 + ((sp + 2) & 0xFF), (newRet >> 8) & 0xFF);
+
+    activity_ = true;
+    activityWrite_ = (command == 0x02);
+
+    switch (command) {
+        case 0x00: { // STATUS
+            uint8_t paramCount = memRead_(paramPtr);
+            uint8_t unitNum = memRead_(paramPtr + 1);
+            uint16_t statusBuf = memRead_(paramPtr + 2) | (memRead_(paramPtr + 3) << 8);
+            uint8_t statusCode = memRead_(paramPtr + 4);
+            (void)paramCount;
+
+            if (unitNum == 0) {
+                // Unit 0 STATUS: return number of devices
+                int count = 0;
+                for (int i = 0; i < MAX_DEVICES; i++) {
+                    if (devices_[i].isLoaded()) count = i + 1;
+                }
+                if (count == 0) count = MAX_DEVICES; // always report max slots
+                // Write device count to status buffer
+                memWrite_(statusBuf, static_cast<uint8_t>(count));
+                setErrorResult(SP_OK);
+                return;
+            }
+
+            int device = unitNum - 1;
+            if (device < 0 || device >= MAX_DEVICES || !devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+
+            if (statusCode == 0x00) {
+                // General status: 4 bytes
+                uint8_t statusByte = 0xF8; // block device, read/write, online, format capable
+                if (devices_[device].isWriteProtected()) {
+                    statusByte |= 0x04; // write protected
+                }
+                memWrite_(statusBuf, statusByte);
+                uint16_t blocks = devices_[device].getTotalBlocks();
+                memWrite_(statusBuf + 1, blocks & 0xFF);
+                memWrite_(statusBuf + 2, (blocks >> 8) & 0xFF);
+                memWrite_(statusBuf + 3, 0x00); // blocks high byte (always 0 for 16-bit)
+            }
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        case 0x01: { // READ BLOCK
+            uint8_t unitNum = memRead_(paramPtr + 1);
+            uint16_t dataBuf = memRead_(paramPtr + 2) | (memRead_(paramPtr + 3) << 8);
+            uint16_t blockNum = memRead_(paramPtr + 4) | (memRead_(paramPtr + 5) << 8);
+
+            int device = unitNum - 1;
+            if (device < 0 || device >= MAX_DEVICES || !devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+
+            uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
+            if (!devices_[device].readBlock(blockNum, blockBuf)) {
+                setErrorResult(SP_IO_ERROR);
+                return;
+            }
+            for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
+                memWrite_(static_cast<uint16_t>(dataBuf + i), blockBuf[i]);
+            }
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        case 0x02: { // WRITE BLOCK
+            uint8_t unitNum = memRead_(paramPtr + 1);
+            uint16_t dataBuf = memRead_(paramPtr + 2) | (memRead_(paramPtr + 3) << 8);
+            uint16_t blockNum = memRead_(paramPtr + 4) | (memRead_(paramPtr + 5) << 8);
+
+            int device = unitNum - 1;
+            if (device < 0 || device >= MAX_DEVICES || !devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+            if (devices_[device].isWriteProtected()) {
+                setErrorResult(SP_WRITE_PROTECTED);
+                return;
+            }
+
+            uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
+            for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
+                blockBuf[i] = memRead_(static_cast<uint16_t>(dataBuf + i));
+            }
+            if (!devices_[device].writeBlock(blockNum, blockBuf)) {
+                setErrorResult(SP_IO_ERROR);
+                return;
+            }
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        case 0x03: { // FORMAT
+            uint8_t unitNum = memRead_(paramPtr + 1);
+            int device = unitNum - 1;
+            if (device < 0 || device >= MAX_DEVICES || !devices_[device].isLoaded()) {
+                setErrorResult(SP_NO_DEVICE);
+                return;
+            }
+            setErrorResult(SP_OK);
+            return;
+        }
+
+        case 0x04: // CONTROL
+        case 0x05: // INIT
+            setErrorResult(SP_OK);
+            return;
+
+        default:
+            setErrorResult(SP_IO_ERROR);
+            return;
+    }
+}
+
+// Device management
+
+bool SmartPortCard::insertImage(int device, const uint8_t* data, size_t size, const std::string& filename) {
+    if (device < 0 || device >= MAX_DEVICES) return false;
+    return devices_[device].load(data, size, filename);
+}
+
+void SmartPortCard::ejectImage(int device) {
+    if (device >= 0 && device < MAX_DEVICES) {
+        devices_[device].eject();
+    }
+}
+
+bool SmartPortCard::isImageInserted(int device) const {
+    if (device < 0 || device >= MAX_DEVICES) return false;
+    return devices_[device].isLoaded();
+}
+
+const std::string& SmartPortCard::getImageFilename(int device) const {
+    if (device < 0 || device >= MAX_DEVICES) return emptyString_;
+    return devices_[device].getFilename();
+}
+
+bool SmartPortCard::isImageModified(int device) const {
+    if (device < 0 || device >= MAX_DEVICES) return false;
+    return devices_[device].isModified();
+}
+
+const uint8_t* SmartPortCard::exportImageData(int device, size_t* size) const {
+    if (device < 0 || device >= MAX_DEVICES) {
+        if (size) *size = 0;
+        return nullptr;
+    }
+    return devices_[device].exportData(size);
+}
+
+BlockDevice* SmartPortCard::getDevice(int device) {
+    if (device < 0 || device >= MAX_DEVICES) return nullptr;
+    return &devices_[device];
+}
+
+const BlockDevice* SmartPortCard::getDevice(int device) const {
+    if (device < 0 || device >= MAX_DEVICES) return nullptr;
+    return &devices_[device];
+}
+
+// State serialization
+
+size_t SmartPortCard::getStateSize() const {
+    // slotNum(1) + per-device state
+    size_t total = 1;
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        total += 4; // device state size prefix (LE32)
+        if (devices_[i].isLoaded()) {
+            total += devices_[i].getStateSize();
+        }
+    }
+    return total;
+}
+
+size_t SmartPortCard::serialize(uint8_t* buffer, size_t maxSize) const {
+    if (maxSize < 1) return 0;
+
+    size_t offset = 0;
+    buffer[offset++] = slotNum_;
+
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        if (devices_[i].isLoaded()) {
+            size_t devStateSize = devices_[i].getStateSize();
+            if (offset + 4 + devStateSize > maxSize) return 0;
+
+            // Write device state size
+            uint32_t sz = static_cast<uint32_t>(devStateSize);
+            buffer[offset++] = sz & 0xFF;
+            buffer[offset++] = (sz >> 8) & 0xFF;
+            buffer[offset++] = (sz >> 16) & 0xFF;
+            buffer[offset++] = (sz >> 24) & 0xFF;
+
+            size_t written = devices_[i].serialize(buffer + offset, maxSize - offset);
+            if (written == 0) return 0;
+            offset += written;
+        } else {
+            if (offset + 4 > maxSize) return 0;
+            buffer[offset++] = 0;
+            buffer[offset++] = 0;
+            buffer[offset++] = 0;
+            buffer[offset++] = 0;
+        }
+    }
+
+    return offset;
+}
+
+size_t SmartPortCard::deserialize(const uint8_t* buffer, size_t size) {
+    if (size < 1) return 0;
+
+    size_t offset = 0;
+    slotNum_ = buffer[offset++];
+    buildROM();
+
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        if (offset + 4 > size) return 0;
+
+        uint32_t devStateSize = buffer[offset] | (buffer[offset + 1] << 8) |
+                                (buffer[offset + 2] << 16) | (buffer[offset + 3] << 24);
+        offset += 4;
+
+        if (devStateSize > 0) {
+            if (offset + devStateSize > size) return 0;
+            size_t read = devices_[i].deserialize(buffer + offset, devStateSize);
+            if (read == 0) return 0;
+            offset += read;
+        } else {
+            devices_[i].eject();
+        }
+    }
+
+    return offset;
+}
+
+} // namespace a2e

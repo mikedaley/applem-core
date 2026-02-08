@@ -26,6 +26,8 @@ set(CORE_SOURCES
     src/core/cards/mockingboard_card.cpp
     src/core/cards/thunderclock_card.cpp
     src/core/cards/mouse_card.cpp
+    src/core/cards/smartport/block_device.cpp
+    src/core/cards/smartport/smartport_card.cpp
     src/core/debug/condition_evaluator.cpp
     src/core/filesystem/dos33.cpp
     src/core/filesystem/prodos.cpp
@@ -258,12 +260,22 @@ if(EMSCRIPTEN)
                 \"_getBasicErrorLine\", \
                 \"_getBasicErrorTxtptr\", \
                 \"_getBasicErrorCode\", \
-                \"_clearBasicError\" \
+                \"_clearBasicError\", \
+                \"_insertSmartPortImage\", \
+                \"_ejectSmartPortImage\", \
+                \"_isSmartPortImageInserted\", \
+                \"_getSmartPortImageFilename\", \
+                \"_isSmartPortImageModified\", \
+                \"_getSmartPortImageData\", \
+                \"_isSmartPortCardInstalled\", \
+                \"_getSmartPortActivity\", \
+                \"_getSmartPortActivityWrite\", \
+                \"_clearSmartPortActivity\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
             -s INITIAL_MEMORY=33554432 \
-            -s MAXIMUM_MEMORY=67108864 \
+            -s MAXIMUM_MEMORY=268435456 \
             -s NO_EXIT_RUNTIME=1 \
             -s ASYNCIFY=0 \
             --no-entry \

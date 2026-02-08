@@ -10,6 +10,7 @@
 #include "cards/mockingboard_card.hpp"
 #include "cards/thunderclock_card.hpp"
 #include "cards/mouse_card.hpp"
+#include "cards/smartport/smartport_card.hpp"
 #include <cstring>
 
 // Include generated ROM data directly
@@ -1220,6 +1221,9 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
   if (strcmp(name, "Mouse") == 0) {
     return "mouse";
   }
+  if (strcmp(name, "SmartPort") == 0) {
+    return "smartport";
+  }
 
   return "empty";
 }
@@ -1253,6 +1257,9 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
       }
     } else if (strcmp(existingName, "Mouse") == 0) {
       mouse_ = nullptr;
+      mmu_->removeCard(slot);
+    } else if (strcmp(existingName, "SmartPort") == 0) {
+      smartport_ = nullptr;
       mmu_->removeCard(slot);
     } else {
       mmu_->removeCard(slot);
@@ -1305,6 +1312,26 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     card->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
     card->setIRQCallback([this]() { cpu_->irq(); });
     mouse_ = card.get();
+    mmu_->insertCard(slot, std::move(card));
+    return true;
+  }
+
+  // Handle SmartPort card
+  if (strcmp(cardId, "smartport") == 0) {
+    auto card = std::make_unique<SmartPortCard>();
+    card->setSlotNumber(slot);
+    card->setMemReadCallback([this](uint16_t addr) { return mmu_->read(addr); });
+    card->setMemWriteCallback([this](uint16_t addr, uint8_t val) { mmu_->write(addr, val); });
+    card->setGetA([this]() { return cpu_->getA(); });
+    card->setSetA([this](uint8_t v) { cpu_->setA(v); });
+    card->setGetP([this]() { return cpu_->getP(); });
+    card->setSetP([this](uint8_t v) { cpu_->setP(v); });
+    card->setGetSP([this]() { return cpu_->getSP(); });
+    card->setSetSP([this](uint8_t v) { cpu_->setSP(v); });
+    card->setGetPC([this]() { return cpu_->getPC(); });
+    card->setSetX([this](uint8_t v) { cpu_->setX(v); });
+    card->setSetY([this](uint8_t v) { cpu_->setY(v); });
+    smartport_ = card.get();
     mmu_->insertCard(slot, std::move(card));
     return true;
   }
@@ -1534,6 +1561,7 @@ const uint8_t *Emulator::exportState(size_t *size) {
       uint8_t cardType = 0;
       if (strcmp(name, "Thunderclock") == 0) cardType = 1;
       if (strcmp(name, "Mouse") == 0) cardType = 2;
+      if (strcmp(name, "SmartPort") == 0) cardType = 3;
       stateBuffer_.push_back(cardType);
 
       // Card state
@@ -1837,6 +1865,23 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
               existingCard = mmu_->getCard(slot);
               break;
             }
+            case 3: {  // SmartPort
+              auto card = std::make_unique<SmartPortCard>();
+              card->setSlotNumber(slot);
+              card->setMemReadCallback([this](uint16_t addr) { return mmu_->read(addr); });
+              card->setMemWriteCallback([this](uint16_t addr, uint8_t val) { mmu_->write(addr, val); });
+              card->setGetA([this]() { return cpu_->getA(); });
+              card->setSetA([this](uint8_t v) { cpu_->setA(v); });
+              card->setGetP([this]() { return cpu_->getP(); });
+              card->setSetP([this](uint8_t v) { cpu_->setP(v); });
+              card->setGetSP([this]() { return cpu_->getSP(); });
+              card->setSetSP([this](uint8_t v) { cpu_->setSP(v); });
+              card->setGetPC([this]() { return cpu_->getPC(); });
+              smartport_ = card.get();
+              mmu_->insertCard(slot, std::move(card));
+              existingCard = mmu_->getCard(slot);
+              break;
+            }
           }
         }
 
@@ -1855,6 +1900,43 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
   paused_ = false;
 
   return true;
+}
+
+// ============================================================================
+// SmartPort Hard Drive Management
+// ============================================================================
+
+bool Emulator::insertSmartPortImage(int device, const uint8_t* data, size_t size, const char* filename) {
+  if (!smartport_) return false;
+  return smartport_->insertImage(device, data, size, filename ? filename : "");
+}
+
+void Emulator::ejectSmartPortImage(int device) {
+  if (smartport_) smartport_->ejectImage(device);
+}
+
+bool Emulator::isSmartPortImageInserted(int device) const {
+  if (!smartport_) return false;
+  return smartport_->isImageInserted(device);
+}
+
+const char* Emulator::getSmartPortImageFilename(int device) const {
+  if (!smartport_) return nullptr;
+  const auto& fn = smartport_->getImageFilename(device);
+  return fn.empty() ? nullptr : fn.c_str();
+}
+
+bool Emulator::isSmartPortImageModified(int device) const {
+  if (!smartport_) return false;
+  return smartport_->isImageModified(device);
+}
+
+const uint8_t* Emulator::exportSmartPortImageData(int device, size_t* size) const {
+  if (!smartport_) {
+    if (size) *size = 0;
+    return nullptr;
+  }
+  return smartport_->exportImageData(device, size);
 }
 
 // ==========================================================================
