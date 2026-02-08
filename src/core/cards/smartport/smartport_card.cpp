@@ -451,6 +451,14 @@ const uint8_t* SmartPortCard::exportImageData(int device, size_t* size) const {
     return devices_[device].exportData(size);
 }
 
+const uint8_t* SmartPortCard::getBlockData(int device, size_t* size) const {
+    if (device < 0 || device >= MAX_DEVICES) {
+        if (size) *size = 0;
+        return nullptr;
+    }
+    return devices_[device].getBlockData(size);
+}
+
 BlockDevice* SmartPortCard::getDevice(int device) {
     if (device < 0 || device >= MAX_DEVICES) return nullptr;
     return &devices_[device];

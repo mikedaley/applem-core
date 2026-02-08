@@ -57,6 +57,15 @@ public:
                          ProDOSCatalogEntry* entries, int maxEntries);
 
   /**
+   * Read a single directory's entries (no recursion into subdirectories).
+   * startBlock=2 for root directory, or a subdirectory's keyPointer.
+   * Returns number of entries written.
+   */
+  static int readDirectory(const uint8_t* data, size_t size,
+                           int startBlock, const char* pathPrefix,
+                           ProDOSCatalogEntry* entries, int maxEntries);
+
+  /**
    * Read a file's contents based on its catalog entry.
    * outBuf must be large enough (at least entry.eof bytes).
    * Returns bytes written.

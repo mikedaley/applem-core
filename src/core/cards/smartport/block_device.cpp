@@ -94,6 +94,15 @@ const uint8_t* BlockDevice::exportData(size_t* size) const {
     return data_.data();
 }
 
+const uint8_t* BlockDevice::getBlockData(size_t* size) const {
+    if (data_.empty()) {
+        if (size) *size = 0;
+        return nullptr;
+    }
+    if (size) *size = data_.size() - dataOffset_;
+    return data_.data() + dataOffset_;
+}
+
 size_t BlockDevice::getStateSize() const {
     // flags(1) + totalBlocks(2) + dataOffset(4) + filenameLen(2) + filename + dataSize(4) + data
     return 1 + 2 + 4 + 2 + filename_.size() + 4 + data_.size();

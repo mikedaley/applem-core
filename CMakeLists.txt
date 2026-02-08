@@ -240,6 +240,8 @@ if(EMSCRIPTEN)
                 \"_getProDOSEntryIsLocked\", \
                 \"_getProDOSEntryBlocksUsed\", \
                 \"_getProDOSEntryIsDirectory\", \
+                \"_getProDOSEntryKeyPointer\", \
+                \"_getProDOSDirectory\", \
                 \"_readProDOSFile\", \
                 \"_getProDOSFileBuffer\", \
                 \"_mapProDOSFileType\", \
@@ -268,6 +270,7 @@ if(EMSCRIPTEN)
                 \"_isSmartPortImageModified\", \
                 \"_getSmartPortImageData\", \
                 \"_isSmartPortCardInstalled\", \
+                \"_getSmartPortBlockData\", \
                 \"_getSmartPortActivity\", \
                 \"_getSmartPortActivityWrite\", \
                 \"_clearSmartPortActivity\" \

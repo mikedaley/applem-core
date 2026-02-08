@@ -56,6 +56,7 @@ public:
     const std::string& getImageFilename(int device) const;
     bool isImageModified(int device) const;
     const uint8_t* exportImageData(int device, size_t* size) const;
+    const uint8_t* getBlockData(int device, size_t* size) const;
     BlockDevice* getDevice(int device);
     const BlockDevice* getDevice(int device) const;
 

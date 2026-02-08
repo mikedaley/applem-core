@@ -8,6 +8,7 @@
 #include "prodos.hpp"
 #include <cstring>
 #include <cstdio>
+#include <unordered_set>
 
 namespace a2e {
 
@@ -155,13 +156,14 @@ int ProDOS::readDirectoryEntries(const uint8_t* data, size_t size,
                                  int currentCount) {
   int count = currentCount;
   int blockNum = startBlock;
+  int maxBlocks = static_cast<int>(size / BLOCK_SIZE);
 
-  // Visited set for cycle detection
-  bool visited[1024] = {};
+  // Visited set for cycle detection (supports large HD volumes)
+  std::unordered_set<int> visited;
 
   while (blockNum != 0 && count < maxEntries) {
-    if (blockNum >= 1024 || visited[blockNum]) break;
-    visited[blockNum] = true;
+    if (blockNum >= maxBlocks || visited.count(blockNum)) break;
+    visited.insert(blockNum);
 
     uint8_t block[BLOCK_SIZE];
     readBlock(data, size, blockNum, dosOrder, block);
@@ -352,6 +354,16 @@ int ProDOS::mapFileTypeForViewer(uint8_t prodosType) {
     case 0xFF: return 0x04; // SYS -> Binary
     default:   return -1;
   }
+}
+
+int ProDOS::readDirectory(const uint8_t* data, size_t size,
+                          int startBlock, const char* pathPrefix,
+                          ProDOSCatalogEntry* entries, int maxEntries) {
+  ProDOSVolumeInfo info;
+  if (!parseVolumeInfo(data, size, &info)) return 0;
+
+  return readDirectoryEntries(data, size, startBlock, pathPrefix,
+                              info.useDOSSectorOrder, entries, maxEntries, 0);
 }
 
 } // namespace a2e

@@ -33,6 +33,7 @@ public:
     const std::string& getFilename() const { return filename_; }
 
     const uint8_t* exportData(size_t* size) const;
+    const uint8_t* getBlockData(size_t* size) const;
 
     size_t getStateSize() const;
     size_t serialize(uint8_t* buffer, size_t maxSize) const;

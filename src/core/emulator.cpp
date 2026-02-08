@@ -1939,6 +1939,14 @@ const uint8_t* Emulator::exportSmartPortImageData(int device, size_t* size) cons
   return smartport_->exportImageData(device, size);
 }
 
+const uint8_t* Emulator::getSmartPortBlockData(int device, size_t* size) const {
+  if (!smartport_) {
+    if (size) *size = 0;
+    return nullptr;
+  }
+  return smartport_->getBlockData(device, size);
+}
+
 // ==========================================================================
 // Screen text extraction
 // ==========================================================================

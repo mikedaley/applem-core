@@ -236,6 +236,7 @@ public:
   const char* getSmartPortImageFilename(int device) const;
   bool isSmartPortImageModified(int device) const;
   const uint8_t* exportSmartPortImageData(int device, size_t* size) const;
+  const uint8_t* getSmartPortBlockData(int device, size_t* size) const;
   bool isSmartPortCardInstalled() const { return smartport_ != nullptr; }
 
   // Slot management
