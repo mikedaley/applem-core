@@ -164,8 +164,22 @@ void Emulator::setPaused(bool paused) {
     skipBreakpointOnce_ = true;
   }
   if (!paused && paused_ && basicBreakpointHit_) {
-    // Skip this BASIC line until we move to a different line
+    // Skip this BASIC breakpoint until we move to a different line/statement
     skipBasicBreakpointLine_ = basicBreakLine_;
+    // Determine which statement we're on to set the skip correctly
+    uint16_t lineStart = findCurrentLineStart(basicBreakLine_);
+    uint16_t txtptr = mmu_->readRAM(0xB8, false) | (mmu_->readRAM(0xB9, false) << 8);
+    int stmtIdx = (lineStart > 0 && txtptr >= lineStart)
+        ? countColonsBetween(lineStart, txtptr) : 0;
+    // Check if the breakpoint that hit was a statement-level one
+    bool hasStmtBp = false;
+    for (const auto& bp : basicBreakpoints_) {
+      if (bp.lineNumber == basicBreakLine_ && bp.statementIndex >= 0 && bp.statementIndex == stmtIdx) {
+        hasStmtBp = true;
+        break;
+      }
+    }
+    skipBasicBreakpointStmt_ = hasStmtBp ? static_cast<int8_t>(stmtIdx) : -1;
   }
   breakpointHit_ = false;
   basicBreakpointHit_ = false;
@@ -237,6 +251,7 @@ void Emulator::runCycles(int cycles) {
     // Clear skip line when returning to direct mode
     if (basicDirectMode && skipBasicBreakpointLine_ != 0xFFFF) {
       skipBasicBreakpointLine_ = 0xFFFF;
+      skipBasicBreakpointStmt_ = -1;
     }
 
     if (!basicDirectMode) {
@@ -271,16 +286,61 @@ void Emulator::runCycles(int cycles) {
           }
         }
 
-        // Check BASIC line breakpoints
-        if (!basicBreakpoints_.empty() && basicBreakpoints_.count(curlin)) {
-          // Skip if we're stepping or if we're still on the skip line
-          if (basicStepMode_ != BasicStepMode::None || curlin == skipBasicBreakpointLine_) {
-            // Don't clear skip line here - keep skipping until line changes
-          } else {
-            basicBreakpointHit_ = true;
-            basicBreakLine_ = curlin;
-            paused_ = true;
-            return;
+        // Check BASIC line and statement breakpoints
+        if (!basicBreakpoints_.empty()) {
+          bool matched = false;
+          int currentStmtIndex = -2; // Sentinel: not yet computed
+          for (const auto& bp : basicBreakpoints_) {
+            if (bp.lineNumber != curlin) continue;
+            if (bp.statementIndex == -1) {
+              // Whole-line breakpoint
+              matched = true;
+              break;
+            }
+            // Statement-level: lazily compute current statement index
+            if (currentStmtIndex == -2) {
+              uint16_t lineStart = findCurrentLineStart(curlin);
+              uint16_t txtptr = mmu_->readRAM(0xB8, false) | (mmu_->readRAM(0xB9, false) << 8);
+              currentStmtIndex = (lineStart > 0 && txtptr >= lineStart)
+                  ? countColonsBetween(lineStart, txtptr) : 0;
+            }
+            if (bp.statementIndex == currentStmtIndex) {
+              matched = true;
+              break;
+            }
+          }
+
+          if (matched) {
+            // Skip if we're stepping
+            if (basicStepMode_ != BasicStepMode::None) {
+              // Don't break while stepping
+            }
+            // Skip logic: check if this matches the skip (line, stmt) pair
+            else if (curlin == skipBasicBreakpointLine_) {
+              if (skipBasicBreakpointStmt_ == -1) {
+                // Whole-line skip: skip all breakpoints on this line
+              } else {
+                // Statement-level skip: only skip this specific statement
+                if (currentStmtIndex == -2) {
+                  uint16_t lineStart = findCurrentLineStart(curlin);
+                  uint16_t txtptr = mmu_->readRAM(0xB8, false) | (mmu_->readRAM(0xB9, false) << 8);
+                  currentStmtIndex = (lineStart > 0 && txtptr >= lineStart)
+                      ? countColonsBetween(lineStart, txtptr) : 0;
+                }
+                if (currentStmtIndex != skipBasicBreakpointStmt_) {
+                  // Different statement on same line - break!
+                  basicBreakpointHit_ = true;
+                  basicBreakLine_ = curlin;
+                  paused_ = true;
+                  return;
+                }
+              }
+            } else {
+              basicBreakpointHit_ = true;
+              basicBreakLine_ = curlin;
+              paused_ = true;
+              return;
+            }
           }
         }
       }
@@ -288,6 +348,7 @@ void Emulator::runCycles(int cycles) {
       // Clear skip-line when we move to a different line
       if (skipBasicBreakpointLine_ != 0xFFFF && curlin != skipBasicBreakpointLine_) {
         skipBasicBreakpointLine_ = 0xFFFF;
+        skipBasicBreakpointStmt_ = -1;
       }
     }
 
@@ -605,12 +666,12 @@ void Emulator::enableBreakpoint(uint16_t address, bool enabled) {
 // BASIC Breakpoints
 // ============================================================================
 
-void Emulator::addBasicBreakpoint(uint16_t lineNumber) {
-  basicBreakpoints_.insert(lineNumber);
+void Emulator::addBasicBreakpoint(uint16_t lineNumber, int statementIndex) {
+  basicBreakpoints_.insert({lineNumber, static_cast<int8_t>(statementIndex)});
 }
 
-void Emulator::removeBasicBreakpoint(uint16_t lineNumber) {
-  basicBreakpoints_.erase(lineNumber);
+void Emulator::removeBasicBreakpoint(uint16_t lineNumber, int statementIndex) {
+  basicBreakpoints_.erase({lineNumber, static_cast<int8_t>(statementIndex)});
 }
 
 void Emulator::clearBasicBreakpoints() {

@@ -87,9 +87,9 @@ public:
   bool isBreakpointHit() const { return breakpointHit_; }
   uint16_t getBreakpointAddress() const { return breakpointAddress_; }
 
-  // BASIC line breakpoints
-  void addBasicBreakpoint(uint16_t lineNumber);
-  void removeBasicBreakpoint(uint16_t lineNumber);
+  // BASIC line and statement breakpoints
+  void addBasicBreakpoint(uint16_t lineNumber, int statementIndex);
+  void removeBasicBreakpoint(uint16_t lineNumber, int statementIndex);
   void clearBasicBreakpoints();
   void clearBasicBreakpointHit();  // Clear hit state for fresh run
   bool hasBasicBreakpoints() const { return !basicBreakpoints_.empty(); }
@@ -280,11 +280,20 @@ private:
   bool paused_ = false;
   bool skipBreakpointOnce_ = false;
 
-  // BASIC breakpoints
-  std::set<uint16_t> basicBreakpoints_;
+  // BASIC breakpoints - supports whole-line and statement-level
+  struct BasicBreakpoint {
+    uint16_t lineNumber;
+    int8_t statementIndex;  // -1 = whole line, 0+ = specific statement
+    bool operator<(const BasicBreakpoint& o) const {
+      if (lineNumber != o.lineNumber) return lineNumber < o.lineNumber;
+      return statementIndex < o.statementIndex;
+    }
+  };
+  std::set<BasicBreakpoint> basicBreakpoints_;
   bool basicBreakpointHit_ = false;
   uint16_t basicBreakLine_ = 0;
   uint16_t skipBasicBreakpointLine_ = 0xFFFF;  // Line to skip (0xFFFF = none)
+  int8_t skipBasicBreakpointStmt_ = -1;        // Statement to skip (-1 = whole line)
 
   // BASIC program execution tracking - set by monitoring ROM entry points
   // $D912 (RUN) sets true, $D43C (RESTART/] prompt) sets false
