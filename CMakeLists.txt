@@ -253,7 +253,12 @@ if(EMSCRIPTEN)
                 \"_loadAsmIntoMemory\", \
                 \"_getAsmSymbolCount\", \
                 \"_getAsmSymbolName\", \
-                \"_getAsmSymbolValue\" \
+                \"_getAsmSymbolValue\", \
+                \"_isBasicErrorHit\", \
+                \"_getBasicErrorLine\", \
+                \"_getBasicErrorTxtptr\", \
+                \"_getBasicErrorCode\", \
+                \"_clearBasicError\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \

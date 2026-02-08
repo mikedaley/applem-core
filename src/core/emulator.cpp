@@ -235,8 +235,25 @@ void Emulator::runCycles(int cycles) {
       uint16_t pc = cpu_->getPC();
       if (pc == 0xD912 && !basicProgramRunning_) {
         basicProgramRunning_ = true;
+        basicErrorHit_ = false;  // Clear error state on new RUN
       } else if (pc == 0xD43C && basicProgramRunning_) {
         basicProgramRunning_ = false;
+      }
+
+      // ERROR handler entry at $D412 — X register holds error code offset,
+      // CURLIN and TXTPTR still point to the offending location.
+      // Only capture if ERRFLG ($D8) bit 7 is clear (no ONERR GOTO active).
+      if (pc == 0xD412 && basicProgramRunning_) {
+        uint8_t errflg = mmu_->readRAM(0xD8, false);
+        if (!(errflg & 0x80)) {
+          uint8_t curlinHi = mmu_->readRAM(0x76, false);
+          if (curlinHi != 0xFF) {  // Not in direct mode
+            basicErrorHit_ = true;
+            basicErrorLine_ = mmu_->readRAM(0x75, false) | (static_cast<uint16_t>(curlinHi) << 8);
+            basicErrorTxtptr_ = mmu_->readRAM(0xB8, false) | (mmu_->readRAM(0xB9, false) << 8);
+            basicErrorCode_ = cpu_->getX();
+          }
+        }
       }
     }
 

@@ -101,6 +101,13 @@ public:
   void stepBasicStatement();
   bool isBasicStepping() const { return basicStepMode_ != BasicStepMode::None; }
   bool isBasicProgramRunning() const { return basicProgramRunning_; }
+
+  // BASIC runtime error state
+  bool isBasicErrorHit() const { return basicErrorHit_; }
+  uint16_t getBasicErrorLine() const { return basicErrorLine_; }
+  uint16_t getBasicErrorTxtptr() const { return basicErrorTxtptr_; }
+  uint8_t getBasicErrorCode() const { return basicErrorCode_; }
+  void clearBasicError() { basicErrorHit_ = false; }
   uint16_t getBasicTxtptr() const;  // Get current TXTPTR for statement highlighting
   int getBasicStatementIndex();     // Get current statement index (0-based)
 
@@ -298,6 +305,12 @@ private:
   // BASIC program execution tracking - set by monitoring ROM entry points
   // $D912 (RUN) sets true, $D43C (RESTART/] prompt) sets false
   bool basicProgramRunning_ = false;
+
+  // BASIC runtime error tracking - captured at $D412 (ERROR handler entry)
+  bool basicErrorHit_ = false;
+  uint16_t basicErrorLine_ = 0;      // CURLIN at error time
+  uint16_t basicErrorTxtptr_ = 0;    // TXTPTR at error time
+  uint8_t basicErrorCode_ = 0;       // X register (error message table offset)
 
   // BASIC stepping
   BasicStepMode basicStepMode_ = BasicStepMode::None;
