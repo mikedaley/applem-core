@@ -240,27 +240,43 @@ void Emulator::runCycles(int cycles) {
     }
 
     if (!basicDirectMode) {
-      // BASIC line stepping - pause when CURLIN changes
-      if (basicStepMode_ == BasicStepMode::Line) {
-        if (curlin != basicStepFromLine_) {
-          basicStepMode_ = BasicStepMode::None;
-          basicBreakpointHit_ = true;
-          basicBreakLine_ = curlin;
-          paused_ = true;
-          return;
-        }
-      }
+      uint16_t pc = cpu_->getPC();
 
-      // BASIC statement stepping - pause when PC hits $D820 (JSR EXECUTE_STATEMENT)
-      // At $D820, both new-line and colon paths have converged: CURLIN is correct
-      // and TXTPTR points to the first token of the statement about to execute.
-      if (basicStepMode_ == BasicStepMode::Statement) {
-        uint16_t pc = cpu_->getPC();
-        if (pc == 0xD820) {
+      // All BASIC stepping and line breakpoints fire at $D820 (EXECUTE_STATEMENT).
+      // At this ROM address, both new-line and colon paths have converged:
+      // CURLIN is correct and TXTPTR points to the first token of the statement
+      // about to execute. This ensures consistent state for statement highlighting.
+      if (pc == 0xD820) {
+        // BASIC line stepping - pause when CURLIN changes
+        if (basicStepMode_ == BasicStepMode::Line) {
+          if (curlin != basicStepFromLine_) {
+            basicStepMode_ = BasicStepMode::None;
+            basicBreakpointHit_ = true;
+            basicBreakLine_ = curlin;
+            paused_ = true;
+            return;
+          }
+        }
+
+        // BASIC statement stepping
+        if (basicStepMode_ == BasicStepMode::Statement) {
           if (basicStepSkipFirst_) {
             basicStepSkipFirst_ = false;
           } else {
             basicStepMode_ = BasicStepMode::None;
+            basicBreakpointHit_ = true;
+            basicBreakLine_ = curlin;
+            paused_ = true;
+            return;
+          }
+        }
+
+        // Check BASIC line breakpoints
+        if (!basicBreakpoints_.empty() && basicBreakpoints_.count(curlin)) {
+          // Skip if we're stepping or if we're still on the skip line
+          if (basicStepMode_ != BasicStepMode::None || curlin == skipBasicBreakpointLine_) {
+            // Don't clear skip line here - keep skipping until line changes
+          } else {
             basicBreakpointHit_ = true;
             basicBreakLine_ = curlin;
             paused_ = true;
@@ -272,19 +288,6 @@ void Emulator::runCycles(int cycles) {
       // Clear skip-line when we move to a different line
       if (skipBasicBreakpointLine_ != 0xFFFF && curlin != skipBasicBreakpointLine_) {
         skipBasicBreakpointLine_ = 0xFFFF;
-      }
-
-      // Check BASIC line breakpoints
-      if (!basicBreakpoints_.empty() && basicBreakpoints_.count(curlin)) {
-        // Skip if we're stepping or if we're still on the skip line
-        if (basicStepMode_ != BasicStepMode::None || curlin == skipBasicBreakpointLine_) {
-          // Don't clear skip line here - keep skipping until line changes
-        } else {
-          basicBreakpointHit_ = true;
-          basicBreakLine_ = curlin;
-          paused_ = true;
-          return;
-        }
       }
     }
 
