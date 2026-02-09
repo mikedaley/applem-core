@@ -208,6 +208,7 @@ if(EMSCRIPTEN)
                 \"_clearTempBreakpoint\", \
                 \"_isTempBreakpointHit\", \
                 \"_getOpcodeMnemonic\", \
+                \"_getOpcodeAddressingMode\", \
                 \"_getCallStack\", \
                 \"_getCallStackBuffer\", \
                 \"_isLikelyReturnAddress\", \
