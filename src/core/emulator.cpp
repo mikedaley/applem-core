@@ -109,8 +109,11 @@ void Emulator::reset() {
   keyDown_ = false;
   speedMultiplier_ = 1;
   lastFrameCycle_ = 0;
+  samplesGenerated_ = 0;
   frameReady_ = false;
   breakpointHit_ = false;
+  watchpointHit_ = false;
+  skipBreakpointOnce_ = false;
   tempBreakpointActive_ = false;
   tempBreakpoint_ = 0;
   tempBreakpointHit_ = false;
@@ -124,6 +127,17 @@ void Emulator::reset() {
   beamBreakHitScanline_ = -1;
   beamBreakHitHPos_ = -1;
   paused_ = false;
+
+  // Clear BASIC debugging state
+  basicProgramRunning_ = false;
+  basicBreakpointHit_ = false;
+  basicErrorHit_ = false;
+  basicErrorLine_ = 0;
+  basicErrorCode_ = 0;
+  basicStepMode_ = BasicStepMode::None;
+  skipBasicBreakpointLine_ = 0xFFFF;
+  skipBasicBreakpointStmt_ = -1;
+  basicBreakLine_ = 0;
 
   video_->beginNewFrame(0);
 }
