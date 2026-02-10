@@ -45,6 +45,15 @@ static constexpr std::array<int8_t, 256> DECODE_6_AND_2 = []() {
 
 DskDiskImage::DskDiskImage() { sector_data_.fill(0); }
 
+void DskDiskImage::resetState() {
+  quarter_track_ = 0;
+  phase_states_ = 0;
+  current_phase_ = 0;
+  nibble_position_ = 0;
+  bit_position_ = 0;
+  last_cycle_count_ = 0;
+}
+
 bool DskDiskImage::load(const uint8_t *data, size_t size,
                         const std::string &filename) {
   // Check file size

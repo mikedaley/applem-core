@@ -48,6 +48,9 @@ public:
   bool isLoaded() const override;
   Format getFormat() const override;
 
+  // Reset
+  void resetState() override;
+
   // Head positioning
   void setPhase(int phase, bool on) override;
   int getQuarterTrack() const override;

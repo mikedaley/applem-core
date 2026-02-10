@@ -236,6 +236,15 @@ public:
    */
   virtual size_t getCurrentNibblePosition() const = 0;
 
+  // ===== Reset =====
+
+  /**
+   * Reset runtime positioning state while preserving loaded disk data.
+   * Resets head position, phase states, bit position, and cycle counters
+   * back to initial values as if the disk was freshly inserted.
+   */
+  virtual void resetState() = 0;
+
   // ===== Filename Tracking =====
 
   /**

@@ -274,6 +274,7 @@ private:
     uint64_t lastLSSCycle_ = 0;     // Last cycle LSS was clocked
     uint8_t busData_ = 0;           // CPU bus data for LOAD operations
     uint8_t lssClock_ = 0;         // 8-phase clock (0-7), disk I/O at phase 4
+    uint8_t writeLevel_ = 0;       // Previous write amplifier level for transition encoding
 
     // Disk images for each drive
     std::unique_ptr<DiskImage> diskImages_[2];

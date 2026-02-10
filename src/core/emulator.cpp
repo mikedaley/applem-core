@@ -109,8 +109,11 @@ void Emulator::reset() {
   keyDown_ = false;
   speedMultiplier_ = 1;
   lastFrameCycle_ = 0;
+  samplesGenerated_ = 0;
   frameReady_ = false;
   breakpointHit_ = false;
+  watchpointHit_ = false;
+  skipBreakpointOnce_ = false;
   tempBreakpointActive_ = false;
   tempBreakpoint_ = 0;
   tempBreakpointHit_ = false;
@@ -125,39 +128,52 @@ void Emulator::reset() {
   beamBreakHitHPos_ = -1;
   paused_ = false;
 
+  // Clear BASIC debugging state
+  basicProgramRunning_ = false;
+  basicBreakpointHit_ = false;
+  basicErrorHit_ = false;
+  basicErrorLine_ = 0;
+  basicErrorCode_ = 0;
+  basicStepMode_ = BasicStepMode::None;
+  skipBasicBreakpointLine_ = 0xFFFF;
+  skipBasicBreakpointStmt_ = -1;
+  basicBreakLine_ = 0;
+
   video_->beginNewFrame(0);
 }
 
 void Emulator::warmReset() {
-  // Warm reset - only reset CPU, preserve memory and disk state
+  // Warm reset - CPU jumps to reset vector, preserves memory and disk state
   cpu_->reset();
-
-  // Clear keyboard strobe
-  keyboardLatch_ &= 0x7F;
-
-  // Reset keyboard modifier states
+  audio_->reset();
   keyboard_->reset();
+
+  // Stop disk motor (real Apple IIe reset signal turns off motor)
+  if (disk_) disk_->stopMotor();
+
+  // Clear Apple button states
   setButton(0, false);
   setButton(1, false);
 
-  // Stop disk motor (real Apple II behavior on Ctrl+Reset)
-  if (disk_) disk_->stopMotor();
+  // Reset video to clean frame state
+  video_->beginNewFrame(cpu_->getTotalCycles());
 
+  // Clear debugger hit flags
   breakpointHit_ = false;
   watchpointHit_ = false;
+  skipBreakpointOnce_ = false;
   tempBreakpointActive_ = false;
-  tempBreakpoint_ = 0;
   tempBreakpointHit_ = false;
   beamBreakHit_ = false;
-  beamBreakHitId_ = -1;
-  beamBreakHitScanline_ = -1;
-  beamBreakHitHPos_ = -1;
-  // Keep breakpoints but reset per-breakpoint fire tracking
-  for (auto& bp : beamBreakpoints_) {
-    bp.lastFireFrame = UINT64_MAX;
-    bp.lastFireScanline = -1;
-  }
+
+  // Clear BASIC debugger state
+  basicBreakpointHit_ = false;
+  basicStepMode_ = BasicStepMode::None;
+  basicBreakLine_ = 0;
+
   paused_ = false;
+  frameReady_ = false;
+  samplesGenerated_ = 0;
 }
 
 void Emulator::setPaused(bool paused) {
