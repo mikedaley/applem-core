@@ -151,11 +151,10 @@ void Disk2Card::reset() {
     lssClock_ = 0;
     writeLevel_ = 0;
 
-    // Reset disk image track positions and sync timing (but preserve loaded disks)
+    // Reset disk image positioning state (but preserve loaded disks)
     for (int i = 0; i < 2; i++) {
         if (diskImages_[i]) {
-            diskImages_[i]->setQuarterTrack(0);
-            diskImages_[i]->advanceBitPosition(0);
+            diskImages_[i]->resetState();
         }
     }
 }

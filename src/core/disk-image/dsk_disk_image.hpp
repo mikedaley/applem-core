@@ -50,6 +50,9 @@ public:
   bool isLoaded() const override { return loaded_; }
   Format getFormat() const override { return format_; }
 
+  // ===== Reset =====
+  void resetState() override;
+
   // ===== Head Positioning =====
   void setPhase(int phase, bool on) override;
   int getQuarterTrack() const override { return quarter_track_; }

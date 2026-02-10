@@ -55,6 +55,14 @@ void WozDiskImage::reset() {
   sectors_decoded_ = false;
 }
 
+void WozDiskImage::resetState() {
+  phase_states_ = 0;
+  quarter_track_ = 0;
+  current_phase_ = 0;
+  bit_position_ = 0;
+  last_cycle_count_ = 0;
+}
+
 bool WozDiskImage::load(const uint8_t *data, size_t size,
                         const std::string &filename) {
   reset();

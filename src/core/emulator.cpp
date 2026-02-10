@@ -143,35 +143,8 @@ void Emulator::reset() {
 }
 
 void Emulator::warmReset() {
-  // Warm reset - only reset CPU, preserve memory and disk state
-  cpu_->reset();
-
-  // Clear keyboard strobe
-  keyboardLatch_ &= 0x7F;
-
-  // Reset keyboard modifier states
-  keyboard_->reset();
-  setButton(0, false);
-  setButton(1, false);
-
-  // Stop disk motor (real Apple II behavior on Ctrl+Reset)
-  if (disk_) disk_->stopMotor();
-
-  breakpointHit_ = false;
-  watchpointHit_ = false;
-  tempBreakpointActive_ = false;
-  tempBreakpoint_ = 0;
-  tempBreakpointHit_ = false;
-  beamBreakHit_ = false;
-  beamBreakHitId_ = -1;
-  beamBreakHitScanline_ = -1;
-  beamBreakHitHPos_ = -1;
-  // Keep breakpoints but reset per-breakpoint fire tracking
-  for (auto& bp : beamBreakpoints_) {
-    bp.lastFireFrame = UINT64_MAX;
-    bp.lastFireScanline = -1;
-  }
-  paused_ = false;
+  // Full reset - restart the entire emulator core from scratch
+  reset();
 }
 
 void Emulator::setPaused(bool paused) {
