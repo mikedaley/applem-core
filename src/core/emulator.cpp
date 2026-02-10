@@ -148,6 +148,9 @@ void Emulator::warmReset() {
   audio_->reset();
   keyboard_->reset();
 
+  // Stop disk motor (real Apple IIe reset signal turns off motor)
+  if (disk_) disk_->stopMotor();
+
   // Clear Apple button states
   setButton(0, false);
   setButton(1, false);
