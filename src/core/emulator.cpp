@@ -143,8 +143,34 @@ void Emulator::reset() {
 }
 
 void Emulator::warmReset() {
-  // Full reset - restart the entire emulator core from scratch
-  reset();
+  // Warm reset - CPU jumps to reset vector, preserves memory and disk state
+  cpu_->reset();
+  audio_->reset();
+  keyboard_->reset();
+
+  // Clear Apple button states
+  setButton(0, false);
+  setButton(1, false);
+
+  // Reset video to clean frame state
+  video_->beginNewFrame(cpu_->getTotalCycles());
+
+  // Clear debugger hit flags
+  breakpointHit_ = false;
+  watchpointHit_ = false;
+  skipBreakpointOnce_ = false;
+  tempBreakpointActive_ = false;
+  tempBreakpointHit_ = false;
+  beamBreakHit_ = false;
+
+  // Clear BASIC debugger state
+  basicBreakpointHit_ = false;
+  basicStepMode_ = BasicStepMode::None;
+  basicBreakLine_ = 0;
+
+  paused_ = false;
+  frameReady_ = false;
+  samplesGenerated_ = 0;
 }
 
 void Emulator::setPaused(bool paused) {
