@@ -144,6 +144,9 @@ void Emulator::reset() {
 
 void Emulator::warmReset() {
   // Warm reset - CPU jumps to reset vector, preserves memory and disk state
+  // On real hardware, the reset signal resets soft switches via the IOU chip
+  // but does not clear RAM, so programs in memory are preserved
+  mmu_->warmReset();
   cpu_->reset();
   audio_->reset();
   keyboard_->reset();
