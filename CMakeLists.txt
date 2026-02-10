@@ -32,6 +32,7 @@ set(CORE_SOURCES
     src/core/filesystem/dos33.cpp
     src/core/filesystem/prodos.cpp
     src/core/basic/basic_detokenizer.cpp
+    src/core/basic/basic_tokenizer.cpp
     src/core/assembler/assembler.cpp
     src/bindings/wasm_interface.cpp
 )
@@ -274,7 +275,8 @@ if(EMSCRIPTEN)
                 \"_getSmartPortBlockData\", \
                 \"_getSmartPortActivity\", \
                 \"_getSmartPortActivityWrite\", \
-                \"_clearSmartPortActivity\" \
+                \"_clearSmartPortActivity\", \
+                \"_loadBasicProgram\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
