@@ -149,11 +149,13 @@ void Disk2Card::reset() {
     lastLSSCycle_ = 0;
     busData_ = 0;
     lssClock_ = 0;
+    writeLevel_ = 0;
 
-    // Reset disk image track positions (but preserve loaded disks)
+    // Reset disk image track positions and sync timing (but preserve loaded disks)
     for (int i = 0; i < 2; i++) {
         if (diskImages_[i]) {
             diskImages_[i]->setQuarterTrack(0);
+            diskImages_[i]->advanceBitPosition(0);
         }
     }
 }
@@ -199,6 +201,7 @@ size_t Disk2Card::serialize(uint8_t* buffer, size_t maxSize) const {
     buffer[offset++] = sequencerState_;
     buffer[offset++] = busData_;
     buffer[offset++] = lssClock_;
+    buffer[offset++] = writeLevel_;
 
     return offset;
 }
@@ -232,6 +235,9 @@ size_t Disk2Card::deserialize(const uint8_t* buffer, size_t size) {
         setSequencerState(buffer[offset++]);
         setBusData(buffer[offset++]);
         setLSSClock(buffer[offset++]);
+    }
+    if (offset < size) {
+        writeLevel_ = buffer[offset++] & 0x01;
     }
 
     return offset;
@@ -422,9 +428,14 @@ void Disk2Card::clockLSS() {
         break;
     }
 
-    // Write mode: output bit and advance head at phase 4
+    // Write mode: output bit and advance head at phase 4.
+    // The P6 ROM state bit 3 is the write amplifier LEVEL (magnetic polarity).
+    // Disk formats (WOZ/DSK) store flux TRANSITIONS (1 = polarity change).
+    // Convert level to transition via XOR with previous level.
     if (lssClock_ == 4 && q7_) {
-        disk->writeBit((nextState >> 3) & 1);
+        uint8_t level = (nextState >> 3) & 1;
+        disk->writeBit(level ^ writeLevel_);
+        writeLevel_ = level;
     }
 
     sequencerState_ = nextState;
