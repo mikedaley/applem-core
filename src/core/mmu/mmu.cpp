@@ -46,6 +46,26 @@ void MMU::reset() {
   clearTracking();
 }
 
+void MMU::warmReset() {
+  // Reset soft switches to default state (preserves all RAM)
+  // On real Apple IIe hardware, the reset signal resets the IOU/MMU
+  // soft switches but does not clear memory
+  switches_ = SoftSwitches{};
+
+  // Keyboard
+  keyboardLatch_ = 0;
+
+  // Reset expansion slot state
+  activeExpansionSlot_ = 0;
+
+  // Reset all installed cards
+  for (auto& card : slots_) {
+    if (card) {
+      card->reset();
+    }
+  }
+}
+
 // ===== Expansion Slot Management =====
 
 std::unique_ptr<ExpansionCard> MMU::insertCard(uint8_t slot, std::unique_ptr<ExpansionCard> card) {

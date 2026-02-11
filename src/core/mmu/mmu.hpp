@@ -152,6 +152,7 @@ public:
 
   // Reset
   void reset();
+  void warmReset();  // Reset soft switches and cards, preserve RAM
 
   // Memory access tracking for debugger heat map
   void enableTracking(bool enable) { trackingEnabled_ = enable; }
