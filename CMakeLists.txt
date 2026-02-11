@@ -31,6 +31,7 @@ set(CORE_SOURCES
     src/core/debug/condition_evaluator.cpp
     src/core/filesystem/dos33.cpp
     src/core/filesystem/prodos.cpp
+    src/core/filesystem/pascal.cpp
     src/core/basic/basic_detokenizer.cpp
     src/core/basic/basic_tokenizer.cpp
     src/core/assembler/assembler.cpp
@@ -247,6 +248,19 @@ if(EMSCRIPTEN)
                 \"_readProDOSFile\", \
                 \"_getProDOSFileBuffer\", \
                 \"_mapProDOSFileType\", \
+                \"_isPascalFormat\", \
+                \"_getPascalVolumeInfo\", \
+                \"_getPascalVolumeName\", \
+                \"_getPascalTotalBlocks\", \
+                \"_getPascalCatalog\", \
+                \"_getPascalEntryFilename\", \
+                \"_getPascalEntryFileType\", \
+                \"_getPascalEntryFileTypeName\", \
+                \"_getPascalEntryFileSize\", \
+                \"_getPascalEntryBlocksUsed\", \
+                \"_readPascalFile\", \
+                \"_getPascalFileBuffer\", \
+                \"_mapPascalFileType\", \
                 \"_detokenizeApplesoft\", \
                 \"_detokenizeIntegerBasic\", \
                 \"_assembleSource\", \
