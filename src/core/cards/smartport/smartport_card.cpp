@@ -84,6 +84,13 @@ void SmartPortCard::buildROM() {
     rom_[0xFF] = PRODOS_ENTRY;
 }
 
+bool SmartPortCard::hasAnyDevice() const {
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        if (devices_[i].isLoaded()) return true;
+    }
+    return false;
+}
+
 void SmartPortCard::reset() {
     booted_ = false;
     activity_ = false;
@@ -144,6 +151,9 @@ void SmartPortCard::writeIO(uint8_t offset, uint8_t value) {
 }
 
 uint8_t SmartPortCard::readROM(uint8_t offset) {
+    // When no devices are loaded, hide the ROM so ProDOS doesn't detect this slot
+    if (!hasAnyDevice()) return 0;
+
     // Check if the CPU is executing at this ROM address (not just reading data).
     // The CPU's fetch() does read(pc_++) so by the time the read callback fires,
     // PC has already been incremented by 1. We account for this by comparing
@@ -362,7 +372,6 @@ void SmartPortCard::handleSmartPort() {
                 for (int i = 0; i < MAX_DEVICES; i++) {
                     if (devices_[i].isLoaded()) count = i + 1;
                 }
-                if (count == 0) count = MAX_DEVICES; // always report max slots
                 // Write device count to status buffer
                 memWrite_(statusBuf, static_cast<uint8_t>(count));
                 setErrorResult(SP_OK);

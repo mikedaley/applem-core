@@ -35,7 +35,7 @@ public:
     uint8_t peekIO(uint8_t offset) const override { return 0xFF; }
 
     uint8_t readROM(uint8_t offset) override;
-    bool hasROM() const override { return true; }
+    bool hasROM() const override { return hasAnyDevice(); }
 
     void reset() override;
     const char* getName() const override { return "SmartPort"; }
@@ -82,6 +82,7 @@ public:
 
 private:
     void buildROM();
+    bool hasAnyDevice() const;
     bool handleBoot();
     void handleProDOSBlock();
     void handleSmartPort();
