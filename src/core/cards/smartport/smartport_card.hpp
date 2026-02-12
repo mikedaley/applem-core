@@ -24,6 +24,7 @@ public:
     using RegGetCallback8 = std::function<uint8_t()>;
     using RegSetCallback8 = std::function<void(uint8_t)>;
     using RegGetCallback16 = std::function<uint16_t()>;
+    using RegSetCallback16 = std::function<void(uint16_t)>;
 
     SmartPortCard();
     ~SmartPortCard() override = default;
@@ -70,6 +71,7 @@ public:
     void setGetSP(RegGetCallback8 cb) { getSP_ = cb; }
     void setSetSP(RegSetCallback8 cb) { setSP_ = cb; }
     void setGetPC(RegGetCallback16 cb) { getPC_ = cb; }
+    void setSetPC(RegSetCallback16 cb) { setPC_ = cb; }
     void setSetX(RegSetCallback8 cb) { setX_ = cb; }
     void setSetY(RegSetCallback8 cb) { setY_ = cb; }
 
@@ -80,7 +82,7 @@ public:
 
 private:
     void buildROM();
-    void handleBoot();
+    bool handleBoot();
     void handleProDOSBlock();
     void handleSmartPort();
     void setErrorResult(uint8_t errorCode);
@@ -109,6 +111,7 @@ private:
     RegGetCallback8 getSP_;
     RegSetCallback8 setSP_;
     RegGetCallback16 getPC_;
+    RegSetCallback16 setPC_;
     RegSetCallback8 setX_;
     RegSetCallback8 setY_;
 };

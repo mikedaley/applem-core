@@ -1348,6 +1348,7 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     card->setGetSP([this]() { return cpu_->getSP(); });
     card->setSetSP([this](uint8_t v) { cpu_->setSP(v); });
     card->setGetPC([this]() { return cpu_->getPC(); });
+    card->setSetPC([this](uint16_t v) { cpu_->setPC(v); });
     card->setSetX([this](uint8_t v) { cpu_->setX(v); });
     card->setSetY([this](uint8_t v) { cpu_->setY(v); });
     smartport_ = card.get();
@@ -1896,6 +1897,9 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
               card->setGetSP([this]() { return cpu_->getSP(); });
               card->setSetSP([this](uint8_t v) { cpu_->setSP(v); });
               card->setGetPC([this]() { return cpu_->getPC(); });
+              card->setSetPC([this](uint16_t v) { cpu_->setPC(v); });
+              card->setSetX([this](uint8_t v) { cpu_->setX(v); });
+              card->setSetY([this](uint8_t v) { cpu_->setY(v); });
               smartport_ = card.get();
               mmu_->insertCard(slot, std::move(card));
               existingCard = mmu_->getCard(slot);

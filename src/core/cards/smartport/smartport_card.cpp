@@ -64,10 +64,9 @@ void SmartPortCard::buildROM() {
     rom_[0x0A] = 0x8E;
     rom_[0x0B] = ioAddr;
     rom_[0x0C] = 0xC0;
-    // JMP $0801
-    rom_[0x0D] = 0x4C;
-    rom_[0x0E] = 0x01;
-    rom_[0x0F] = 0x08;
+    // RTS - if boot succeeded, writeIO pushed $0800 on stack so RTS goes to $0801.
+    // If no disk loaded, RTS returns to the autostart ROM caller which scans the next slot.
+    rom_[0x0D] = 0x60;
 
     // ProDOS block device entry at $10: SEC + RTS (trapped by readROM)
     rom_[PRODOS_ENTRY] = 0x38;     // SEC
@@ -99,7 +98,28 @@ uint8_t SmartPortCard::readIO(uint8_t offset) {
 void SmartPortCard::writeIO(uint8_t offset, uint8_t value) {
     if (offset == BOOT_IO_OFFSET) {
         // Boot trap: load block 0 of device 0 into $0800
-        if (!devices_[0].isLoaded() || !memWrite_) return;
+        if (!devices_[0].isLoaded() || !memWrite_ || !getSP_ || !setSP_) {
+            // Mark as booted so subsequent ProDOS calls to $Cn10 are handled
+            // as block device driver calls rather than triggering another boot.
+            booted_ = true;
+            // No disk loaded. Scan lower slots for the next bootable device,
+            // mimicking the autostart ROM's 7→1 scan that was interrupted.
+            if (setPC_ && memRead_) {
+                for (int slot = slotNum_ - 1; slot >= 1; slot--) {
+                    uint16_t base = 0xC000 | (slot << 8);
+                    uint8_t sig = memRead_(base + 1); // $Cn01
+                    if (sig == 0x20) {
+                        // ProDOS-compatible device found (Disk II, SmartPort, etc.)
+                        uint8_t entry = memRead_(base + 0xFF);
+                        setPC_(base + (entry ? entry : 0));
+                        return;
+                    }
+                }
+                // No bootable slot found — fall through to Applesoft prompt
+                setPC_(0xE003);
+            }
+            return;
+        }
 
         uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
         if (devices_[0].readBlock(0, blockBuf)) {
@@ -108,6 +128,17 @@ void SmartPortCard::writeIO(uint8_t offset, uint8_t value) {
             }
             activity_ = true;
             activityWrite_ = false;
+
+            // Set X to slot*16 (ProDOS boot block expects this)
+            if (setX_) setX_(slotNum_ << 4);
+
+            // Push $0800 onto the stack so the RTS in boot ROM goes to $0801
+            uint8_t sp = getSP_();
+            memWrite_(0x0100 + sp, 0x08);       // high byte
+            sp = static_cast<uint8_t>(sp - 1);
+            memWrite_(0x0100 + sp, 0x00);       // low byte
+            sp = static_cast<uint8_t>(sp - 1);
+            setSP_(sp);
         }
     }
 }
@@ -123,7 +154,23 @@ uint8_t SmartPortCard::readROM(uint8_t offset) {
         if (offset == PRODOS_ENTRY) {
             if (!booted_) {
                 // First call to entry point = boot (from autostart ROM or PR#n fallthrough)
-                handleBoot();
+                if (!handleBoot()) {
+                    // No disk loaded. Scan lower slots for the next bootable
+                    // device, continuing the autostart ROM's 7→1 scan.
+                    if (setPC_ && memRead_) {
+                        for (int slot = slotNum_ - 1; slot >= 1; slot--) {
+                            uint16_t base = 0xC000 | (slot << 8);
+                            uint8_t sig = memRead_(base + 1);
+                            if (sig == 0x20) {
+                                uint8_t entry = memRead_(base + 0xFF);
+                                setPC_(base + (entry ? entry : 0));
+                                return 0xEA; // NOP
+                            }
+                        }
+                        setPC_(0xE003); // No bootable slot — Applesoft prompt
+                    }
+                    return 0xEA; // NOP (harmless; CPU continues from new PC)
+                }
             } else {
                 // Subsequent calls = ProDOS block driver calls
                 handleProDOSBlock();
@@ -139,17 +186,17 @@ uint8_t SmartPortCard::readROM(uint8_t offset) {
     return rom_[offset];
 }
 
-void SmartPortCard::handleBoot() {
+bool SmartPortCard::handleBoot() {
     // Called when the autostart ROM or PR#n reaches the entry point for the first time.
     // Load block 0 of device 0 into $0800, set X to slot*16, and arrange
     // for the CPU to jump to $0801 (ProDOS boot block entry) via RTS.
     booted_ = true;
 
-    if (!devices_[0].isLoaded() || !memWrite_ || !getSP_ || !setSP_) return;
+    if (!devices_[0].isLoaded() || !memWrite_ || !getSP_ || !setSP_) return false;
 
     // Load block 0 into $0800
     uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
-    if (!devices_[0].readBlock(0, blockBuf)) return;
+    if (!devices_[0].readBlock(0, blockBuf)) return false;
 
     for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
         memWrite_(static_cast<uint16_t>(0x0800 + i), blockBuf[i]);
@@ -168,6 +215,7 @@ void SmartPortCard::handleBoot() {
     memWrite_(0x0100 + sp, 0x00);       // low byte
     sp = static_cast<uint8_t>(sp - 1);
     setSP_(sp);
+    return true;
 }
 
 void SmartPortCard::setErrorResult(uint8_t errorCode) {
