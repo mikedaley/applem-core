@@ -290,7 +290,41 @@ if(EMSCRIPTEN)
                 \"_getSmartPortActivity\", \
                 \"_getSmartPortActivityWrite\", \
                 \"_clearSmartPortActivity\", \
-                \"_loadBasicProgram\" \
+                \"_loadBasicProgram\", \
+                \"_generateStereoAudioSamples\", \
+                \"_setAudioVolume\", \
+                \"_setAudioMuted\", \
+                \"_setButton\", \
+                \"_setPaddleValue\", \
+                \"_getPaddleValue\", \
+                \"_getDiskSectorData\", \
+                \"_stopDiskMotor\", \
+                \"_getTrackNibble\", \
+                \"_getTrackNibbleCount\", \
+                \"_getCurrentNibblePosition\", \
+                \"_peekAuxMemory\", \
+                \"_enableMemoryTracking\", \
+                \"_clearMemoryTracking\", \
+                \"_decayMemoryTracking\", \
+                \"_getMemoryReadCounts\", \
+                \"_getMemoryWriteCounts\", \
+                \"_getMainRAM\", \
+                \"_getAuxRAM\", \
+                \"_getSystemROM\", \
+                \"_setUKCharacterSet\", \
+                \"_isUKCharacterSet\", \
+                \"_getSoftSwitchStateHigh\", \
+                \"_disassembleWithFlowAnalysis\", \
+                \"_disassembleWithFlowAnalysisMultiEntry\", \
+                \"_getBasicDebugInfo\", \
+                \"_isMockingboardEnabled\", \
+                \"_getMockingboardPSGRegister\", \
+                \"_getMockingboardPSGRegisters\", \
+                \"_getMockingboardVIAIRQ\", \
+                \"_getMockingboardVIAPort\", \
+                \"_getMockingboardPSGWriteInfo\", \
+                \"_getMockingboardVIATimerInfo\", \
+                \"_setMockingboardDebugLogging\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
@@ -316,13 +350,101 @@ else()
     # Note: a2e-native requires src/native/main.cpp which may not exist
     # The tests below can be built independently
 
-    # ==========================================================================
-    # Klaus Dormann CPU Functional Tests
-    # ==========================================================================
-
     enable_testing()
 
-    # 65C02 Extended Opcodes Test
+    # ==========================================================================
+    # Common paths and source lists
+    # ==========================================================================
+
+    set(CATCH2_INCLUDE ${CMAKE_SOURCE_DIR}/tests/catch2)
+    set(TEST_COMMON_INCLUDE ${CMAKE_SOURCE_DIR}/tests/common)
+
+    # All core include directories
+    set(ALL_CORE_INCLUDES
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/core/cpu
+        ${CMAKE_SOURCE_DIR}/src/core/mmu
+        ${CMAKE_SOURCE_DIR}/src/core/video
+        ${CMAKE_SOURCE_DIR}/src/core/audio
+        ${CMAKE_SOURCE_DIR}/src/core/input
+        ${CMAKE_SOURCE_DIR}/src/core/cards
+        ${CMAKE_SOURCE_DIR}/src/core/cards/mockingboard
+        ${CMAKE_SOURCE_DIR}/src/core/cards/smartport
+        ${CMAKE_SOURCE_DIR}/src/core/disk-image
+        ${CMAKE_SOURCE_DIR}/src/core/disassembler
+        ${CMAKE_SOURCE_DIR}/src/core/debug
+        ${CMAKE_SOURCE_DIR}/src/core/filesystem
+        ${CMAKE_SOURCE_DIR}/src/core/basic
+        ${CMAKE_SOURCE_DIR}/src/core/assembler
+        ${CMAKE_BINARY_DIR}/generated
+    )
+
+    # All core source files (excluding wasm_interface.cpp)
+    set(CORE_TEST_SOURCES
+        src/core/emulator.cpp
+        src/core/cpu/cpu6502.cpp
+        src/core/mmu/mmu.cpp
+        src/core/video/video.cpp
+        src/core/audio/audio.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+        src/core/input/keyboard.cpp
+        src/core/disassembler/disassembler.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/disk2_card.cpp
+        src/core/cards/mockingboard_card.cpp
+        src/core/cards/thunderclock_card.cpp
+        src/core/cards/mouse_card.cpp
+        src/core/cards/smartport/block_device.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/debug/condition_evaluator.cpp
+        src/core/filesystem/dos33.cpp
+        src/core/filesystem/prodos.cpp
+        src/core/filesystem/pascal.cpp
+        src/core/basic/basic_detokenizer.cpp
+        src/core/basic/basic_tokenizer.cpp
+        src/core/assembler/assembler.cpp
+    )
+
+    # Common test helper sources
+    set(TEST_COMMON_SOURCES
+        tests/common/disk_image_builder.cpp
+        tests/common/basic_program_builder.cpp
+    )
+
+    # Ensure roms.cpp is generated for native builds
+    add_custom_target(generate_roms_native DEPENDS ${CMAKE_BINARY_DIR}/generated/roms.cpp)
+
+    # ==========================================================================
+    # Helper function: add a Catch2 test with specified sources
+    # ==========================================================================
+    function(add_catch2_test TEST_NAME TEST_SOURCE)
+        # Remaining arguments are extra source files
+        set(EXTRA_SOURCES ${ARGN})
+
+        add_executable(${TEST_NAME}
+            ${TEST_SOURCE}
+            ${EXTRA_SOURCES}
+        )
+        add_dependencies(${TEST_NAME} generate_roms_native)
+        target_include_directories(${TEST_NAME} PRIVATE
+            ${ALL_CORE_INCLUDES}
+            ${CATCH2_INCLUDE}
+            ${TEST_COMMON_INCLUDE}
+        )
+        target_compile_options(${TEST_NAME} PRIVATE -O2 -Wall -Wextra)
+        add_test(NAME ${TEST_NAME}
+            COMMAND ${TEST_NAME}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        )
+    endfunction()
+
+    # ==========================================================================
+    # Klaus Dormann CPU Functional Tests (legacy, non-Catch2)
+    # ==========================================================================
+
     add_executable(klaus_65c02_test
         tests/klaus/klaus_65c02_test.cpp
         src/core/cpu/cpu6502.cpp
@@ -337,7 +459,6 @@ else()
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
-    # 6502 Functional Test
     add_executable(klaus_6502_test
         tests/klaus/klaus_6502_test.cpp
         src/core/cpu/cpu6502.cpp
@@ -353,11 +474,8 @@ else()
     )
 
     # ==========================================================================
-    # Thunderclock Card Tests
+    # Thunderclock Card Tests (legacy, non-Catch2)
     # ==========================================================================
-
-    # Ensure roms.cpp is generated for native builds too
-    add_custom_target(generate_roms_native DEPENDS ${CMAKE_BINARY_DIR}/generated/roms.cpp)
 
     add_executable(thunderclock_test
         tests/thunderclock/thunderclock_test.cpp
@@ -375,7 +493,6 @@ else()
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
-    # Thunderclock MMU Integration Test
     add_executable(thunderclock_mmu_test
         tests/thunderclock/thunderclock_mmu_test.cpp
         src/core/cards/thunderclock_card.cpp
@@ -391,6 +508,258 @@ else()
     add_test(NAME thunderclock_mmu_integration_test
         COMMAND thunderclock_mmu_test
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+
+    # ==========================================================================
+    # Catch2 Unit Tests - Pure (no ROM dependencies)
+    # ==========================================================================
+
+    # CPU tests (only need cpu6502.cpp)
+    add_catch2_test(test_cpu6502
+        tests/unit/test_cpu6502.cpp
+        src/core/cpu/cpu6502.cpp
+    )
+    add_catch2_test(test_cpu_addressing
+        tests/unit/test_cpu_addressing.cpp
+        src/core/cpu/cpu6502.cpp
+    )
+    add_catch2_test(test_cpu_interrupts
+        tests/unit/test_cpu_interrupts.cpp
+        src/core/cpu/cpu6502.cpp
+    )
+    add_catch2_test(test_cpu_decimal
+        tests/unit/test_cpu_decimal.cpp
+        src/core/cpu/cpu6502.cpp
+    )
+    add_catch2_test(test_cpu_cycle_counts
+        tests/unit/test_cpu_cycle_counts.cpp
+        src/core/cpu/cpu6502.cpp
+    )
+
+    # GCR encoding (only gcr_encoding.cpp)
+    add_catch2_test(test_gcr_encoding
+        tests/unit/test_gcr_encoding.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # Disassembler (only disassembler.cpp)
+    add_catch2_test(test_disassembler
+        tests/unit/test_disassembler.cpp
+        src/core/disassembler/disassembler.cpp
+    )
+
+    # Assembler (only assembler.cpp + disassembler for opcode table)
+    add_catch2_test(test_assembler
+        tests/unit/test_assembler.cpp
+        src/core/assembler/assembler.cpp
+        src/core/disassembler/disassembler.cpp
+    )
+
+    # Audio (audio.cpp + mockingboard deps for consumeStereoSamples)
+    add_catch2_test(test_audio
+        tests/unit/test_audio.cpp
+        src/core/audio/audio.cpp
+        src/core/cards/mockingboard_card.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+    )
+
+    # Keyboard (only keyboard.cpp)
+    add_catch2_test(test_keyboard
+        tests/unit/test_keyboard.cpp
+        src/core/input/keyboard.cpp
+    )
+
+    # AY-3-8910 (only ay8910.cpp)
+    add_catch2_test(test_ay8910
+        tests/unit/test_ay8910.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+    )
+
+    # VIA 6522 (via6522.cpp + ay8910.cpp since VIA connects to PSG)
+    add_catch2_test(test_via6522
+        tests/unit/test_via6522.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+    )
+
+    # Block device (only block_device.cpp)
+    add_catch2_test(test_block_device
+        tests/unit/test_block_device.cpp
+        src/core/cards/smartport/block_device.cpp
+    )
+
+    # BASIC detokenizer (only basic_detokenizer.cpp + common helpers)
+    add_catch2_test(test_basic_detokenizer
+        tests/unit/test_basic_detokenizer.cpp
+        src/core/basic/basic_detokenizer.cpp
+        ${TEST_COMMON_SOURCES}
+    )
+
+    # BASIC tokenizer (basic_tokenizer.cpp + basic_detokenizer.cpp for round-trip)
+    add_catch2_test(test_basic_tokenizer
+        tests/unit/test_basic_tokenizer.cpp
+        src/core/basic/basic_tokenizer.cpp
+        src/core/basic/basic_detokenizer.cpp
+        ${TEST_COMMON_SOURCES}
+    )
+
+    # ==========================================================================
+    # Catch2 Unit Tests - ROM-dependent
+    # ==========================================================================
+
+    # MMU (mmu.cpp)
+    add_catch2_test(test_mmu
+        tests/unit/test_mmu.cpp
+        src/core/mmu/mmu.cpp
+    )
+
+    # MMU Slots (mmu.cpp + thunderclock for testing)
+    add_catch2_test(test_mmu_slots
+        tests/unit/test_mmu_slots.cpp
+        src/core/mmu/mmu.cpp
+        src/core/cards/thunderclock_card.cpp
+    )
+
+    # Video (video.cpp + mmu.cpp)
+    add_catch2_test(test_video
+        tests/unit/test_video.cpp
+        src/core/video/video.cpp
+        src/core/mmu/mmu.cpp
+    )
+
+    # Disk2 Card (disk2_card.cpp + disk images + gcr)
+    add_catch2_test(test_disk2_card
+        tests/unit/test_disk2_card.cpp
+        src/core/cards/disk2_card.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # DSK disk image
+    add_catch2_test(test_dsk_disk_image
+        tests/unit/test_dsk_disk_image.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # WOZ disk image
+    add_catch2_test(test_woz_disk_image
+        tests/unit/test_woz_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # Mockingboard (mockingboard_card.cpp + via + ay)
+    add_catch2_test(test_mockingboard
+        tests/unit/test_mockingboard.cpp
+        src/core/cards/mockingboard_card.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+    )
+
+    # Thunderclock (Catch2 version)
+    add_catch2_test(test_thunderclock
+        tests/unit/test_thunderclock.cpp
+        src/core/cards/thunderclock_card.cpp
+    )
+
+    # Mouse Card (mouse_card.cpp)
+    add_catch2_test(test_mouse_card
+        tests/unit/test_mouse_card.cpp
+        src/core/cards/mouse_card.cpp
+    )
+
+    # SmartPort Card (smartport + block_device)
+    add_catch2_test(test_smartport_card
+        tests/unit/test_smartport_card.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/smartport/block_device.cpp
+    )
+
+    # ==========================================================================
+    # Catch2 Unit Tests - Filesystem
+    # ==========================================================================
+
+    # DOS 3.3 parser
+    add_catch2_test(test_dos33
+        tests/unit/test_dos33.cpp
+        src/core/filesystem/dos33.cpp
+        ${TEST_COMMON_SOURCES}
+    )
+
+    # ProDOS parser
+    add_catch2_test(test_prodos
+        tests/unit/test_prodos.cpp
+        src/core/filesystem/prodos.cpp
+        ${TEST_COMMON_SOURCES}
+    )
+
+    # Pascal parser
+    add_catch2_test(test_pascal
+        tests/unit/test_pascal.cpp
+        src/core/filesystem/pascal.cpp
+        ${TEST_COMMON_SOURCES}
+    )
+
+    # ==========================================================================
+    # Catch2 Unit Tests - Expansion Card Interface
+    # ==========================================================================
+
+    add_catch2_test(test_expansion_card
+        tests/unit/test_expansion_card.cpp
+        src/core/cards/disk2_card.cpp
+        src/core/cards/mockingboard_card.cpp
+        src/core/cards/thunderclock_card.cpp
+        src/core/cards/mouse_card.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/smartport/block_device.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # ==========================================================================
+    # Catch2 Integration Tests (full emulator)
+    # ==========================================================================
+
+    add_catch2_test(test_emulator
+        tests/integration/test_emulator.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
+    add_catch2_test(test_emulator_debug
+        tests/integration/test_emulator_debug.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
+    add_catch2_test(test_emulator_disk
+        tests/integration/test_emulator_disk.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
+    add_catch2_test(test_emulator_basic
+        tests/integration/test_emulator_basic.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
+    add_catch2_test(test_emulator_state
+        tests/integration/test_emulator_state.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
+    # Condition evaluator (needs full emulator)
+    add_catch2_test(test_condition_evaluator
+        tests/unit/test_condition_evaluator.cpp
+        ${CORE_TEST_SOURCES}
     )
 
 endif()
