@@ -84,11 +84,19 @@ static std::vector<BasicLine> parseSource(const char* source) {
             content = "";
         }
 
-        // Convert to uppercase
+        // Convert to uppercase, preserving case inside quoted strings
         std::string upper;
         upper.reserve(content.size());
+        bool inQuote = false;
         for (char c : content) {
-            upper += static_cast<char>(toupper(static_cast<unsigned char>(c)));
+            if (c == '"') {
+                inQuote = !inQuote;
+                upper += c;
+            } else if (inQuote) {
+                upper += c;
+            } else {
+                upper += static_cast<char>(toupper(static_cast<unsigned char>(c)));
+            }
         }
 
         lines.push_back({lineNum, upper});
