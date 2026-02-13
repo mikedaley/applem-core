@@ -84,6 +84,9 @@ static std::vector<BasicLine> parseSource(const char* source) {
             content = "";
         }
 
+        // Skip lines with only a line number and no content
+        if (content.empty()) continue;
+
         // Convert to uppercase, preserving case inside quoted strings
         std::string upper;
         upper.reserve(content.size());
