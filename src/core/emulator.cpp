@@ -299,6 +299,11 @@ void Emulator::runCycles(int cycles) {
       // CURLIN is correct and TXTPTR points to the first token of the statement
       // about to execute. This ensures consistent state for statement highlighting.
       if (pc == 0xD820) {
+        // Heat map: count every statement execution
+        if (basicHeatMapEnabled_) {
+          basicHeatMap_[curlin]++;
+        }
+
         // BASIC line stepping - pause when CURLIN changes
         if (basicStepMode_ == BasicStepMode::Line) {
           if (curlin != basicStepFromLine_) {
@@ -886,6 +891,21 @@ uint16_t Emulator::findCurrentLineStart(uint16_t lineNumber) {
   }
 
   return 0;  // Line not found
+}
+
+// ============================================================================
+// BASIC Heat Map
+// ============================================================================
+
+int Emulator::getBasicHeatMapData(uint16_t* lines, uint32_t* counts, int maxEntries) const {
+  int i = 0;
+  for (const auto& [line, count] : basicHeatMap_) {
+    if (i >= maxEntries) break;
+    lines[i] = line;
+    counts[i] = count;
+    i++;
+  }
+  return i;
 }
 
 // ============================================================================

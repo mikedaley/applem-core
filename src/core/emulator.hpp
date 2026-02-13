@@ -23,6 +23,7 @@
 #include <set>
 #include <vector>
 #include <array>
+#include <unordered_map>
 
 namespace a2e {
 
@@ -111,6 +112,15 @@ public:
   void clearBasicError() { basicErrorHit_ = false; }
   uint16_t getBasicTxtptr() const;  // Get current TXTPTR for statement highlighting
   int getBasicStatementIndex();     // Get current statement index (0-based)
+
+  // BASIC line heat map
+  void setBasicHeatMapEnabled(bool enabled) { basicHeatMapEnabled_ = enabled; }
+  bool isBasicHeatMapEnabled() const { return basicHeatMapEnabled_; }
+  void clearBasicHeatMap() { basicHeatMap_.clear(); }
+  const std::unordered_map<uint16_t, uint32_t>& getBasicHeatMap() const { return basicHeatMap_; }
+  int getBasicHeatMapSize() const { return static_cast<int>(basicHeatMap_.size()); }
+  // Copy heat map data into caller-provided buffers (lines[], counts[]), returns entry count
+  int getBasicHeatMapData(uint16_t* lines, uint32_t* counts, int maxEntries) const;
 
   // Beam position (derived from cycle count)
   int getFrameCycle() const;
@@ -333,6 +343,10 @@ private:
   uint16_t basicStepLineStart_ = 0;  // Address where current line's tokens start
   uint16_t basicStepNextColon_ = 0;  // Address of next colon after starting position (0 if none)
   bool basicStepSkipFirst_ = false;  // Skip first EXECUTE_STATEMENT hit when already there
+
+  // BASIC line heat map - counts execution hits per line at $D820
+  bool basicHeatMapEnabled_ = false;
+  std::unordered_map<uint16_t, uint32_t> basicHeatMap_;
 
   // Helper to count colons (statement separators) between lineStart and txtptr
   int countColonsBetween(uint16_t lineStart, uint16_t txtptr);

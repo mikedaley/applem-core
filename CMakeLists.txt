@@ -114,6 +114,10 @@ if(EMSCRIPTEN)
                 \"_stepBasicStatement\", \
                 \"_getBasicTxtptr\", \
                 \"_getBasicStatementIndex\", \
+                \"_setBasicHeatMapEnabled\", \
+                \"_clearBasicHeatMap\", \
+                \"_getBasicHeatMapSize\", \
+                \"_getBasicHeatMapData\", \
                 \"_getBasicLineBytes\", \
                 \"_getPC\", \
                 \"_getSP\", \
