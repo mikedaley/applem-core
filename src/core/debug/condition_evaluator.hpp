@@ -23,6 +23,8 @@ class Emulator;
  *   Memory: PEEK($addr), DEEK($addr) (16-bit little-endian)
  *   Hex literals: #$FF, $FFFF
  *   Decimal literals: 42
+ *   BASIC vars: BV(b1,b2) - simple variable, BA(b1,b2,idx) - array element
+ *     b1,b2 are the encoded name bytes; type bits in high bits
  *   Comparisons: ==, !=, >=, <=, >, <
  *   Arithmetic: +, -, *
  *   Logic: &&, ||

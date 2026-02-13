@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 #include <array>
 #include <unordered_map>
@@ -97,6 +98,12 @@ public:
   bool hasBasicBreakpoints() const { return !basicBreakpoints_.empty(); }
   bool isBasicBreakpointHit() const { return basicBreakpointHit_; }
   uint16_t getBasicBreakLine() const { return basicBreakLine_; }
+
+  // BASIC condition-only rules: evaluated in C++ at every $D820
+  void addBasicConditionRule(int id, const char* expression);
+  void removeBasicConditionRule(int id);
+  void clearBasicConditionRules();
+  int getBasicConditionRuleHitId() const { return basicConditionRuleHitId_; }
 
   // BASIC stepping - execute current line/statement and stop at next
   void stepBasicLine();
@@ -321,6 +328,13 @@ private:
   };
   std::set<BasicBreakpoint> basicBreakpoints_;
   bool basicBreakpointHit_ = false;
+  struct BasicConditionRule {
+    int id;
+    std::string expression;
+    bool enabled;
+  };
+  std::vector<BasicConditionRule> basicConditionRules_;
+  int basicConditionRuleHitId_ = -1;
   uint16_t basicBreakLine_ = 0;
   uint16_t skipBasicBreakpointLine_ = 0xFFFF;  // Line to skip (0xFFFF = none)
   int8_t skipBasicBreakpointStmt_ = -1;        // Statement to skip (-1 = whole line)

@@ -11,6 +11,8 @@
 #include "cards/thunderclock_card.hpp"
 #include "cards/mouse_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
+#include "debug/condition_evaluator.hpp"
+#include <algorithm>
 #include <cstring>
 
 // Include generated ROM data directly
@@ -385,6 +387,24 @@ void Emulator::runCycles(int cycles) {
             }
           }
         }
+
+        // Condition-only rules: evaluate each expression in C++, pause only if one matches
+        // Skip while stepping to allow step to complete
+        // Skip on the line we just resumed from (same skip logic as line breakpoints)
+        if (!basicConditionRules_.empty() && !basicBreakpointHit_ &&
+            basicStepMode_ == BasicStepMode::None &&
+            curlin != skipBasicBreakpointLine_) {
+          for (auto& rule : basicConditionRules_) {
+            if (!rule.enabled) continue;
+            if (ConditionEvaluator::evaluate(rule.expression.c_str(), *this)) {
+              basicBreakpointHit_ = true;
+              basicBreakLine_ = curlin;
+              basicConditionRuleHitId_ = rule.id;
+              paused_ = true;
+              return;
+            }
+          }
+        }
       }
 
       // Clear skip-line when we move to a different line
@@ -723,12 +743,31 @@ void Emulator::clearBasicBreakpoints() {
 
 void Emulator::clearBasicBreakpointHit() {
   basicBreakpointHit_ = false;
+  basicConditionRuleHitId_ = -1;
   // Don't clear skipBasicBreakpointLine_ here - let it be cleared naturally
   // when CURLIN changes. This allows Run to work from a breakpoint by:
   // 1. setPaused(false) sets skip line
   // 2. clearBasicBreakpointHit() clears step mode but keeps skip
   // 3. Program continues, types RUN, skip cleared when line changes
   basicStepMode_ = BasicStepMode::None;
+}
+
+void Emulator::addBasicConditionRule(int id, const char* expression) {
+  // Remove existing rule with same id
+  removeBasicConditionRule(id);
+  basicConditionRules_.push_back({id, std::string(expression), true});
+}
+
+void Emulator::removeBasicConditionRule(int id) {
+  basicConditionRules_.erase(
+    std::remove_if(basicConditionRules_.begin(), basicConditionRules_.end(),
+      [id](const BasicConditionRule& r) { return r.id == id; }),
+    basicConditionRules_.end());
+}
+
+void Emulator::clearBasicConditionRules() {
+  basicConditionRules_.clear();
+  basicConditionRuleHitId_ = -1;
 }
 
 void Emulator::stepBasicLine() {

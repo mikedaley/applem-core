@@ -8,9 +8,135 @@
 #include "condition_evaluator.hpp"
 #include "../emulator.hpp"
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 
 namespace a2e {
+
+// Decode 5-byte Applesoft float to int32_t (truncated)
+static int32_t decodeApplesoftFloat(const Emulator& emu, uint16_t addr) {
+  uint8_t exp = emu.peekMemory(addr);
+  if (exp == 0) return 0;
+
+  int sign = (emu.peekMemory(addr + 1) & 0x80) ? -1 : 1;
+  double mantissa = 1.0;
+  mantissa += (emu.peekMemory(addr + 1) & 0x7F) / 128.0;
+  mantissa += emu.peekMemory(addr + 2) / 32768.0;
+  mantissa += emu.peekMemory(addr + 3) / 8388608.0;
+  mantissa += emu.peekMemory(addr + 4) / 2147483648.0;
+
+  int actualExp = exp - 129;
+  double value = sign * mantissa * pow(2.0, actualExp);
+  return static_cast<int32_t>(value);
+}
+
+// Read a BASIC simple variable value by its encoded name bytes
+// Walks VARTAB to ARYTAB looking for matching name
+static int32_t readBasicVariable(const Emulator& emu, uint8_t nameB1, uint8_t nameB2) {
+  uint16_t vartab = emu.peekMemory(0x69) | (emu.peekMemory(0x6A) << 8);
+  uint16_t arytab = emu.peekMemory(0x6B) | (emu.peekMemory(0x6C) << 8);
+
+  if (vartab == 0 || arytab == 0 || vartab >= arytab) return 0;
+
+  uint16_t addr = vartab;
+  while (addr < arytab) {
+    uint8_t b1 = emu.peekMemory(addr);
+    uint8_t b2 = emu.peekMemory(addr + 1);
+
+    if (b1 == nameB1 && b2 == nameB2) {
+      // Found it - determine type from high bits
+      bool isInteger = (b1 & 0x80) && (b2 & 0x80);
+      if (isInteger) {
+        uint8_t high = emu.peekMemory(addr + 2);
+        uint8_t low = emu.peekMemory(addr + 3);
+        int16_t val = static_cast<int16_t>((high << 8) | low);
+        return static_cast<int32_t>(val);
+      }
+      // Real number (5-byte float)
+      return decodeApplesoftFloat(emu, addr + 2);
+    }
+    addr += 7; // Each simple var is 7 bytes
+  }
+  return 0; // Variable not found
+}
+
+// Read a BASIC array element by encoded name bytes and flat index
+static int32_t readBasicArrayElement(const Emulator& emu, uint8_t nameB1, uint8_t nameB2, int32_t flatIndex) {
+  uint16_t arytab = emu.peekMemory(0x6B) | (emu.peekMemory(0x6C) << 8);
+  uint16_t strend = emu.peekMemory(0x6D) | (emu.peekMemory(0x6E) << 8);
+
+  if (arytab == 0 || strend == 0 || arytab >= strend) return 0;
+
+  uint16_t addr = arytab;
+  while (addr < strend) {
+    uint8_t b1 = emu.peekMemory(addr);
+    uint8_t b2 = emu.peekMemory(addr + 1);
+    uint16_t totalSize = emu.peekMemory(addr + 2) | (emu.peekMemory(addr + 3) << 8);
+
+    if (b1 == nameB1 && b2 == nameB2) {
+      uint8_t numDims = emu.peekMemory(addr + 4);
+      uint16_t dataStart = addr + 5 + numDims * 2;
+
+      bool isInteger = (b1 & 0x80) && (b2 & 0x80);
+      int elementSize = isInteger ? 2 : 5;
+
+      uint16_t elemAddr = dataStart + flatIndex * elementSize;
+      if (isInteger) {
+        uint8_t high = emu.peekMemory(elemAddr);
+        uint8_t low = emu.peekMemory(elemAddr + 1);
+        int16_t val = static_cast<int16_t>((high << 8) | low);
+        return static_cast<int32_t>(val);
+      }
+      return decodeApplesoftFloat(emu, elemAddr);
+    }
+    addr += totalSize;
+  }
+  return 0;
+}
+
+// Read a BASIC 2D array element by encoded name bytes and two indices
+// Applesoft stores dimensions in reverse order: DIM A(M,N) stores [N+1, M+1]
+// Element A(i,j) flat index = i * dim2size + j  (dim2size is the FIRST stored dimension)
+static int32_t readBasicArrayElement2D(const Emulator& emu, uint8_t nameB1, uint8_t nameB2, int32_t idx1, int32_t idx2) {
+  uint16_t arytab = emu.peekMemory(0x6B) | (emu.peekMemory(0x6C) << 8);
+  uint16_t strend = emu.peekMemory(0x6D) | (emu.peekMemory(0x6E) << 8);
+
+  if (arytab == 0 || strend == 0 || arytab >= strend) return 0;
+
+  uint16_t addr = arytab;
+  while (addr < strend) {
+    uint8_t b1 = emu.peekMemory(addr);
+    uint8_t b2 = emu.peekMemory(addr + 1);
+    uint16_t totalSize = emu.peekMemory(addr + 2) | (emu.peekMemory(addr + 3) << 8);
+
+    if (b1 == nameB1 && b2 == nameB2) {
+      uint8_t numDims = emu.peekMemory(addr + 4);
+      if (numDims < 2) return 0;
+
+      // Applesoft stores arrays in column-major order with reversed dimensions.
+      // For DIM A(M,N): dims[0]=N+1, dims[1]=M+1
+      // Flat index for A(i,j) = j * dims[1] + i
+      uint16_t dim1Size = (emu.peekMemory(addr + 7) << 8) | emu.peekMemory(addr + 8);
+
+      int32_t flatIndex = idx2 * dim1Size + idx1;
+      uint16_t dataStart = addr + 5 + numDims * 2;
+
+      bool isInteger = (b1 & 0x80) && (b2 & 0x80);
+      int elementSize = isInteger ? 2 : 5;
+
+      uint16_t elemAddr = dataStart + flatIndex * elementSize;
+      if (isInteger) {
+        uint8_t high = emu.peekMemory(elemAddr);
+        uint8_t low = emu.peekMemory(elemAddr + 1);
+        int16_t val = static_cast<int16_t>((high << 8) | low);
+        return static_cast<int32_t>(val);
+      }
+      return decodeApplesoftFloat(emu, elemAddr);
+    }
+    addr += totalSize;
+  }
+  return 0;
+}
 
 char ConditionEvaluator::errorBuf_[128] = "";
 
@@ -42,10 +168,10 @@ int ConditionEvaluator::tokenize(const char* expr, Token* tokens, int maxTokens)
       }
     }
 
-    // Single-char operators
+    // Single-char operators (including comma for function args)
     char ch = expr[i];
     if (ch == '<' || ch == '>' || ch == '(' || ch == ')' ||
-        ch == '+' || ch == '-' || ch == '*') {
+        ch == '+' || ch == '-' || ch == '*' || ch == ',') {
       tokens[count].type = TOK_OP1;
       tokens[count].strVal[0] = ch;
       tokens[count].strVal[1] = '\0';
@@ -241,11 +367,59 @@ int32_t ConditionEvaluator::parseAtom(ParseState& s) {
     const char* id = t.strVal;
     const Emulator& emu = *s.emu;
 
+    // BV(b1,b2) - read BASIC simple variable value by encoded name bytes
+    if (strcmp(id, "BV") == 0 && s.pos < s.count &&
+        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
+      s.pos++; // skip '('
+      int32_t b1 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
+      int32_t b2 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
+          s.tokens[s.pos].strVal[0] == ')') {
+        s.pos++;
+      }
+      return readBasicVariable(emu, static_cast<uint8_t>(b1), static_cast<uint8_t>(b2));
+    }
+
+    // BA(b1,b2,idx) - read BASIC array element by encoded name bytes and flat index
+    if (strcmp(id, "BA") == 0 && s.pos < s.count &&
+        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
+      s.pos++; // skip '('
+      int32_t b1 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
+      int32_t b2 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
+      int32_t idx = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
+          s.tokens[s.pos].strVal[0] == ')') {
+        s.pos++;
+      }
+      return readBasicArrayElement(emu, static_cast<uint8_t>(b1), static_cast<uint8_t>(b2), idx);
+    }
+
+    // BA2(b1,b2,i1,i2) - read BASIC 2D array element
+    if (strcmp(id, "BA2") == 0 && s.pos < s.count &&
+        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
+      s.pos++; // skip '('
+      int32_t b1 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
+      int32_t b2 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
+      int32_t i1 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
+      int32_t i2 = parseExpr(s);
+      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
+          s.tokens[s.pos].strVal[0] == ')') {
+        s.pos++;
+      }
+      return readBasicArrayElement2D(emu, static_cast<uint8_t>(b1), static_cast<uint8_t>(b2), i1, i2);
+    }
+
     // PEEK(addr) - read byte
     if (strcmp(id, "PEEK") == 0 && s.pos < s.count &&
         s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
       s.pos++;
-      int32_t addr = static_cast<int32_t>(parseOr(s));
+      int32_t addr = parseExpr(s);
       if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
           s.tokens[s.pos].strVal[0] == ')') {
         s.pos++;
@@ -257,7 +431,7 @@ int32_t ConditionEvaluator::parseAtom(ParseState& s) {
     if (strcmp(id, "DEEK") == 0 && s.pos < s.count &&
         s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
       s.pos++;
-      int32_t addr = static_cast<int32_t>(parseOr(s));
+      int32_t addr = parseExpr(s);
       if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
           s.tokens[s.pos].strVal[0] == ')') {
         s.pos++;

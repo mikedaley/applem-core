@@ -106,6 +106,10 @@ if(EMSCRIPTEN)
                 \"_removeBasicBreakpoint\", \
                 \"_clearBasicBreakpoints\", \
                 \"_clearBasicBreakpointHit\", \
+                \"_addBasicConditionRule\", \
+                \"_removeBasicConditionRule\", \
+                \"_clearBasicConditionRules\", \
+                \"_getBasicConditionRuleHitId\", \
                 \"_hasBasicBreakpoints\", \
                 \"_isBasicBreakpointHit\", \
                 \"_getBasicBreakLine\", \
@@ -404,6 +408,7 @@ else()
         src/core/cards/smartport/block_device.cpp
         src/core/cards/smartport/smartport_card.cpp
         src/core/debug/condition_evaluator.cpp
+        src/core/debug/basic_variable_watch.cpp
         src/core/filesystem/dos33.cpp
         src/core/filesystem/prodos.cpp
         src/core/filesystem/pascal.cpp
