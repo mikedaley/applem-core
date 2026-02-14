@@ -242,7 +242,9 @@ public:
   Video &getVideo() { return *video_; }
   Audio &getAudio() { return *audio_; }
   Disk2Card &getDisk() { return *disk_; }
+  Disk2Card *getDiskPtr() { return disk_; }
   MockingboardCard &getMockingboard() { return *mockingboard_; }
+  MockingboardCard *getMockingboardPtr() { return mockingboard_; }
   MouseCard* getMouseCard() { return mouse_; }
   SmartPortCard* getSmartPortCard() { return smartport_; }
 
