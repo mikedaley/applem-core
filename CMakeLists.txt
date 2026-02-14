@@ -11,6 +11,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Source files
 set(CORE_SOURCES
     src/core/emulator.cpp
+    src/core/emulator_state.cpp
     src/core/cpu/cpu6502.cpp
     src/core/mmu/mmu.cpp
     src/core/video/video.cpp
@@ -390,6 +391,7 @@ else()
     # All core source files (excluding wasm_interface.cpp)
     set(CORE_TEST_SOURCES
         src/core/emulator.cpp
+        src/core/emulator_state.cpp
         src/core/cpu/cpu6502.cpp
         src/core/mmu/mmu.cpp
         src/core/video/video.cpp
@@ -408,7 +410,6 @@ else()
         src/core/cards/smartport/block_device.cpp
         src/core/cards/smartport/smartport_card.cpp
         src/core/debug/condition_evaluator.cpp
-        src/core/debug/basic_variable_watch.cpp
         src/core/filesystem/dos33.cpp
         src/core/filesystem/prodos.cpp
         src/core/filesystem/pascal.cpp
