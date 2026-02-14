@@ -12,6 +12,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CORE_SOURCES
     src/core/emulator.cpp
     src/core/emulator_state.cpp
+    src/core/emulator_debug.cpp
     src/core/cpu/cpu6502.cpp
     src/core/mmu/mmu.cpp
     src/core/video/video.cpp
@@ -392,6 +393,7 @@ else()
     set(CORE_TEST_SOURCES
         src/core/emulator.cpp
         src/core/emulator_state.cpp
+        src/core/emulator_debug.cpp
         src/core/cpu/cpu6502.cpp
         src/core/mmu/mmu.cpp
         src/core/video/video.cpp
