@@ -248,6 +248,10 @@ public:
   MouseCard* getMouseCard() { return mouse_; }
   SmartPortCard* getSmartPortCard() { return smartport_; }
 
+  // No-Slot Clock
+  void enableNoSlotClock(bool enable) { mmu_->enableNoSlotClock(enable); }
+  bool isNoSlotClockEnabled() const { return mmu_->isNoSlotClockEnabled(); }
+
   // SmartPort hard drive management
   bool insertSmartPortImage(int device, const uint8_t* data, size_t size, const char* filename);
   void ejectSmartPortImage(int device);

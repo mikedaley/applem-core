@@ -30,6 +30,7 @@ set(CORE_SOURCES
     src/core/cards/mouse_card.cpp
     src/core/cards/smartport/block_device.cpp
     src/core/cards/smartport/smartport_card.cpp
+    src/core/noslot_clock.cpp
     src/core/debug/condition_evaluator.cpp
     src/core/filesystem/dos33.cpp
     src/core/filesystem/prodos.cpp
@@ -334,7 +335,9 @@ if(EMSCRIPTEN)
                 \"_getMockingboardVIAPort\", \
                 \"_getMockingboardPSGWriteInfo\", \
                 \"_getMockingboardVIATimerInfo\", \
-                \"_setMockingboardDebugLogging\" \
+                \"_setMockingboardDebugLogging\", \
+                \"_enableNoSlotClock\", \
+                \"_isNoSlotClockEnabled\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
@@ -411,6 +414,7 @@ else()
         src/core/cards/mouse_card.cpp
         src/core/cards/smartport/block_device.cpp
         src/core/cards/smartport/smartport_card.cpp
+        src/core/noslot_clock.cpp
         src/core/debug/condition_evaluator.cpp
         src/core/filesystem/dos33.cpp
         src/core/filesystem/prodos.cpp
@@ -509,6 +513,7 @@ else()
         tests/thunderclock/thunderclock_mmu_test.cpp
         src/core/cards/thunderclock_card.cpp
         src/core/mmu/mmu.cpp
+        src/core/noslot_clock.cpp
     )
     add_dependencies(thunderclock_mmu_test generate_roms_native)
     target_include_directories(thunderclock_mmu_test PRIVATE
@@ -620,16 +625,18 @@ else()
     # Catch2 Unit Tests - ROM-dependent
     # ==========================================================================
 
-    # MMU (mmu.cpp)
+    # MMU (mmu.cpp + noslot_clock.cpp)
     add_catch2_test(test_mmu
         tests/unit/test_mmu.cpp
         src/core/mmu/mmu.cpp
+        src/core/noslot_clock.cpp
     )
 
     # MMU Slots (mmu.cpp + thunderclock for testing)
     add_catch2_test(test_mmu_slots
         tests/unit/test_mmu_slots.cpp
         src/core/mmu/mmu.cpp
+        src/core/noslot_clock.cpp
         src/core/cards/thunderclock_card.cpp
     )
 
@@ -638,6 +645,7 @@ else()
         tests/unit/test_video.cpp
         src/core/video/video.cpp
         src/core/mmu/mmu.cpp
+        src/core/noslot_clock.cpp
     )
 
     # Disk2 Card (disk2_card.cpp + disk images + gcr)

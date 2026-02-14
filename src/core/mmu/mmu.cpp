@@ -7,11 +7,12 @@
 
 #include "mmu.hpp"
 #include "../cards/expansion_card.hpp"
+#include "../noslot_clock.hpp"
 #include <cstring>
 
 namespace a2e {
 
-MMU::MMU() { reset(); }
+MMU::MMU() : noSlotClock_(std::make_unique<NoSlotClock>()) { reset(); }
 
 MMU::~MMU() = default;
 
@@ -41,6 +42,9 @@ void MMU::reset() {
       card->reset();
     }
   }
+
+  // Reset No-Slot Clock state (preserve enabled flag)
+  if (noSlotClock_) noSlotClock_->reset();
 
   // Clear tracking (but preserve enabled state)
   clearTracking();
@@ -111,6 +115,14 @@ bool MMU::isSlotEmpty(uint8_t slot) const {
     return true;
   }
   return !slots_[slot - 1];
+}
+
+void MMU::enableNoSlotClock(bool enable) {
+  if (noSlotClock_) noSlotClock_->setEnabled(enable);
+}
+
+bool MMU::isNoSlotClockEnabled() const {
+  return noSlotClock_ && noSlotClock_->isEnabled();
 }
 
 void MMU::clearTracking() {
@@ -485,7 +497,12 @@ uint8_t MMU::read(uint16_t address) {
         // SLOTC3ROM off: use internal ROM for slot 3
         // Also activates internal ROM for $C800-$CFFF
         switches_.intc8rom = true;
-        return systemROM_[address - 0xC000];
+        uint8_t romValue = systemROM_[address - 0xC000];
+        // No-Slot Clock intercepts reads in this region
+        if (noSlotClock_) {
+          romValue = noSlotClock_->interceptRead(address, romValue);
+        }
+        return romValue;
       }
       // SLOTC3ROM on: use slot 3 ROM (no card, return floating bus)
       return getFloatingBusValue();
@@ -652,6 +669,11 @@ void MMU::write(uint16_t address, uint8_t value) {
     if (address == 0xCFFF) {
       switches_.intc8rom = false;
       activeExpansionSlot_ = 0;
+    }
+
+    // No-Slot Clock intercepts writes in $C300-$C3FF
+    if (address >= 0xC300 && address < 0xC400 && noSlotClock_) {
+      noSlotClock_->interceptWrite(address);
     }
 
     // Route writes to slot ROM space through cards

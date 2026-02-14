@@ -237,6 +237,9 @@ const uint8_t *Emulator::exportState(size_t *size) {
     }
   }
 
+  // No-Slot Clock state
+  stateBuffer_.push_back(mmu_->isNoSlotClockEnabled() ? 1 : 0);
+
   *size = stateBuffer_.size();
   return stateBuffer_.data();
 }
@@ -560,6 +563,12 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
 
       offset += stateSize;
     }
+  }
+
+  // No-Slot Clock state (optional, backwards compatible)
+  if (offset + 1 <= size) {
+    bool nscEnabled = data[offset++] != 0;
+    mmu_->enableNoSlotClock(nscEnabled);
   }
 
   frameReady_ = true;
