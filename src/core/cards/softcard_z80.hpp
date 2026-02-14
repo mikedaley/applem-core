@@ -87,7 +87,6 @@ private:
     // Fractional T-state accumulator for cycle-accurate Z80/6502 ratio
     // Z80 runs at ~2.041 MHz, 6502 at ~1.023 MHz → ratio = 2:1
     int32_t tstateAccumulator_ = 0;
-    int traceCount_ = 0;  // Debug: limit trace output
 
     // Callbacks to access Apple II bus
     MemReadFunc memRead_;

@@ -10,7 +10,6 @@
 
 #include "softcard_z80.hpp"
 #include <cstring>
-#include <cstdio>
 
 namespace a2e {
 
@@ -57,12 +56,7 @@ uint8_t SoftCardZ80::z80MemRead(uint16_t addr, void* param) {
     auto* self = static_cast<SoftCardZ80*>(param);
     uint16_t appleAddr = self->translateAddress(addr);
     if (self->memRead_) {
-        uint8_t val = self->memRead_(appleAddr);
-        if (self->traceCount_ < 50) {
-            printf("[SoftCard] Z80 read $%04X (Apple $%04X) = $%02X\n", addr, appleAddr, val);
-            self->traceCount_++;
-        }
-        return val;
+        return self->memRead_(appleAddr);
     }
     return 0xFF;
 }
@@ -74,7 +68,6 @@ void SoftCardZ80::z80MemWrite(uint16_t addr, uint8_t data, void* param) {
     // Z80 writing to Apple II $Cn00 deactivates the Z80
     // (Z80 $En00 maps to Apple $Cn00 via address translation)
     if (appleAddr == (0xC000 | (static_cast<uint16_t>(self->slotNumber_) << 8))) {
-        printf("[SoftCard] Z80 wrote to $%04X (Apple $%04X) -> DEACTIVATE\n", addr, appleAddr);
         self->deactivateZ80();
         return;
     }
@@ -133,7 +126,6 @@ void SoftCardZ80::writeROM(uint8_t offset, uint8_t value) {
     (void)value;
     // Writing to $Cn00 toggles the Z80 on/off
     // Per Microsoft documentation: write to $CN00 activates Z80
-    printf("[SoftCard] 6502 writeROM offset=$%02X z80Active=%d slot=%d\n", offset, z80Active_, slotNumber_);
     if (offset == 0x00) {
         if (!z80Active_) {
             activateZ80();
@@ -151,17 +143,10 @@ void SoftCardZ80::activateZ80() {
     if (!z80Initialized_) {
         z80_.reset(true);
         z80Initialized_ = true;
-        printf("[SoftCard] Z80 ACTIVATE (first time, reset) slot=%d PC=%04X\n",
-                slotNumber_, z80_.getRegister(Z80::WordReg::PC));
-    } else {
-        printf("[SoftCard] Z80 ACTIVATE slot=%d PC=%04X\n",
-                slotNumber_, z80_.getRegister(Z80::WordReg::PC));
     }
 }
 
 void SoftCardZ80::deactivateZ80() {
-    printf("[SoftCard] Z80 DEACTIVATE PC=%04X\n",
-            z80_.getRegister(Z80::WordReg::PC));
     z80Active_ = false;
 }
 
