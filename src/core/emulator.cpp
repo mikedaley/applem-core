@@ -11,6 +11,7 @@
 #include "cards/thunderclock_card.hpp"
 #include "cards/mouse_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
+#include "cards/softcard_z80.hpp"
 #include "debug/condition_evaluator.hpp"
 #include <algorithm>
 #include <cstring>
@@ -223,6 +224,29 @@ void Emulator::runCycles(int cycles) {
   uint64_t targetCycles = startCycles + cycles;
 
   while (cpu_->getTotalCycles() < targetCycles) {
+    // When Z80 SoftCard is active, the 6502 is halted via DMA.
+    // Skip all 6502-specific checks and just advance timing.
+    if (softcard_ && softcard_->isZ80Active()) {
+      uint64_t cyclesBefore = cpu_->getTotalCycles();
+      cpu_->setTotalCycles(cpu_->getTotalCycles() + 1);
+      uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
+      if (disk_) disk_->update(static_cast<int>(cyclesUsed));
+      if (mockingboard_) mockingboard_->update(static_cast<int>(cyclesUsed));
+      if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
+      softcard_->update(static_cast<int>(cyclesUsed));
+
+      // Progressive rendering and frame boundary
+      video_->renderUpToCycle(cpu_->getTotalCycles());
+      uint64_t currentCycle = cpu_->getTotalCycles();
+      if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
+        lastFrameCycle_ += CYCLES_PER_FRAME;
+        video_->renderFrame();
+        video_->beginNewFrame(lastFrameCycle_);
+        frameReady_ = true;
+      }
+      continue;
+    }
+
     // Check breakpoints (user breakpoints and temp breakpoint)
     {
       uint16_t pc = cpu_->getPC();
@@ -442,6 +466,9 @@ void Emulator::runCycles(int cycles) {
     // Update mouse card for VBL interrupt detection
     if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
 
+    // Update Z-80 SoftCard (runs Z80 T-states when active)
+    if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
+
     // Progressive rendering: render scanlines up to current cycle
     video_->renderUpToCycle(cpu_->getTotalCycles());
 
@@ -615,474 +642,7 @@ const char *Emulator::getDiskFilename(int drive) const {
   return image->getFilename().c_str();
 }
 
-// ============================================================================
-// Beam Position
-// ============================================================================
-
-int Emulator::getFrameCycle() const {
-  return static_cast<int>(cpu_->getTotalCycles() % CYCLES_PER_FRAME);
-}
-
-int Emulator::getBeamScanline() const {
-  return getFrameCycle() / CYCLES_PER_SCANLINE;
-}
-
-int Emulator::getBeamHPos() const {
-  return getFrameCycle() % CYCLES_PER_SCANLINE;
-}
-
-int Emulator::getBeamColumn() const {
-  int hPos = getBeamHPos();
-  return hPos >= 25 ? hPos - 25 : -1;
-}
-
-bool Emulator::isInVBL() const {
-  return getBeamScanline() >= 192;
-}
-
-bool Emulator::isInHBLANK() const {
-  return getBeamHPos() < 25;
-}
-
-// ============================================================================
-// Step Over / Step Out
-// ============================================================================
-
-uint16_t Emulator::stepOver() {
-  clearTempBreakpoint();
-  uint16_t pc = cpu_->getPC();
-  uint8_t opcode = mmu_->peek(pc);
-
-  if (opcode == 0x20) {
-    // JSR - set temp breakpoint at instruction after JSR (PC + 3)
-    uint16_t returnAddr = (pc + 3) & 0xFFFF;
-    tempBreakpoint_ = returnAddr;
-    tempBreakpointActive_ = true;
-    setPaused(false);
-    return returnAddr;
-  } else if (opcode == 0x00) {
-    // BRK - treat like JSR but with PC+2 as return address
-    uint16_t returnAddr = (pc + 2) & 0xFFFF;
-    tempBreakpoint_ = returnAddr;
-    tempBreakpointActive_ = true;
-    setPaused(false);
-    return returnAddr;
-  } else {
-    // Not a JSR/BRK, just single step
-    stepInstruction();
-    return 0;
-  }
-}
-
-uint16_t Emulator::stepOut() {
-  clearTempBreakpoint();
-  uint8_t sp = cpu_->getSP();
-  uint8_t pcl = mmu_->peek(0x0100 + ((sp + 1) & 0xFF));
-  uint8_t pch = mmu_->peek(0x0100 + ((sp + 2) & 0xFF));
-  // RTS adds 1 to the address
-  uint16_t returnAddr = ((pch << 8) | pcl) + 1;
-
-  if (returnAddr > 0 && returnAddr <= 0xFFFF) {
-    returnAddr &= 0xFFFF;
-    tempBreakpoint_ = returnAddr;
-    tempBreakpointActive_ = true;
-    setPaused(false);
-    return returnAddr;
-  } else {
-    // Invalid return address, just step
-    stepInstruction();
-    return 0;
-  }
-}
-
-void Emulator::clearTempBreakpoint() {
-  if (tempBreakpointActive_) {
-    tempBreakpointActive_ = false;
-    tempBreakpoint_ = 0;
-    tempBreakpointHit_ = false;
-  }
-}
-
-// ============================================================================
-// Breakpoints
-// ============================================================================
-
-void Emulator::addBreakpoint(uint16_t address) { breakpoints_.insert(address); }
-
-void Emulator::removeBreakpoint(uint16_t address) {
-  breakpoints_.erase(address);
-  disabledBreakpoints_.erase(address);
-}
-
-void Emulator::enableBreakpoint(uint16_t address, bool enabled) {
-  if (enabled) {
-    disabledBreakpoints_.erase(address);
-  } else {
-    if (breakpoints_.count(address)) {
-      disabledBreakpoints_.insert(address);
-    }
-  }
-}
-
-// ============================================================================
-// BASIC Breakpoints
-// ============================================================================
-
-void Emulator::addBasicBreakpoint(uint16_t lineNumber, int statementIndex) {
-  basicBreakpoints_.insert({lineNumber, static_cast<int8_t>(statementIndex)});
-}
-
-void Emulator::removeBasicBreakpoint(uint16_t lineNumber, int statementIndex) {
-  basicBreakpoints_.erase({lineNumber, static_cast<int8_t>(statementIndex)});
-}
-
-void Emulator::clearBasicBreakpoints() {
-  basicBreakpoints_.clear();
-  basicBreakpointHit_ = false;
-}
-
-void Emulator::clearBasicBreakpointHit() {
-  basicBreakpointHit_ = false;
-  basicConditionRuleHitId_ = -1;
-  // Don't clear skipBasicBreakpointLine_ here - let it be cleared naturally
-  // when CURLIN changes. This allows Run to work from a breakpoint by:
-  // 1. setPaused(false) sets skip line
-  // 2. clearBasicBreakpointHit() clears step mode but keeps skip
-  // 3. Program continues, types RUN, skip cleared when line changes
-  basicStepMode_ = BasicStepMode::None;
-}
-
-void Emulator::addBasicConditionRule(int id, const char* expression) {
-  // Remove existing rule with same id
-  removeBasicConditionRule(id);
-  basicConditionRules_.push_back({id, std::string(expression), true});
-}
-
-void Emulator::removeBasicConditionRule(int id) {
-  basicConditionRules_.erase(
-    std::remove_if(basicConditionRules_.begin(), basicConditionRules_.end(),
-      [id](const BasicConditionRule& r) { return r.id == id; }),
-    basicConditionRules_.end());
-}
-
-void Emulator::clearBasicConditionRules() {
-  basicConditionRules_.clear();
-  basicConditionRuleHitId_ = -1;
-}
-
-void Emulator::stepBasicLine() {
-  // Get current BASIC line (use readRAM to bypass ALTZP)
-  uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
-
-  // Set up line stepping mode - will pause when CURLIN changes
-  basicStepFromLine_ = curlin;
-  basicStepLineStart_ = 0;  // Not used for line stepping, but reset for cleanliness
-  basicStepNextColon_ = 0;   // Not used for line stepping
-  basicStepMode_ = BasicStepMode::Line;
-
-  // Clear any hit flags, reset sample counter to prevent backlog, and resume
-  basicBreakpointHit_ = false;
-  samplesGenerated_ = 0;
-  paused_ = false;
-  basicBreakLine_ = 0;
-}
-
-void Emulator::stepBasicStatement() {
-  // Step to the next BASIC statement by waiting for PC to hit $D820
-  // (JSR EXECUTE_STATEMENT in the ROM). Both new-line and colon paths
-  // converge there with correct CURLIN and TXTPTR.
-  uint16_t pc = cpu_->getPC();
-  basicStepSkipFirst_ = (pc == 0xD820);
-  basicStepMode_ = BasicStepMode::Statement;
-
-  // Clear any hit flags, reset sample counter to prevent backlog, and resume
-  basicBreakpointHit_ = false;
-  samplesGenerated_ = 0;
-  paused_ = false;
-  basicBreakLine_ = 0;
-}
-
-uint16_t Emulator::getBasicTxtptr() const {
-  // Read TXTPTR respecting current ALTZP state - BASIC writes to whichever
-  // bank is active, so we need to read from the same bank
-  return mmu_->peek(0xB8) | (mmu_->peek(0xB9) << 8);
-}
-
-int Emulator::getBasicStatementIndex() {
-  // Use readRAM to bypass ALTZP - BASIC always uses main RAM for zero page
-  uint16_t curlin = mmu_->readRAM(0x75, false) | (mmu_->readRAM(0x76, false) << 8);
-  uint16_t txtptr = mmu_->readRAM(0xB8, false) | (mmu_->readRAM(0xB9, false) << 8);
-
-  // Find line start for the current line
-  uint16_t lineStart = findCurrentLineStart(curlin);
-
-  // If TXTPTR hasn't entered the current line's text area yet, we're at statement 0
-  if (lineStart == 0 || txtptr < lineStart) {
-    return 0;
-  }
-
-  return countColonsBetween(lineStart, txtptr);
-}
-
-int Emulator::countColonsBetween(uint16_t lineStart, uint16_t txtptr) {
-  // If TXTPTR is at or before line start, we're at statement 0
-  if (lineStart == 0 || txtptr <= lineStart) return 0;
-
-  // Count colons from line start to TXTPTR, respecting strings
-  // Use readRAM to ensure we read from main RAM where BASIC program is stored
-  int colonCount = 0;
-  bool inQuote = false;
-  bool inRem = false;
-
-  for (uint16_t a = lineStart; a < txtptr; a++) {
-    uint8_t byte = mmu_->readRAM(a, false);
-
-    if (byte == 0) break;  // End of line
-
-    if (inRem) continue;  // Skip everything after REM
-
-    if (byte == 0x22) {  // Quote
-      inQuote = !inQuote;
-      continue;
-    }
-
-    if (inQuote) continue;  // Skip string contents
-
-    if (byte == 0xB2) {  // REM token
-      inRem = true;
-      continue;
-    }
-
-    if (byte == 0x3A) {  // Colon
-      colonCount++;
-    }
-  }
-
-  return colonCount;
-}
-
-uint16_t Emulator::findNextColonAfter(uint16_t lineStart, uint16_t afterPos) {
-  // Find the address of the next colon after afterPos within the line
-  // Returns 0 if no colon found (i.e., afterPos is in the last statement)
-  if (lineStart == 0) return 0;
-
-  // Start searching from afterPos (or lineStart if afterPos is before it)
-  uint16_t searchStart = (afterPos >= lineStart) ? afterPos : lineStart;
-  bool inQuote = false;
-  bool inRem = false;
-
-  // First, establish quote/REM state at searchStart by scanning from lineStart
-  for (uint16_t a = lineStart; a < searchStart; a++) {
-    uint8_t byte = mmu_->readRAM(a, false);
-    if (byte == 0) return 0;  // Already past end of line
-    if (inRem) continue;
-    if (byte == 0x22) inQuote = !inQuote;
-    if (!inQuote && byte == 0xB2) inRem = true;
-  }
-
-  // Now search for the next colon
-  for (uint16_t a = searchStart; a < searchStart + 256; a++) {  // Limit search
-    uint8_t byte = mmu_->readRAM(a, false);
-
-    if (byte == 0) return 0;  // End of line, no more colons
-
-    if (inRem) continue;
-
-    if (byte == 0x22) {
-      inQuote = !inQuote;
-      continue;
-    }
-
-    if (inQuote) continue;
-
-    if (byte == 0xB2) {
-      inRem = true;
-      continue;
-    }
-
-    if (byte == 0x3A) {  // Found a colon!
-      return a;
-    }
-  }
-
-  return 0;  // No colon found
-}
-
-uint16_t Emulator::findCurrentLineStart(uint16_t lineNumber) {
-  // Get TXTTAB (start of BASIC program)
-  // Use readRAM to bypass ALTZP - BASIC always uses main RAM for zero page
-  uint16_t txttab = mmu_->readRAM(0x67, false) | (mmu_->readRAM(0x68, false) << 8);
-
-  if (lineNumber == 0xFFFF) return 0;  // Not running
-
-  // Find the specified line in the program
-  uint16_t addr = txttab;
-
-  while (addr < 0xC000) {  // Reasonable upper bound
-    uint16_t nextPtr = mmu_->readRAM(addr, false) | (mmu_->readRAM(addr + 1, false) << 8);
-    if (nextPtr == 0) break;  // End of program
-
-    uint16_t lineNum = mmu_->readRAM(addr + 2, false) | (mmu_->readRAM(addr + 3, false) << 8);
-    if (lineNum == lineNumber) {
-      return addr + 4;  // Start of tokenized text (after nextPtr and lineNum)
-    }
-    addr = nextPtr;
-  }
-
-  return 0;  // Line not found
-}
-
-// ============================================================================
-// BASIC Heat Map
-// ============================================================================
-
-int Emulator::getBasicHeatMapData(uint16_t* lines, uint32_t* counts, int maxEntries) const {
-  int i = 0;
-  for (const auto& [line, count] : basicHeatMap_) {
-    if (i >= maxEntries) break;
-    lines[i] = line;
-    counts[i] = count;
-    i++;
-  }
-  return i;
-}
-
-// ============================================================================
-// Watchpoints
-// ============================================================================
-
-void Emulator::addWatchpoint(uint16_t startAddr, uint16_t endAddr, WatchpointType type) {
-  watchpoints_.push_back({startAddr, endAddr, type, true});
-  watchpointsActive_ = true;
-  mmu_->setWatchpointsActive(true);
-}
-
-void Emulator::removeWatchpoint(uint16_t startAddr) {
-  watchpoints_.erase(
-    std::remove_if(watchpoints_.begin(), watchpoints_.end(),
-      [startAddr](const Watchpoint& wp) { return wp.startAddr == startAddr; }),
-    watchpoints_.end());
-  watchpointsActive_ = !watchpoints_.empty();
-  mmu_->setWatchpointsActive(watchpointsActive_);
-}
-
-void Emulator::clearWatchpoints() {
-  watchpoints_.clear();
-  watchpointsActive_ = false;
-  mmu_->setWatchpointsActive(false);
-}
-
-void Emulator::onWatchpointRead(uint16_t address, uint8_t value) {
-  if (!watchpointsActive_ || watchpointHit_) return;
-  for (const auto& wp : watchpoints_) {
-    if (!wp.enabled) continue;
-    if ((wp.type & WP_READ) && address >= wp.startAddr && address <= wp.endAddr) {
-      watchpointHit_ = true;
-      watchpointAddress_ = address;
-      watchpointValue_ = value;
-      watchpointIsWrite_ = false;
-      paused_ = true;
-      return;
-    }
-  }
-}
-
-void Emulator::onWatchpointWrite(uint16_t address, uint8_t value) {
-  if (!watchpointsActive_ || watchpointHit_) return;
-  for (const auto& wp : watchpoints_) {
-    if (!wp.enabled) continue;
-    if ((wp.type & WP_WRITE) && address >= wp.startAddr && address <= wp.endAddr) {
-      watchpointHit_ = true;
-      watchpointAddress_ = address;
-      watchpointValue_ = value;
-      watchpointIsWrite_ = true;
-      paused_ = true;
-      return;
-    }
-  }
-}
-
-// ============================================================================
-// Beam Breakpoints
-// ============================================================================
-
-int32_t Emulator::addBeamBreakpoint(int16_t scanline, int16_t hPos) {
-  if (beamBreakpoints_.size() >= MAX_BEAM_BREAKPOINTS) return -1;
-  int32_t id = beamBreakNextId_++;
-  beamBreakpoints_.push_back({scanline, hPos, true, id, UINT64_MAX, -1});
-  return id;
-}
-
-void Emulator::removeBeamBreakpoint(int32_t id) {
-  beamBreakpoints_.erase(
-    std::remove_if(beamBreakpoints_.begin(), beamBreakpoints_.end(),
-      [id](const BeamBreakpoint& bp) { return bp.id == id; }),
-    beamBreakpoints_.end());
-}
-
-void Emulator::enableBeamBreakpoint(int32_t id, bool enabled) {
-  for (auto& bp : beamBreakpoints_) {
-    if (bp.id == id) {
-      bp.enabled = enabled;
-      return;
-    }
-  }
-}
-
-void Emulator::clearAllBeamBreakpoints() {
-  beamBreakpoints_.clear();
-  beamBreakNextId_ = 1;
-  beamBreakHit_ = false;
-  beamBreakHitId_ = -1;
-  beamBreakHitScanline_ = -1;
-  beamBreakHitHPos_ = -1;
-}
-
-// ============================================================================
-// Trace Log
-// ============================================================================
-
-void Emulator::recordTrace() {
-  if (traceBuffer_.empty()) {
-    traceBuffer_.resize(10000);
-  }
-
-  auto& entry = traceBuffer_[traceHead_];
-  entry.pc = cpu_->getPC();
-  entry.opcode = mmu_->peek(entry.pc);
-  entry.a = cpu_->getA();
-  entry.x = cpu_->getX();
-  entry.y = cpu_->getY();
-  entry.sp = cpu_->getSP();
-  entry.p = cpu_->getP();
-
-  // Read operands
-  entry.instrLen = 1;
-  entry.operand1 = 0;
-  entry.operand2 = 0;
-
-  // Determine instruction length from opcode
-  static const uint8_t instrLengths[256] = {
-    1,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
-    3,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
-    1,2,1,1,1,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,1,2,2,2,1,3,1,1,1,3,3,3,
-    1,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
-    2,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
-    2,2,2,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,2,2,2,2,1,3,1,1,3,3,3,3,
-    2,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,1,2,2,2,1,3,1,1,1,3,3,3,
-    2,2,1,1,2,2,2,2,1,2,1,1,3,3,3,3,2,2,2,1,1,2,2,2,1,3,1,1,1,3,3,3,
-  };
-
-  entry.instrLen = instrLengths[entry.opcode];
-  if (entry.instrLen >= 2) entry.operand1 = mmu_->peek(entry.pc + 1);
-  if (entry.instrLen >= 3) entry.operand2 = mmu_->peek(entry.pc + 2);
-
-  entry.cycle = static_cast<uint32_t>(cpu_->getTotalCycles());
-  entry.padding = 0;
-
-  traceHead_ = (traceHead_ + 1) % traceBuffer_.size();
-  if (traceCount_ < traceBuffer_.size()) traceCount_++;
-}
+// Debug facilities (breakpoints, watchpoints, trace, beam) are in emulator_debug.cpp
 
 void Emulator::stepInstruction() {
   breakpointHit_ = false;
@@ -1115,6 +675,9 @@ void Emulator::stepInstruction() {
 
   // Update mouse card
   if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
+
+  // Update Z-80 SoftCard
+  if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
 
   // Progressive rendering: render scanlines up to current cycle
   video_->renderUpToCycle(cpu_->getTotalCycles());
@@ -1302,6 +865,9 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
   if (strcmp(name, "SmartPort") == 0) {
     return "smartport";
   }
+  if (strcmp(name, "Z-80 SoftCard") == 0) {
+    return "softcard";
+  }
 
   return "empty";
 }
@@ -1338,6 +904,9 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
       mmu_->removeCard(slot);
     } else if (strcmp(existingName, "SmartPort") == 0) {
       smartport_ = nullptr;
+      mmu_->removeCard(slot);
+    } else if (strcmp(existingName, "Z-80 SoftCard") == 0) {
+      softcard_ = nullptr;
       mmu_->removeCard(slot);
     } else {
       mmu_->removeCard(slot);
@@ -1415,6 +984,21 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     return true;
   }
 
+  // Handle Z-80 SoftCard
+  if (strcmp(cardId, "softcard") == 0) {
+    auto card = std::make_unique<SoftCardZ80>();
+    card->setSlotNumber(slot);
+    card->setMemReadCallback([this](uint16_t addr) { return mmu_->read(addr); });
+    card->setMemWriteCallback([this](uint16_t addr, uint8_t val) { mmu_->write(addr, val); });
+    card->setCpuHaltCallback([this](bool halt) {
+      // When Z80 activates, halt 6502; when Z80 deactivates, resume
+      // The 6502 just idles — the card's update() runs Z80 cycles instead
+    });
+    softcard_ = card.get();
+    mmu_->insertCard(slot, std::move(card));
+    return true;
+  }
+
   return false;
 }
 
@@ -1431,558 +1015,7 @@ bool Emulator::isSlotEmpty(uint8_t slot) const {
   return mmu_->isSlotEmpty(slot);
 }
 
-// ============================================================================
-// State Serialization
-// ============================================================================
-
-// State format version - increment when format changes
-static constexpr uint32_t STATE_VERSION = 7;  // LSS 8-phase clock
-static constexpr uint32_t STATE_MAGIC = 0x53324541; // "A2ES" in little-endian
-
-// Helper to write little-endian values
-static void writeLE16(std::vector<uint8_t> &buf, uint16_t val) {
-  buf.push_back(val & 0xFF);
-  buf.push_back((val >> 8) & 0xFF);
-}
-
-static void writeLE32(std::vector<uint8_t> &buf, uint32_t val) {
-  buf.push_back(val & 0xFF);
-  buf.push_back((val >> 8) & 0xFF);
-  buf.push_back((val >> 16) & 0xFF);
-  buf.push_back((val >> 24) & 0xFF);
-}
-
-static void writeLE64(std::vector<uint8_t> &buf, uint64_t val) {
-  for (int i = 0; i < 8; i++) {
-    buf.push_back((val >> (i * 8)) & 0xFF);
-  }
-}
-
-// Helper to read little-endian values
-static uint16_t readLE16(const uint8_t *data) {
-  return data[0] | (data[1] << 8);
-}
-
-static uint32_t readLE32(const uint8_t *data) {
-  return data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
-}
-
-static uint64_t readLE64(const uint8_t *data) {
-  uint64_t val = 0;
-  for (int i = 0; i < 8; i++) {
-    val |= static_cast<uint64_t>(data[i]) << (i * 8);
-  }
-  return val;
-}
-
-const uint8_t *Emulator::exportState(size_t *size) {
-  stateBuffer_.clear();
-
-  // Reserve approximate size (slightly over to avoid reallocations)
-  // ~200KB total (128KB main/aux + 32KB LC RAM + overhead + disk images)
-  stateBuffer_.reserve(500000);
-
-  // Header
-  writeLE32(stateBuffer_, STATE_MAGIC);
-  writeLE32(stateBuffer_, STATE_VERSION);
-
-  // CPU state
-  stateBuffer_.push_back(cpu_->getA());
-  stateBuffer_.push_back(cpu_->getX());
-  stateBuffer_.push_back(cpu_->getY());
-  stateBuffer_.push_back(cpu_->getSP());
-  stateBuffer_.push_back(cpu_->getP());
-  stateBuffer_.push_back(0); // Reserved
-  writeLE16(stateBuffer_, cpu_->getPC());
-  writeLE64(stateBuffer_, cpu_->getTotalCycles());
-
-  // Memory - Main RAM (64KB)
-  for (uint32_t addr = 0; addr < MAIN_RAM_SIZE; addr++) {
-    stateBuffer_.push_back(mmu_->readRAM(addr, false));
-  }
-
-  // Memory - Aux RAM (64KB)
-  for (uint32_t addr = 0; addr < AUX_RAM_SIZE; addr++) {
-    stateBuffer_.push_back(mmu_->readRAM(addr, true));
-  }
-
-  // Language Card RAM - Main (16KB total: 4KB bank1 + 4KB bank2 + 8KB high)
-  const uint8_t *lcb1 = mmu_->getLCBank1(false);
-  const uint8_t *lcb2 = mmu_->getLCBank2(false);
-  const uint8_t *lchi = mmu_->getLCHighRAM(false);
-  stateBuffer_.insert(stateBuffer_.end(), lcb1, lcb1 + 0x1000);
-  stateBuffer_.insert(stateBuffer_.end(), lcb2, lcb2 + 0x1000);
-  stateBuffer_.insert(stateBuffer_.end(), lchi, lchi + 0x2000);
-
-  // Language Card RAM - Aux (16KB total)
-  const uint8_t *alcb1 = mmu_->getLCBank1(true);
-  const uint8_t *alcb2 = mmu_->getLCBank2(true);
-  const uint8_t *alchi = mmu_->getLCHighRAM(true);
-  stateBuffer_.insert(stateBuffer_.end(), alcb1, alcb1 + 0x1000);
-  stateBuffer_.insert(stateBuffer_.end(), alcb2, alcb2 + 0x1000);
-  stateBuffer_.insert(stateBuffer_.end(), alchi, alchi + 0x2000);
-
-  // Soft switches - pack into bytes
-  const auto &sw = mmu_->getSoftSwitches();
-  uint32_t switches1 = 0;
-  if (sw.text) switches1 |= (1 << 0);
-  if (sw.mixed) switches1 |= (1 << 1);
-  if (sw.page2) switches1 |= (1 << 2);
-  if (sw.hires) switches1 |= (1 << 3);
-  if (sw.col80) switches1 |= (1 << 4);
-  if (sw.altCharSet) switches1 |= (1 << 5);
-  if (sw.store80) switches1 |= (1 << 6);
-  if (sw.ramrd) switches1 |= (1 << 7);
-  if (sw.ramwrt) switches1 |= (1 << 8);
-  if (sw.intcxrom) switches1 |= (1 << 9);
-  if (sw.altzp) switches1 |= (1 << 10);
-  if (sw.slotc3rom) switches1 |= (1 << 11);
-  if (sw.intc8rom) switches1 |= (1 << 12);
-  if (sw.lcram) switches1 |= (1 << 13);
-  if (sw.lcram2) switches1 |= (1 << 14);
-  if (sw.lcwrite) switches1 |= (1 << 15);
-  if (sw.lcprewrite) switches1 |= (1 << 16);
-  if (sw.an0) switches1 |= (1 << 17);
-  if (sw.an1) switches1 |= (1 << 18);
-  if (sw.an2) switches1 |= (1 << 19);
-  if (sw.an3) switches1 |= (1 << 20);
-  if (sw.ioudis) switches1 |= (1 << 21);
-  writeLE32(stateBuffer_, switches1);
-
-  // Keyboard latch
-  stateBuffer_.push_back(keyboardLatch_);
-  stateBuffer_.push_back(keyDown_ ? 1 : 0);
-
-  // Button state
-  stateBuffer_.push_back(buttonState_[0] ? 1 : 0);
-  stateBuffer_.push_back(buttonState_[1] ? 1 : 0);
-  stateBuffer_.push_back(buttonState_[2] ? 1 : 0);
-
-  // Emulator timing
-  writeLE64(stateBuffer_, lastFrameCycle_);
-  writeLE32(stateBuffer_, samplesGenerated_);
-
-  // Disk controller state
-  auto &disk = *disk_;
-  stateBuffer_.push_back(disk.isMotorOn() ? 1 : 0);
-  stateBuffer_.push_back(static_cast<uint8_t>(disk.getSelectedDrive()));
-  stateBuffer_.push_back(disk.getQ6() ? 1 : 0);
-  stateBuffer_.push_back(disk.getQ7() ? 1 : 0);
-  stateBuffer_.push_back(disk.getPhaseStates());
-  stateBuffer_.push_back(disk.getDataLatch());
-  stateBuffer_.push_back(disk.getSequencerState());
-  stateBuffer_.push_back(disk.getBusData());
-  stateBuffer_.push_back(disk.getLSSClock());
-
-  // Per-drive state (track positions, disk image data, and filenames)
-  for (int drive = 0; drive < 2; drive++) {
-    if (disk.hasDisk(drive)) {
-      const auto *image = disk.getDiskImage(drive);
-      stateBuffer_.push_back(1); // Disk present
-      writeLE16(stateBuffer_, static_cast<uint16_t>(image->getQuarterTrack()));
-
-      // Export the disk image data
-      size_t diskSize = 0;
-      const uint8_t *diskData = disk.exportDiskData(drive, &diskSize);
-      writeLE32(stateBuffer_, static_cast<uint32_t>(diskSize));
-      if (diskData && diskSize > 0) {
-        stateBuffer_.insert(stateBuffer_.end(), diskData, diskData + diskSize);
-      }
-
-      // Save filename
-      const std::string &filename = image->getFilename();
-      writeLE16(stateBuffer_, static_cast<uint16_t>(filename.length()));
-      stateBuffer_.insert(stateBuffer_.end(), filename.begin(), filename.end());
-    } else {
-      stateBuffer_.push_back(0); // No disk
-      writeLE16(stateBuffer_, 0);
-      writeLE32(stateBuffer_, 0); // Zero disk size
-      writeLE16(stateBuffer_, 0); // Zero filename length
-    }
-  }
-
-  // Audio state (speaker)
-  stateBuffer_.push_back(audio_->getSpeakerState() ? 1 : 0);
-
-  // Mockingboard state
-  uint8_t mbState[MockingboardCard::STATE_SIZE];
-  size_t mbSize = 0;
-  if (mockingboard_) {
-    mbSize = mockingboard_->serialize(mbState, sizeof(mbState));
-  }
-  writeLE16(stateBuffer_, static_cast<uint16_t>(mbSize));
-  if (mbSize > 0) {
-    stateBuffer_.insert(stateBuffer_.end(), mbState, mbState + mbSize);
-  }
-
-  // Expansion card states (slots 1-7, excluding 4 and 6 which are handled above)
-  // First, count how many cards have state to save
-  uint8_t cardCount = 0;
-  for (uint8_t slot = 1; slot <= 7; slot++) {
-    if (slot == 4 || slot == 6) continue;  // Handled by legacy system
-    ExpansionCard* card = mmu_->getCard(slot);
-    if (card && card->getStateSize() > 0) {
-      cardCount++;
-    }
-  }
-  stateBuffer_.push_back(cardCount);
-
-  // Save each card's state
-  for (uint8_t slot = 1; slot <= 7; slot++) {
-    if (slot == 4 || slot == 6) continue;
-    ExpansionCard* card = mmu_->getCard(slot);
-    if (card && card->getStateSize() > 0) {
-      // Slot number
-      stateBuffer_.push_back(slot);
-
-      // Card type identifier (use name for identification)
-      const char* name = card->getName();
-      uint8_t cardType = 0;
-      if (strcmp(name, "Thunderclock") == 0) cardType = 1;
-      if (strcmp(name, "Mouse") == 0) cardType = 2;
-      if (strcmp(name, "SmartPort") == 0) cardType = 3;
-      stateBuffer_.push_back(cardType);
-
-      // Card state
-      size_t stateSize = card->getStateSize();
-      writeLE16(stateBuffer_, static_cast<uint16_t>(stateSize));
-      size_t currentSize = stateBuffer_.size();
-      stateBuffer_.resize(currentSize + stateSize);
-      card->serialize(stateBuffer_.data() + currentSize, stateSize);
-    }
-  }
-
-  *size = stateBuffer_.size();
-  return stateBuffer_.data();
-}
-
-bool Emulator::importState(const uint8_t *data, size_t size) {
-  // Minimum size check
-  if (size < 8) {
-    return false;
-  }
-
-  size_t offset = 0;
-
-  // Check magic and version before resetting
-  uint32_t magic = readLE32(data + offset);
-  offset += 4;
-  if (magic != STATE_MAGIC) {
-    return false;
-  }
-
-  uint32_t version = readLE32(data + offset);
-  offset += 4;
-  if (version != STATE_VERSION) {
-    return false;
-  }
-
-  // Reset emulator to clean state before importing
-  // This ensures no old state is left floating around
-  reset();
-
-  // CPU state
-  if (offset + 16 > size) return false;
-  cpu_->setA(data[offset++]);
-  cpu_->setX(data[offset++]);
-  cpu_->setY(data[offset++]);
-  cpu_->setSP(data[offset++]);
-  cpu_->setP(data[offset++]);
-  offset++; // Reserved
-
-  cpu_->setPC(readLE16(data + offset));
-  offset += 2;
-
-  // Restore total cycles for accurate disk timing
-  uint64_t totalCycles = readLE64(data + offset);
-  offset += 8;
-  cpu_->setTotalCycles(totalCycles);
-
-  // Memory - Main RAM (64KB)
-  if (offset + MAIN_RAM_SIZE > size) return false;
-  for (uint32_t addr = 0; addr < MAIN_RAM_SIZE; addr++) {
-    mmu_->writeRAM(addr, data[offset++], false);
-  }
-
-  // Memory - Aux RAM (64KB)
-  if (offset + AUX_RAM_SIZE > size) return false;
-  for (uint32_t addr = 0; addr < AUX_RAM_SIZE; addr++) {
-    mmu_->writeRAM(addr, data[offset++], true);
-  }
-
-  // Language Card RAM - Main (16KB: 4KB + 4KB + 8KB)
-  if (offset + 0x4000 > size) return false;
-  mmu_->setLCBank1(data + offset, false);
-  offset += 0x1000;
-  mmu_->setLCBank2(data + offset, false);
-  offset += 0x1000;
-  mmu_->setLCHighRAM(data + offset, false);
-  offset += 0x2000;
-
-  // Language Card RAM - Aux (16KB)
-  if (offset + 0x4000 > size) return false;
-  mmu_->setLCBank1(data + offset, true);
-  offset += 0x1000;
-  mmu_->setLCBank2(data + offset, true);
-  offset += 0x1000;
-  mmu_->setLCHighRAM(data + offset, true);
-  offset += 0x2000;
-
-  // Soft switches
-  if (offset + 4 > size) return false;
-  uint32_t switches1 = readLE32(data + offset);
-  offset += 4;
-
-  // Restore soft switches by writing to appropriate addresses
-  // TEXT/GRAPHICS
-  mmu_->write((switches1 & (1 << 0)) ? 0xC051 : 0xC050, 0);
-  // MIXED
-  mmu_->write((switches1 & (1 << 1)) ? 0xC053 : 0xC052, 0);
-  // PAGE1/PAGE2
-  mmu_->write((switches1 & (1 << 2)) ? 0xC055 : 0xC054, 0);
-  // LORES/HIRES
-  mmu_->write((switches1 & (1 << 3)) ? 0xC057 : 0xC056, 0);
-  // 80COL
-  mmu_->write((switches1 & (1 << 4)) ? 0xC00D : 0xC00C, 0);
-  // ALTCHARSET
-  mmu_->write((switches1 & (1 << 5)) ? 0xC00F : 0xC00E, 0);
-  // 80STORE
-  mmu_->write((switches1 & (1 << 6)) ? 0xC001 : 0xC000, 0);
-  // RAMRD
-  mmu_->write((switches1 & (1 << 7)) ? 0xC003 : 0xC002, 0);
-  // RAMWRT
-  mmu_->write((switches1 & (1 << 8)) ? 0xC005 : 0xC004, 0);
-  // INTCXROM
-  mmu_->write((switches1 & (1 << 9)) ? 0xC007 : 0xC006, 0);
-  // ALTZP
-  mmu_->write((switches1 & (1 << 10)) ? 0xC009 : 0xC008, 0);
-  // SLOTC3ROM
-  mmu_->write((switches1 & (1 << 11)) ? 0xC00B : 0xC00A, 0);
-  // INTC8ROM - this is set automatically by slot access
-  // LCRAM, LCRAM2, LCWRITE - need special handling via language card switches
-  // AN0-AN3
-  mmu_->write((switches1 & (1 << 17)) ? 0xC059 : 0xC058, 0);
-  mmu_->write((switches1 & (1 << 18)) ? 0xC05B : 0xC05A, 0);
-  mmu_->write((switches1 & (1 << 19)) ? 0xC05D : 0xC05C, 0);
-  mmu_->write((switches1 & (1 << 20)) ? 0xC05F : 0xC05E, 0);
-
-  // Language card state restoration
-  bool lcram = switches1 & (1 << 13);
-  bool lcram2 = switches1 & (1 << 14);
-  bool lcwrite = switches1 & (1 << 15);
-  // Select the appropriate language card mode
-  // lcram2 means bank 2 is selected (not bank 1)
-  // $C080: bank2, read RAM, no write
-  // $C081: bank2, read ROM, write (needs double read)
-  // $C083: bank2, read RAM, write (needs double read)
-  // $C088: bank1, read RAM, no write
-  // etc.
-  if (lcram) {
-    if (lcram2) {
-      if (lcwrite) {
-        mmu_->read(0xC083);
-        mmu_->read(0xC083); // Double read to enable write
-      } else {
-        mmu_->read(0xC080);
-      }
-    } else {
-      if (lcwrite) {
-        mmu_->read(0xC08B);
-        mmu_->read(0xC08B);
-      } else {
-        mmu_->read(0xC088);
-      }
-    }
-  } else {
-    if (lcram2) {
-      mmu_->read(0xC082);
-    } else {
-      mmu_->read(0xC08A);
-    }
-  }
-
-  // Keyboard state
-  if (offset + 5 > size) return false;
-  keyboardLatch_ = data[offset++];
-  keyDown_ = data[offset++] != 0;
-
-  // Button state
-  buttonState_[0] = data[offset++] != 0;
-  buttonState_[1] = data[offset++] != 0;
-  buttonState_[2] = data[offset++] != 0;
-
-  // Emulator timing
-  if (offset + 12 > size) return false;
-  lastFrameCycle_ = readLE64(data + offset);
-  offset += 8;
-  samplesGenerated_ = static_cast<int>(readLE32(data + offset));
-  offset += 4;
-
-  // Disk controller state
-  if (offset + 9 > size) return false;
-  bool motorOn = data[offset++] != 0;
-  int selectedDrive = data[offset++];
-  bool q6 = data[offset++] != 0;
-  bool q7 = data[offset++] != 0;
-  uint8_t phaseStates = data[offset++];
-  uint8_t dataLatch = data[offset++];
-  uint8_t seqState = data[offset++];
-  uint8_t busDataVal = data[offset++];
-  uint8_t lssClockVal = data[offset++];
-
-  // Restore disk controller state (including motor for mid-load restores)
-  if (disk_) {
-    disk_->setMotorOn(motorOn);
-    disk_->setSelectedDrive(selectedDrive);
-    disk_->setQ6(q6);
-    disk_->setQ7(q7);
-    disk_->setPhaseStates(phaseStates);
-    disk_->setDataLatch(dataLatch);
-    disk_->setSequencerState(seqState);
-    disk_->setBusData(busDataVal);
-    disk_->setLSSClock(lssClockVal);
-  }
-
-  // Per-drive state (disk images and track positions)
-  for (int drive = 0; drive < 2; drive++) {
-    if (offset + 3 > size) return false;
-    bool hasDisk = data[offset++] != 0;
-    uint16_t quarterTrack = readLE16(data + offset);
-    offset += 2;
-
-    // Read disk size
-    if (offset + 4 > size) return false;
-    uint32_t diskSize = readLE32(data + offset);
-    offset += 4;
-
-    if (hasDisk && diskSize > 0) {
-      if (offset + diskSize > size) return false;
-
-      // Read disk data offset for insertion
-      const uint8_t *diskData = data + offset;
-      offset += diskSize;
-
-      // Read filename
-      if (offset + 2 > size) return false;
-      uint16_t filenameLen = readLE16(data + offset);
-      offset += 2;
-
-      std::string filename = "state.dsk";
-      if (filenameLen > 0 && offset + filenameLen <= size) {
-        filename = std::string(reinterpret_cast<const char*>(data + offset), filenameLen);
-        offset += filenameLen;
-      }
-
-      // Insert the disk image from the saved state
-      if (disk_) {
-        disk_->insertDisk(drive, diskData, diskSize, filename);
-
-        // Restore track position
-        auto *image = disk_->getMutableDiskImage(drive);
-        if (image) {
-          image->setQuarterTrack(quarterTrack);
-        }
-      }
-    } else {
-      // Skip filename length field (will be 0)
-      if (offset + 2 <= size) {
-        offset += 2;
-      }
-      // Eject any existing disk
-      if (disk_) disk_->ejectDisk(drive);
-    }
-  }
-
-  // Audio state
-  if (offset + 1 > size) return false;
-  bool speakerState = data[offset++] != 0;
-  (void)speakerState;
-
-  // Mockingboard state
-  if (offset + 2 <= size) {
-    uint16_t mbSize = readLE16(data + offset);
-    offset += 2;
-    if (mbSize > 0 && offset + mbSize <= size) {
-      if (mockingboard_) {
-        mockingboard_->deserialize(data + offset, mbSize);
-      }
-      offset += mbSize;
-    }
-  }
-
-  // Expansion card states
-  if (offset + 1 <= size) {
-    uint8_t cardCount = data[offset++];
-    for (uint8_t i = 0; i < cardCount && offset + 4 <= size; i++) {
-      uint8_t slot = data[offset++];
-      uint8_t cardType = data[offset++];
-      uint16_t stateSize = readLE16(data + offset);
-      offset += 2;
-
-      if (offset + stateSize > size) break;
-
-      // Create card based on type if slot is empty
-      if (slot >= 1 && slot <= 7 && slot != 4 && slot != 6) {
-        ExpansionCard* existingCard = mmu_->getCard(slot);
-
-        // Create appropriate card type if needed
-        if (!existingCard) {
-          switch (cardType) {
-            case 1: {  // Thunderclock
-              auto card = std::make_unique<ThunderclockCard>();
-              mmu_->insertCard(slot, std::move(card));
-              existingCard = mmu_->getCard(slot);
-              break;
-            }
-            case 2: {  // Mouse
-              auto card = std::make_unique<MouseCard>();
-              card->setSlotNumber(slot);
-              card->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
-              card->setIRQCallback([this]() { cpu_->irq(); });
-              mouse_ = card.get();
-              mmu_->insertCard(slot, std::move(card));
-              existingCard = mmu_->getCard(slot);
-              break;
-            }
-            case 3: {  // SmartPort
-              auto card = std::make_unique<SmartPortCard>();
-              card->setSlotNumber(slot);
-              card->setMemReadCallback([this](uint16_t addr) { return mmu_->read(addr); });
-              card->setMemWriteCallback([this](uint16_t addr, uint8_t val) { mmu_->write(addr, val); });
-              card->setGetA([this]() { return cpu_->getA(); });
-              card->setSetA([this](uint8_t v) { cpu_->setA(v); });
-              card->setGetP([this]() { return cpu_->getP(); });
-              card->setSetP([this](uint8_t v) { cpu_->setP(v); });
-              card->setGetSP([this]() { return cpu_->getSP(); });
-              card->setSetSP([this](uint8_t v) { cpu_->setSP(v); });
-              card->setGetPC([this]() { return cpu_->getPC(); });
-              card->setSetPC([this](uint16_t v) { cpu_->setPC(v); });
-              card->setSetX([this](uint8_t v) { cpu_->setX(v); });
-              card->setSetY([this](uint8_t v) { cpu_->setY(v); });
-              smartport_ = card.get();
-              mmu_->insertCard(slot, std::move(card));
-              existingCard = mmu_->getCard(slot);
-              break;
-            }
-          }
-        }
-
-        // Restore card state
-        if (existingCard) {
-          existingCard->deserialize(data + offset, stateSize);
-        }
-      }
-
-      offset += stateSize;
-    }
-  }
-
-  frameReady_ = true;
-  breakpointHit_ = false;
-  paused_ = false;
-
-  return true;
-}
+// State serialization (exportState / importState) is in emulator_state.cpp
 
 // ============================================================================
 // SmartPort Hard Drive Management

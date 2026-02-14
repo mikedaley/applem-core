@@ -15,6 +15,7 @@
 #include "cards/mockingboard_card.hpp"
 #include "cards/mouse_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
+#include "cards/softcard_z80.hpp"
 #include "mmu/mmu.hpp"
 #include "types.hpp"
 #include "video/video.hpp"
@@ -242,9 +243,16 @@ public:
   Video &getVideo() { return *video_; }
   Audio &getAudio() { return *audio_; }
   Disk2Card &getDisk() { return *disk_; }
+  Disk2Card *getDiskPtr() { return disk_; }
   MockingboardCard &getMockingboard() { return *mockingboard_; }
+  MockingboardCard *getMockingboardPtr() { return mockingboard_; }
   MouseCard* getMouseCard() { return mouse_; }
   SmartPortCard* getSmartPortCard() { return smartport_; }
+  SoftCardZ80* getSoftCard() { return softcard_; }
+
+  // No-Slot Clock
+  void enableNoSlotClock(bool enable) { mmu_->enableNoSlotClock(enable); }
+  bool isNoSlotClockEnabled() const { return mmu_->isNoSlotClockEnabled(); }
 
   // SmartPort hard drive management
   bool insertSmartPortImage(int device, const uint8_t* data, size_t size, const char* filename);
@@ -285,6 +293,7 @@ private:
   MockingboardCard* mockingboard_ = nullptr;
   MouseCard* mouse_ = nullptr;
   SmartPortCard* smartport_ = nullptr;
+  SoftCardZ80* softcard_ = nullptr;
 
   // Storage for cards when removed from slots
   std::unique_ptr<ExpansionCard> diskStorage_;

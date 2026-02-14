@@ -15,8 +15,9 @@
 
 namespace a2e {
 
-// Forward declaration
+// Forward declarations
 class ExpansionCard;
+class NoSlotClock;
 
 class MMU {
 public:
@@ -150,6 +151,11 @@ public:
    */
   uint8_t getActiveExpansionSlot() const { return activeExpansionSlot_; }
 
+  // No-Slot Clock (DS1215)
+  void enableNoSlotClock(bool enable);
+  bool isNoSlotClockEnabled() const;
+  NoSlotClock* getNoSlotClock() { return noSlotClock_.get(); }
+
   // Reset
   void reset();
   void warmReset();  // Reset soft switches and cards, preserve RAM
@@ -222,6 +228,9 @@ private:
   WatchpointReadCallback watchpointReadCallback_;
   WatchpointWriteCallback watchpointWriteCallback_;
   bool watchpointsActive_ = false;
+
+  // No-Slot Clock (DS1215)
+  std::unique_ptr<NoSlotClock> noSlotClock_;
 
   // Expansion slots (1-7, index 0-6)
   std::array<std::unique_ptr<ExpansionCard>, 7> slots_;
