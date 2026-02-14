@@ -30,6 +30,16 @@ set(CORE_SOURCES
     src/core/cards/mouse_card.cpp
     src/core/cards/smartport/block_device.cpp
     src/core/cards/smartport/smartport_card.cpp
+    src/core/cards/softcard_z80.cpp
+    src/core/z80/z80.cpp
+    src/core/z80/z80_opcode_tables.cpp
+    src/core/z80/z80_opcodes_main.cpp
+    src/core/z80/z80_opcodes_cb.cpp
+    src/core/z80/z80_opcodes_dd.cpp
+    src/core/z80/z80_opcodes_ed.cpp
+    src/core/z80/z80_opcodes_fd.cpp
+    src/core/z80/z80_opcodes_ddcb.cpp
+    src/core/z80/z80_opcodes_fdcb.cpp
     src/core/noslot_clock.cpp
     src/core/debug/condition_evaluator.cpp
     src/core/filesystem/dos33.cpp
@@ -389,6 +399,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/core/filesystem
         ${CMAKE_SOURCE_DIR}/src/core/basic
         ${CMAKE_SOURCE_DIR}/src/core/assembler
+        ${CMAKE_SOURCE_DIR}/src/core/z80
         ${CMAKE_BINARY_DIR}/generated
     )
 
@@ -414,6 +425,16 @@ else()
         src/core/cards/mouse_card.cpp
         src/core/cards/smartport/block_device.cpp
         src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/softcard_z80.cpp
+        src/core/z80/z80.cpp
+        src/core/z80/z80_opcode_tables.cpp
+        src/core/z80/z80_opcodes_main.cpp
+        src/core/z80/z80_opcodes_cb.cpp
+        src/core/z80/z80_opcodes_dd.cpp
+        src/core/z80/z80_opcodes_ed.cpp
+        src/core/z80/z80_opcodes_fd.cpp
+        src/core/z80/z80_opcodes_ddcb.cpp
+        src/core/z80/z80_opcodes_fdcb.cpp
         src/core/noslot_clock.cpp
         src/core/debug/condition_evaluator.cpp
         src/core/filesystem/dos33.cpp

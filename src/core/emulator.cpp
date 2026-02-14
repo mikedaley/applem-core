@@ -11,6 +11,7 @@
 #include "cards/thunderclock_card.hpp"
 #include "cards/mouse_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
+#include "cards/softcard_z80.hpp"
 #include "debug/condition_evaluator.hpp"
 #include <algorithm>
 #include <cstring>
@@ -223,6 +224,29 @@ void Emulator::runCycles(int cycles) {
   uint64_t targetCycles = startCycles + cycles;
 
   while (cpu_->getTotalCycles() < targetCycles) {
+    // When Z80 SoftCard is active, the 6502 is halted via DMA.
+    // Skip all 6502-specific checks and just advance timing.
+    if (softcard_ && softcard_->isZ80Active()) {
+      uint64_t cyclesBefore = cpu_->getTotalCycles();
+      cpu_->setTotalCycles(cpu_->getTotalCycles() + 1);
+      uint64_t cyclesUsed = cpu_->getTotalCycles() - cyclesBefore;
+      if (disk_) disk_->update(static_cast<int>(cyclesUsed));
+      if (mockingboard_) mockingboard_->update(static_cast<int>(cyclesUsed));
+      if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
+      softcard_->update(static_cast<int>(cyclesUsed));
+
+      // Progressive rendering and frame boundary
+      video_->renderUpToCycle(cpu_->getTotalCycles());
+      uint64_t currentCycle = cpu_->getTotalCycles();
+      if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
+        lastFrameCycle_ += CYCLES_PER_FRAME;
+        video_->renderFrame();
+        video_->beginNewFrame(lastFrameCycle_);
+        frameReady_ = true;
+      }
+      continue;
+    }
+
     // Check breakpoints (user breakpoints and temp breakpoint)
     {
       uint16_t pc = cpu_->getPC();
@@ -442,6 +466,9 @@ void Emulator::runCycles(int cycles) {
     // Update mouse card for VBL interrupt detection
     if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
 
+    // Update Z-80 SoftCard (runs Z80 T-states when active)
+    if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
+
     // Progressive rendering: render scanlines up to current cycle
     video_->renderUpToCycle(cpu_->getTotalCycles());
 
@@ -649,6 +676,9 @@ void Emulator::stepInstruction() {
   // Update mouse card
   if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
 
+  // Update Z-80 SoftCard
+  if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
+
   // Progressive rendering: render scanlines up to current cycle
   video_->renderUpToCycle(cpu_->getTotalCycles());
 
@@ -835,6 +865,9 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
   if (strcmp(name, "SmartPort") == 0) {
     return "smartport";
   }
+  if (strcmp(name, "Z-80 SoftCard") == 0) {
+    return "softcard";
+  }
 
   return "empty";
 }
@@ -871,6 +904,9 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
       mmu_->removeCard(slot);
     } else if (strcmp(existingName, "SmartPort") == 0) {
       smartport_ = nullptr;
+      mmu_->removeCard(slot);
+    } else if (strcmp(existingName, "Z-80 SoftCard") == 0) {
+      softcard_ = nullptr;
       mmu_->removeCard(slot);
     } else {
       mmu_->removeCard(slot);
@@ -944,6 +980,21 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     card->setSetX([this](uint8_t v) { cpu_->setX(v); });
     card->setSetY([this](uint8_t v) { cpu_->setY(v); });
     smartport_ = card.get();
+    mmu_->insertCard(slot, std::move(card));
+    return true;
+  }
+
+  // Handle Z-80 SoftCard
+  if (strcmp(cardId, "softcard") == 0) {
+    auto card = std::make_unique<SoftCardZ80>();
+    card->setSlotNumber(slot);
+    card->setMemReadCallback([this](uint16_t addr) { return mmu_->read(addr); });
+    card->setMemWriteCallback([this](uint16_t addr, uint8_t val) { mmu_->write(addr, val); });
+    card->setCpuHaltCallback([this](bool halt) {
+      // When Z80 activates, halt 6502; when Z80 deactivates, resume
+      // The 6502 just idles — the card's update() runs Z80 cycles instead
+    });
+    softcard_ = card.get();
     mmu_->insertCard(slot, std::move(card));
     return true;
   }
