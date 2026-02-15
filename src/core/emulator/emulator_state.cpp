@@ -8,12 +8,12 @@
  *  Mike Daley <michael_daley@icloud.com>
  */
 
-#include "emulator.hpp"
-#include "cards/disk2/disk2_card.hpp"
-#include "cards/mockingboard/mockingboard_card.hpp"
-#include "cards/thunderclock/thunderclock_card.hpp"
-#include "cards/mouse/mouse_card.hpp"
-#include "cards/smartport/smartport_card.hpp"
+#include "../emulator.hpp"
+#include "../cards/disk2/disk2_card.hpp"
+#include "../cards/mockingboard/mockingboard_card.hpp"
+#include "../cards/thunderclock/thunderclock_card.hpp"
+#include "../cards/mouse/mouse_card.hpp"
+#include "../cards/smartport/smartport_card.hpp"
 #include <algorithm>
 #include <cstring>
 #include <vector>

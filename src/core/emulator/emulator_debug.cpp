@@ -9,7 +9,7 @@
  *  Mike Daley <michael_daley@icloud.com>
  */
 
-#include "emulator.hpp"
+#include "../emulator.hpp"
 #include <algorithm>
 
 namespace a2e {

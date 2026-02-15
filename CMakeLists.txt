@@ -11,8 +11,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Source files
 set(CORE_SOURCES
     src/core/emulator.cpp
-    src/core/emulator_state.cpp
-    src/core/emulator_debug.cpp
+    src/core/emulator/emulator_state.cpp
+    src/core/emulator/emulator_debug.cpp
     src/core/cpu/6502/cpu6502.cpp
     src/core/mmu/mmu.cpp
     src/core/video/video.cpp
@@ -84,6 +84,8 @@ if(EMSCRIPTEN)
     target_include_directories(a2e PRIVATE
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
+        ${CMAKE_SOURCE_DIR}/src/core/cards
+        ${CMAKE_SOURCE_DIR}/src/core/disk-image
         ${CMAKE_BINARY_DIR}/generated
     )
 
@@ -416,8 +418,8 @@ else()
     # All core source files (excluding wasm_interface.cpp)
     set(CORE_TEST_SOURCES
         src/core/emulator.cpp
-        src/core/emulator_state.cpp
-        src/core/emulator_debug.cpp
+        src/core/emulator/emulator_state.cpp
+        src/core/emulator/emulator_debug.cpp
         src/core/cpu/6502/cpu6502.cpp
         src/core/mmu/mmu.cpp
         src/core/video/video.cpp
