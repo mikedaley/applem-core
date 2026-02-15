@@ -110,7 +110,6 @@ private:
     int bitIndex_ = 0;              // Number of valid bits
     int currentBitIndex_ = 0;       // Current bit being read
 
-    // Unused but kept for API compatibility
     std::array<uint8_t, 16> latches_;
 
     /**
