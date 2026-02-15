@@ -6,7 +6,7 @@
  */
 
 #include "audio.hpp"
-#include "../cards/mockingboard_card.hpp"
+#include "../cards/mockingboard/mockingboard_card.hpp"
 #include <cmath>
 
 namespace a2e {

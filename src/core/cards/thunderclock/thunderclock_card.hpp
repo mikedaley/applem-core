@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include "expansion_card.hpp"
+#include "../expansion_card.hpp"
 #include <array>
 #include <cstdint>
 

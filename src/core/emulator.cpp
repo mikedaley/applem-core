@@ -6,12 +6,12 @@
  */
 
 #include "emulator.hpp"
-#include "cards/disk2_card.hpp"
-#include "cards/mockingboard_card.hpp"
-#include "cards/thunderclock_card.hpp"
-#include "cards/mouse_card.hpp"
+#include "cards/disk2/disk2_card.hpp"
+#include "cards/mockingboard/mockingboard_card.hpp"
+#include "cards/thunderclock/thunderclock_card.hpp"
+#include "cards/mouse/mouse_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
-#include "cards/softcard_z80.hpp"
+#include "cards/softcard/softcard_z80.hpp"
 #include "debug/condition_evaluator.hpp"
 #include <algorithm>
 #include <cstring>

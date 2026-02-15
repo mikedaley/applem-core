@@ -10,7 +10,7 @@
 #include "catch.hpp"
 
 #include "mmu/mmu.hpp"
-#include "cards/thunderclock_card.hpp"
+#include "cards/thunderclock/thunderclock_card.hpp"
 #include "roms.cpp"
 
 #include <memory>

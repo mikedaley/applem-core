@@ -13,7 +13,7 @@ set(CORE_SOURCES
     src/core/emulator.cpp
     src/core/emulator_state.cpp
     src/core/emulator_debug.cpp
-    src/core/cpu/cpu6502.cpp
+    src/core/cpu/6502/cpu6502.cpp
     src/core/mmu/mmu.cpp
     src/core/video/video.cpp
     src/core/audio/audio.cpp
@@ -24,24 +24,24 @@ set(CORE_SOURCES
     src/core/disassembler/disassembler.cpp
     src/core/cards/mockingboard/ay8910.cpp
     src/core/cards/mockingboard/via6522.cpp
-    src/core/cards/disk2_card.cpp
-    src/core/cards/mockingboard_card.cpp
-    src/core/cards/thunderclock_card.cpp
-    src/core/cards/mouse_card.cpp
+    src/core/cards/mockingboard/mockingboard_card.cpp
+    src/core/cards/disk2/disk2_card.cpp
+    src/core/cards/thunderclock/thunderclock_card.cpp
+    src/core/cards/mouse/mouse_card.cpp
     src/core/cards/smartport/block_device.cpp
     src/core/cards/smartport/smartport_card.cpp
-    src/core/cards/softcard_z80.cpp
+    src/core/cards/softcard/softcard_z80.cpp
     src/core/cards/ssc/acia6551.cpp
     src/core/cards/ssc/ssc_card.cpp
-    src/core/z80/z80.cpp
-    src/core/z80/z80_opcode_tables.cpp
-    src/core/z80/z80_opcodes_main.cpp
-    src/core/z80/z80_opcodes_cb.cpp
-    src/core/z80/z80_opcodes_dd.cpp
-    src/core/z80/z80_opcodes_ed.cpp
-    src/core/z80/z80_opcodes_fd.cpp
-    src/core/z80/z80_opcodes_ddcb.cpp
-    src/core/z80/z80_opcodes_fdcb.cpp
+    src/core/cards/softcard/z80/z80.cpp
+    src/core/cards/softcard/z80/z80_opcode_tables.cpp
+    src/core/cards/softcard/z80/z80_opcodes_main.cpp
+    src/core/cards/softcard/z80/z80_opcodes_cb.cpp
+    src/core/cards/softcard/z80/z80_opcodes_dd.cpp
+    src/core/cards/softcard/z80/z80_opcodes_ed.cpp
+    src/core/cards/softcard/z80/z80_opcodes_fd.cpp
+    src/core/cards/softcard/z80/z80_opcodes_ddcb.cpp
+    src/core/cards/softcard/z80/z80_opcodes_fdcb.cpp
     src/core/noslot_clock.cpp
     src/core/debug/condition_evaluator.cpp
     src/core/filesystem/dos33.cpp
@@ -83,7 +83,7 @@ if(EMSCRIPTEN)
 
     target_include_directories(a2e PRIVATE
         ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cpu
+        ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
         ${CMAKE_BINARY_DIR}/generated
     )
 
@@ -391,13 +391,18 @@ else()
     # All core include directories
     set(ALL_CORE_INCLUDES
         ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cpu
+        ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
         ${CMAKE_SOURCE_DIR}/src/core/mmu
         ${CMAKE_SOURCE_DIR}/src/core/video
         ${CMAKE_SOURCE_DIR}/src/core/audio
         ${CMAKE_SOURCE_DIR}/src/core/input
         ${CMAKE_SOURCE_DIR}/src/core/cards
         ${CMAKE_SOURCE_DIR}/src/core/cards/mockingboard
+        ${CMAKE_SOURCE_DIR}/src/core/cards/disk2
+        ${CMAKE_SOURCE_DIR}/src/core/cards/thunderclock
+        ${CMAKE_SOURCE_DIR}/src/core/cards/mouse
+        ${CMAKE_SOURCE_DIR}/src/core/cards/softcard
+        ${CMAKE_SOURCE_DIR}/src/core/cards/softcard/z80
         ${CMAKE_SOURCE_DIR}/src/core/cards/smartport
         ${CMAKE_SOURCE_DIR}/src/core/disk-image
         ${CMAKE_SOURCE_DIR}/src/core/disassembler
@@ -405,7 +410,6 @@ else()
         ${CMAKE_SOURCE_DIR}/src/core/filesystem
         ${CMAKE_SOURCE_DIR}/src/core/basic
         ${CMAKE_SOURCE_DIR}/src/core/assembler
-        ${CMAKE_SOURCE_DIR}/src/core/z80
         ${CMAKE_BINARY_DIR}/generated
     )
 
@@ -414,7 +418,7 @@ else()
         src/core/emulator.cpp
         src/core/emulator_state.cpp
         src/core/emulator_debug.cpp
-        src/core/cpu/cpu6502.cpp
+        src/core/cpu/6502/cpu6502.cpp
         src/core/mmu/mmu.cpp
         src/core/video/video.cpp
         src/core/audio/audio.cpp
@@ -425,24 +429,24 @@ else()
         src/core/disassembler/disassembler.cpp
         src/core/cards/mockingboard/ay8910.cpp
         src/core/cards/mockingboard/via6522.cpp
-        src/core/cards/disk2_card.cpp
-        src/core/cards/mockingboard_card.cpp
-        src/core/cards/thunderclock_card.cpp
-        src/core/cards/mouse_card.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/disk2/disk2_card.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
+        src/core/cards/mouse/mouse_card.cpp
         src/core/cards/smartport/block_device.cpp
         src/core/cards/smartport/smartport_card.cpp
-        src/core/cards/softcard_z80.cpp
+        src/core/cards/softcard/softcard_z80.cpp
         src/core/cards/ssc/acia6551.cpp
         src/core/cards/ssc/ssc_card.cpp
-        src/core/z80/z80.cpp
-        src/core/z80/z80_opcode_tables.cpp
-        src/core/z80/z80_opcodes_main.cpp
-        src/core/z80/z80_opcodes_cb.cpp
-        src/core/z80/z80_opcodes_dd.cpp
-        src/core/z80/z80_opcodes_ed.cpp
-        src/core/z80/z80_opcodes_fd.cpp
-        src/core/z80/z80_opcodes_ddcb.cpp
-        src/core/z80/z80_opcodes_fdcb.cpp
+        src/core/cards/softcard/z80/z80.cpp
+        src/core/cards/softcard/z80/z80_opcode_tables.cpp
+        src/core/cards/softcard/z80/z80_opcodes_main.cpp
+        src/core/cards/softcard/z80/z80_opcodes_cb.cpp
+        src/core/cards/softcard/z80/z80_opcodes_dd.cpp
+        src/core/cards/softcard/z80/z80_opcodes_ed.cpp
+        src/core/cards/softcard/z80/z80_opcodes_fd.cpp
+        src/core/cards/softcard/z80/z80_opcodes_ddcb.cpp
+        src/core/cards/softcard/z80/z80_opcodes_fdcb.cpp
         src/core/noslot_clock.cpp
         src/core/debug/condition_evaluator.cpp
         src/core/filesystem/dos33.cpp
@@ -487,99 +491,29 @@ else()
     endfunction()
 
     # ==========================================================================
-    # Klaus Dormann CPU Functional Tests (legacy, non-Catch2)
-    # ==========================================================================
-
-    add_executable(klaus_65c02_test
-        tests/klaus/klaus_65c02_test.cpp
-        src/core/cpu/cpu6502.cpp
-    )
-    target_include_directories(klaus_65c02_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cpu
-    )
-    target_compile_options(klaus_65c02_test PRIVATE -O3 -Wall -Wextra)
-    add_test(NAME klaus_65c02_extended_test
-        COMMAND klaus_65c02_test
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    )
-
-    add_executable(klaus_6502_test
-        tests/klaus/klaus_6502_test.cpp
-        src/core/cpu/cpu6502.cpp
-    )
-    target_include_directories(klaus_6502_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cpu
-    )
-    target_compile_options(klaus_6502_test PRIVATE -O3 -Wall -Wextra)
-    add_test(NAME klaus_6502_functional_test
-        COMMAND klaus_6502_test
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    )
-
-    # ==========================================================================
-    # Thunderclock Card Tests (legacy, non-Catch2)
-    # ==========================================================================
-
-    add_executable(thunderclock_test
-        tests/thunderclock/thunderclock_test.cpp
-        src/core/cards/thunderclock_card.cpp
-    )
-    add_dependencies(thunderclock_test generate_roms_native)
-    target_include_directories(thunderclock_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cards
-        ${CMAKE_BINARY_DIR}/generated
-    )
-    target_compile_options(thunderclock_test PRIVATE -O3 -Wall -Wextra)
-    add_test(NAME thunderclock_card_test
-        COMMAND thunderclock_test
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    )
-
-    add_executable(thunderclock_mmu_test
-        tests/thunderclock/thunderclock_mmu_test.cpp
-        src/core/cards/thunderclock_card.cpp
-        src/core/mmu/mmu.cpp
-        src/core/noslot_clock.cpp
-    )
-    add_dependencies(thunderclock_mmu_test generate_roms_native)
-    target_include_directories(thunderclock_mmu_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cards
-        ${CMAKE_BINARY_DIR}/generated
-    )
-    target_compile_options(thunderclock_mmu_test PRIVATE -O3 -Wall -Wextra)
-    add_test(NAME thunderclock_mmu_integration_test
-        COMMAND thunderclock_mmu_test
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    )
-
-    # ==========================================================================
     # Catch2 Unit Tests - Pure (no ROM dependencies)
     # ==========================================================================
 
     # CPU tests (only need cpu6502.cpp)
     add_catch2_test(test_cpu6502
         tests/unit/test_cpu6502.cpp
-        src/core/cpu/cpu6502.cpp
+        src/core/cpu/6502/cpu6502.cpp
     )
     add_catch2_test(test_cpu_addressing
         tests/unit/test_cpu_addressing.cpp
-        src/core/cpu/cpu6502.cpp
+        src/core/cpu/6502/cpu6502.cpp
     )
     add_catch2_test(test_cpu_interrupts
         tests/unit/test_cpu_interrupts.cpp
-        src/core/cpu/cpu6502.cpp
+        src/core/cpu/6502/cpu6502.cpp
     )
     add_catch2_test(test_cpu_decimal
         tests/unit/test_cpu_decimal.cpp
-        src/core/cpu/cpu6502.cpp
+        src/core/cpu/6502/cpu6502.cpp
     )
     add_catch2_test(test_cpu_cycle_counts
         tests/unit/test_cpu_cycle_counts.cpp
-        src/core/cpu/cpu6502.cpp
+        src/core/cpu/6502/cpu6502.cpp
     )
 
     # GCR encoding (only gcr_encoding.cpp)
@@ -605,7 +539,7 @@ else()
     add_catch2_test(test_audio
         tests/unit/test_audio.cpp
         src/core/audio/audio.cpp
-        src/core/cards/mockingboard_card.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/ay8910.cpp
     )
@@ -666,7 +600,7 @@ else()
         tests/unit/test_mmu_slots.cpp
         src/core/mmu/mmu.cpp
         src/core/noslot_clock.cpp
-        src/core/cards/thunderclock_card.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
     )
 
     # Video (video.cpp + mmu.cpp)
@@ -680,7 +614,7 @@ else()
     # Disk2 Card (disk2_card.cpp + disk images + gcr)
     add_catch2_test(test_disk2_card
         tests/unit/test_disk2_card.cpp
-        src/core/cards/disk2_card.cpp
+        src/core/cards/disk2/disk2_card.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -703,7 +637,7 @@ else()
     # Mockingboard (mockingboard_card.cpp + via + ay)
     add_catch2_test(test_mockingboard
         tests/unit/test_mockingboard.cpp
-        src/core/cards/mockingboard_card.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/ay8910.cpp
     )
@@ -711,13 +645,13 @@ else()
     # Thunderclock (Catch2 version)
     add_catch2_test(test_thunderclock
         tests/unit/test_thunderclock.cpp
-        src/core/cards/thunderclock_card.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
     )
 
     # Mouse Card (mouse_card.cpp)
     add_catch2_test(test_mouse_card
         tests/unit/test_mouse_card.cpp
-        src/core/cards/mouse_card.cpp
+        src/core/cards/mouse/mouse_card.cpp
     )
 
     # SmartPort Card (smartport + block_device)
@@ -758,10 +692,10 @@ else()
 
     add_catch2_test(test_expansion_card
         tests/unit/test_expansion_card.cpp
-        src/core/cards/disk2_card.cpp
-        src/core/cards/mockingboard_card.cpp
-        src/core/cards/thunderclock_card.cpp
-        src/core/cards/mouse_card.cpp
+        src/core/cards/disk2/disk2_card.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
+        src/core/cards/mouse/mouse_card.cpp
         src/core/cards/smartport/smartport_card.cpp
         src/core/cards/smartport/block_device.cpp
         src/core/cards/mockingboard/via6522.cpp

@@ -24,8 +24,8 @@
 
 #pragma once
 
-#include "expansion_card.hpp"
-#include "../z80/z80.hpp"
+#include "../expansion_card.hpp"
+#include "z80/z80.hpp"
 #include <cstdint>
 #include <functional>
 

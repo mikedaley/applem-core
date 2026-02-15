@@ -7,8 +7,8 @@
 
 #pragma once
 
-#include "expansion_card.hpp"
-#include "../disk-image/disk_image.hpp"
+#include "../expansion_card.hpp"
+#include "../../disk-image/disk_image.hpp"
 #include <array>
 #include <cstdint>
 #include <functional>

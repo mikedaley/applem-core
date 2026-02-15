@@ -13,7 +13,7 @@
 #include <sstream>
 
 #include "mmu/mmu.hpp"
-#include "cards/thunderclock_card.hpp"
+#include "cards/thunderclock/thunderclock_card.hpp"
 
 // Test result tracking
 static int testsRun = 0;

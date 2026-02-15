@@ -7,9 +7,9 @@
 
 #pragma once
 
-#include "expansion_card.hpp"
-#include "mockingboard/via6522.hpp"
-#include "mockingboard/ay8910.hpp"
+#include "../expansion_card.hpp"
+#include "via6522.hpp"
+#include "ay8910.hpp"
 #include <vector>
 
 namespace a2e {
