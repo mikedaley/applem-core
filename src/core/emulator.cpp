@@ -284,6 +284,15 @@ void Emulator::runCycles(int cycles) {
         basicErrorHit_ = false;  // Clear error state on new RUN
       } else if (pc == 0xD43C && basicProgramRunning_) {
         basicProgramRunning_ = false;
+        // If we were stepping when the program ended, complete the step
+        // so the UI doesn't stay stuck in "running" state
+        if (basicStepMode_ != BasicStepMode::None) {
+          basicStepMode_ = BasicStepMode::None;
+          basicBreakpointHit_ = true;
+          basicBreakLine_ = 0;
+          paused_ = true;
+          return;
+        }
       }
 
       // ERROR handler entry at $D412 — X register holds error code offset,
