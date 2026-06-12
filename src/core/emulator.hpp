@@ -15,6 +15,7 @@
 #include "cards/mockingboard/mockingboard_card.hpp"
 #include "cards/mouse/mouse_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
+#include "cards/printer/parallel_card.hpp"
 #include "cards/softcard/softcard_z80.hpp"
 #include "cards/ssc/ssc_card.hpp"
 #include "mmu/mmu.hpp"
@@ -257,6 +258,11 @@ public:
   bool isSSCInstalled() const { return ssc_ != nullptr; }
   void setSerialTxCallback(SSCCard::SerialTxCallback cb);
 
+  // Parallel Interface Card (printer)
+  ParallelCard* getPrinterCard() { return printer_; }
+  bool isParallelCardInstalled() const { return printer_ != nullptr; }
+  void setPrinterCallback(ParallelCard::PrintCallback cb);
+
   // No-Slot Clock
   void enableNoSlotClock(bool enable) { mmu_->enableNoSlotClock(enable); }
   bool isNoSlotClockEnabled() const { return mmu_->isNoSlotClockEnabled(); }
@@ -302,6 +308,7 @@ private:
   SmartPortCard* smartport_ = nullptr;
   SoftCardZ80* softcard_ = nullptr;
   SSCCard* ssc_ = nullptr;
+  ParallelCard* printer_ = nullptr;
 
   // Storage for cards when removed from slots
   std::unique_ptr<ExpansionCard> diskStorage_;

@@ -923,6 +923,9 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     } else if (strcmp(existingName, "Super Serial Card") == 0) {
       ssc_ = nullptr;
       mmu_->removeCard(slot);
+    } else if (strcmp(existingName, "Parallel Card") == 0) {
+      printer_ = nullptr;
+      mmu_->removeCard(slot);
     } else {
       mmu_->removeCard(slot);
     }
@@ -1024,6 +1027,15 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     return true;
   }
 
+  // Handle Parallel Interface Card
+  if (strcmp(cardId, "parallel") == 0) {
+    auto card = std::make_unique<ParallelCard>();
+    card->setSlotNumber(slot);
+    printer_ = card.get();
+    mmu_->insertCard(slot, std::move(card));
+    return true;
+  }
+
   return false;
 }
 
@@ -1100,6 +1112,12 @@ void Emulator::serialReceive(uint8_t byte) {
 void Emulator::setSerialTxCallback(SSCCard::SerialTxCallback cb) {
   if (ssc_) {
     ssc_->setSerialTxCallback(std::move(cb));
+  }
+}
+
+void Emulator::setPrinterCallback(ParallelCard::PrintCallback cb) {
+  if (printer_) {
+    printer_->setPrintCallback(std::move(cb));
   }
 }
 
