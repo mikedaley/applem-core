@@ -258,10 +258,11 @@ public:
   bool isSSCInstalled() const { return ssc_ != nullptr; }
   void setSerialTxCallback(SSCCard::SerialTxCallback cb);
 
-  // Parallel Interface Card (printer)
-  ParallelCard* getPrinterCard() { return printer_; }
-  bool isParallelCardInstalled() const { return printer_ != nullptr; }
-  void setPrinterCallback(ParallelCard::PrintCallback cb);
+  // Parallel Interface Card (a generic Centronics port; a printer is one device
+  // that may be attached downstream — the card itself knows nothing of printers)
+  ParallelCard* getParallelCard() { return parallelCard_; }
+  bool isParallelCardInstalled() const { return parallelCard_ != nullptr; }
+  void setParallelTxCallback(ParallelCard::ParallelTxCallback cb);
 
   // No-Slot Clock
   void enableNoSlotClock(bool enable) { mmu_->enableNoSlotClock(enable); }
@@ -308,7 +309,9 @@ private:
   SmartPortCard* smartport_ = nullptr;
   SoftCardZ80* softcard_ = nullptr;
   SSCCard* ssc_ = nullptr;
-  ParallelCard* printer_ = nullptr;
+  ParallelCard* parallelCard_ = nullptr;
+  ParallelCard::ParallelTxCallback parallelTxCallback_;
+  SSCCard::SerialTxCallback serialTxCallback_;
 
   // Storage for cards when removed from slots
   std::unique_ptr<ExpansionCard> diskStorage_;

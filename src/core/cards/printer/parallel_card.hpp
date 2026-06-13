@@ -49,7 +49,9 @@ namespace a2e {
  */
 class ParallelCard : public ExpansionCard {
 public:
-    using PrintCallback = std::function<void(uint8_t)>;
+    // A byte clocked out of the parallel port (host→device, on STROBE).
+    // Device-agnostic: whatever is attached (printer, etc.) consumes it.
+    using ParallelTxCallback = std::function<void(uint8_t)>;
 
     ParallelCard();
     ~ParallelCard() override = default;
@@ -84,7 +86,7 @@ public:
 
     // ===== Printer interface =====
 
-    void setPrintCallback(PrintCallback cb) { printCallback_ = std::move(cb); }
+    void setParallelTxCallback(ParallelTxCallback cb) { txCallback_ = std::move(cb); }
 
     // Slot number needed to generate correct ROM addresses
     void setSlotNumber(uint8_t slot) { slotNumber_ = slot; buildROM(); }
@@ -100,10 +102,12 @@ private:
 
     uint8_t slotNumber_ = 1;
 
-    // Synthetic ROM (256 bytes, rebuilt in buildROM() when slot number changes)
+    // $Cn00 slot ROM (256 bytes). Holds the real 341-0005 firmware when the
+    // PROM is embedded in the build, otherwise a synthetic STA/RTS handler.
     uint8_t rom_[256];
+    bool    usingRealRom_ = false;
 
-    PrintCallback printCallback_;
+    ParallelTxCallback txCallback_;
 };
 
 } // namespace a2e

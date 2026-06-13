@@ -7,6 +7,7 @@
  */
 
 #include "parallel_card.hpp"
+#include "roms.cpp" // embedded ROM data (roms::ROM_PARALLEL)
 #include <cstring>
 
 namespace a2e {
@@ -16,28 +17,40 @@ ParallelCard::ParallelCard() {
 }
 
 void ParallelCard::buildROM() {
+    // Authentic firmware. The real Apple Parallel Interface Card PROM (341-0057)
+    // contains TWO 256-byte firmwares; on the real card DIP SW1:6 selects which
+    // one maps to $Cn00 — "Parallel Printer" (341-0005, auto-LF after CR) in the
+    // upper half at PROM offset $100, "Centronics" (341-0019, no auto-LF) in the
+    // lower half. We default to Parallel Printer (no DIP yet). Apple peripheral
+    // firmware self-locates its slot via $C080,X indexing, so the ROM image is
+    // slot-independent — no per-slot patching.
+    constexpr size_t kPrinterBase = 0x100; // 341-0005 "Parallel Printer" half
+    if (roms::ROM_PARALLEL_SIZE >= kPrinterBase + sizeof(rom_)) {
+        memcpy(rom_, roms::ROM_PARALLEL + kPrinterBase, sizeof(rom_));
+        usingRealRom_ = true;
+        return;
+    }
+
+    // Fallback: synthetic per-character output handler, used only when the ROM
+    // file is absent from the build.
+    //
+    // Apple II output convention: PR#n sets CSW ($36/$37) = $Cn00, then COUT
+    // does JMP ($36) into here ONCE PER CHARACTER with the char in A (high bit
+    // set). We emit it via a bare STA to the data port (which fires the print
+    // callback) and RTS. STA preserves A/X/Y, so the protocol contract that the
+    // character survives the call is honoured. The JS printer strips the high
+    // bit. No two-stage revectoring — that swallowed the first character and
+    // clobbered A.
+    usingRealRom_ = false;
     memset(rom_, 0xFF, sizeof(rom_));
 
     // I/O base: slot 1 = $C090, slot 2 = $C0A0, etc.
-    uint16_t dataPort  = 0xC080 + static_cast<uint16_t>(slotNumber_) * 0x10;
-
-    // Output routine lives at $Cn10 within this card's ROM page
-    uint16_t romBase    = 0xC000 + static_cast<uint16_t>(slotNumber_) * 0x100;
-    uint16_t outputAddr = romBase + 0x10;
-
-    // $Cn00 — PR#n init: sets COUT hook ($36/$37) to output routine
+    uint16_t dataPort = 0xC080 + static_cast<uint16_t>(slotNumber_) * 0x10;
     int i = 0x00;
-    rom_[i++] = 0xA9; rom_[i++] = static_cast<uint8_t>(outputAddr & 0xFF); // LDA #<outputAddr
-    rom_[i++] = 0x85; rom_[i++] = 0x36;                                     // STA $36
-    rom_[i++] = 0xA9; rom_[i++] = static_cast<uint8_t>(outputAddr >> 8);   // LDA #>outputAddr
-    rom_[i++] = 0x85; rom_[i++] = 0x37;                                     // STA $37
-    rom_[i++] = 0x60;                                                        // RTS
-
-    // $Cn10 — output routine: char in A, write to data port, return
-    i = 0x10;
-    rom_[i++] = 0x8D; rom_[i++] = static_cast<uint8_t>(dataPort & 0xFF);
-    rom_[i++] = static_cast<uint8_t>(dataPort >> 8);                        // STA dataPort (abs)
-    rom_[i++] = 0x60;                                                        // RTS
+    rom_[i++] = 0x8D;                                          // STA dataPort (abs)
+    rom_[i++] = static_cast<uint8_t>(dataPort & 0xFF);
+    rom_[i++] = static_cast<uint8_t>(dataPort >> 8);
+    rom_[i++] = 0x60;                                          // RTS
 }
 
 uint8_t ParallelCard::readIO(uint8_t offset) {
@@ -55,7 +68,7 @@ void ParallelCard::writeIO(uint8_t offset, uint8_t val) {
             // Direct data write — fires callback immediately.
             // Matches the synthetic ROM which does a bare STA to this port.
             dataLatch_ = val;
-            if (printCallback_) printCallback_(dataLatch_);
+            if (txCallback_) txCallback_(dataLatch_);
             break;
 
         case 0x02: {
@@ -63,7 +76,7 @@ void ParallelCard::writeIO(uint8_t offset, uint8_t val) {
             // Falling edge: data valid — fire callback for Centronics-aware software.
             bool strobe = (val & 0x01) != 0;
             if (prevStrobe_ && !strobe) {
-                if (printCallback_) printCallback_(dataLatch_);
+                if (txCallback_) txCallback_(dataLatch_);
             }
             prevStrobe_ = strobe;
             controlReg_ = val;

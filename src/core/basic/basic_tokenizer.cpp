@@ -260,7 +260,7 @@ int loadBasicProgram(const char* source, MemReadFn readMem, MemWriteFn writeMem)
 
     uint16_t endAddr = addr + 2;
 
-    // Read MEMSIZE ($73/$74) from memory
+    // FRETOP (top of string space) tracks MEMSIZE/HIMEM ($73/$74).
     uint16_t memsize = readMem(0x73) | (readMem(0x74) << 8);
 
     // Set zero page pointers
@@ -279,6 +279,22 @@ int loadBasicProgram(const char* source, MemReadFn readMem, MemWriteFn writeMem)
     // Set interpreter state for direct mode
     writePtr(0xB8, txttab - 1); // TXTPTR
     writeMem(0x76, 0xFF);       // CURLIN+1 high byte = $FF (direct mode)
+
+    // Clear Applesoft TRACE so a freshly injected program never starts traced.
+    // Injecting bypasses the ROM's program-entry path, so any stale trace flag
+    // survives and RUN then prints "#<line>" before every line.
+    //
+    // The flag lives in different places depending on the environment:
+    //  - Raw Applesoft: TRCFLG is $F2.
+    //  - ProDOS BASIC.SYSTEM: $F2 is repurposed as an $A5 "sentinel"; the live
+    //    TRCFLG is parked in BASIC.SYSTEM's save slot at $BE41. Clearing $F2 there
+    //    only appears to work because BASIC.SYSTEM re-saves $F2 into $BE41 on the
+    //    next carriage return — fragile. So when the sentinel is present, clear
+    //    $BE41 directly, independent of output timing.
+    if (readMem(0x00F2) == 0xA5) {
+        writeMem(0xBE41, 0x00); // BASIC.SYSTEM live TRCFLG save slot
+    }
+    writeMem(0x00F2, 0x00);
 
     return static_cast<int>(tokenizedLines.size());
 }
