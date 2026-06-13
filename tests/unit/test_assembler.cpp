@@ -255,6 +255,40 @@ TEST_CASE("Assembler BRA (65C02 unconditional branch)", "[asm][branch]") {
     CHECK(result.output[0] == 0x80);   // BRA opcode
 }
 
+TEST_CASE("Assembler zero-page operand does not inflate later labels",
+          "[asm][branch][zeropage]") {
+    Assembler asm_;
+    // STA $06 is a 2-byte zero-page instruction. A pass-1 sizing bug that
+    // defaulted every plain operand to 3-byte absolute pushed LOOP one byte
+    // high, so the backward branch resolved to 0xFE (off by one) instead of
+    // 0xFD, and the LOOP symbol reported $0803 instead of $0802.
+    auto result = asm_.assemble(" STA $06\nLOOP NOP\n BNE LOOP");
+    REQUIRE(result.success);
+    REQUIRE(result.output.size() == 5);
+    CHECK(result.output[0] == 0x85);   // STA zero-page (not 0x8D absolute)
+    CHECK(result.output[1] == 0x06);
+    CHECK(result.output[2] == 0xEA);   // NOP — LOOP, must be at $0802
+    CHECK(result.output[3] == 0xD0);   // BNE
+    CHECK(result.output[4] == 0xFD);   // -3 -> targets LOOP exactly
+
+    const AsmSymbol* loop = findSymbol(result, "LOOP");
+    REQUIRE(loop != nullptr);
+    CHECK(loop->value == 0x0802);
+}
+
+TEST_CASE("Assembler EQU zero-page symbol sizes as 2 bytes in pass 1",
+          "[asm][branch][zeropage]") {
+    Assembler asm_;
+    // Same drift via an EQU'd zero-page symbol defined before use, the common
+    // idiom (GROW EQU $06 ... STA GROW). Must size as zero-page in pass 1.
+    auto result = asm_.assemble("PTR EQU $06\n STA PTR\nLOOP NOP\n BNE LOOP");
+    REQUIRE(result.success);
+    REQUIRE(result.output.size() == 5);
+    CHECK(result.output[0] == 0x85);   // STA zero-page
+    CHECK(result.output[1] == 0x06);
+    CHECK(result.output[4] == 0xFD);   // branch offset uncorrupted
+}
+
 // ---------------------------------------------------------------------------
 // Symbols in result
 // ---------------------------------------------------------------------------

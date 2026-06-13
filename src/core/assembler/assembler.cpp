@@ -982,7 +982,14 @@ AsmResult Assembler::assemble(const char* source) {
       continue;
     }
 
-    int size = getInstructionSize(mnem, line.operand, false);
+    // Evaluate the operand now so a known value (literal or already-defined
+    // EQU/back-reference) sizes as zero-page when it fits. getInstructionSize
+    // falls back to ABS (3) only when the operand can't be evaluated yet — a
+    // genuine forward reference. Passing false here defaulted EVERY plain
+    // operand to ABS, so each zero-page instruction (e.g. STA $06) over-counted
+    // by one byte in pass 1, shifting every later label and corrupting branch
+    // offsets and absolute references.
+    int size = getInstructionSize(mnem, line.operand, true);
     if (size == 0) {
       addError(line.lineNumber, "Invalid instruction: " + mnem);
       continue;
