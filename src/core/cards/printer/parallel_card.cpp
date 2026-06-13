@@ -65,20 +65,21 @@ uint8_t ParallelCard::readIO(uint8_t offset) {
 void ParallelCard::writeIO(uint8_t offset, uint8_t val) {
     switch (offset & 0x0F) {
         case 0x00:
-            // Direct data write — fires callback immediately.
-            // Matches the synthetic ROM which does a bare STA to this port.
+            // Writing the data latch fires the printer callback. On the real
+            // Apple Parallel Interface Card the latch hardware auto-pulses the
+            // Centronics STROBE one-shot, so a single STA $C0n0 clocks the byte
+            // out — exactly what the 341-0005 firmware (and the synthetic STA
+            // fallback) does. This is the one and only emit per byte.
             dataLatch_ = val;
             if (txCallback_) txCallback_(dataLatch_);
             break;
 
         case 0x02: {
-            // STROBE is active-low (bit 0 = 0 = asserted).
-            // Falling edge: data valid — fire callback for Centronics-aware software.
-            bool strobe = (val & 0x01) != 0;
-            if (prevStrobe_ && !strobe) {
-                if (txCallback_) txCallback_(dataLatch_);
-            }
-            prevStrobe_ = strobe;
+            // Control register: track STROBE level for status read-back only.
+            // The byte was already clocked out by the data-latch auto-strobe
+            // above, so a manual STROBE toggle here must NOT re-emit it (doing
+            // so double-printed every byte for strobe-aware drivers).
+            prevStrobe_ = (val & 0x01) != 0;
             controlReg_ = val;
             break;
         }
