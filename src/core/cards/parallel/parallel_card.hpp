@@ -37,13 +37,8 @@ namespace a2e {
  *       Bit 3: SELECT_IN - take printer online
  *
  * ROM Space:
- *   $Cn00-$CnFF: Synthetic 256-byte slot ROM
- *         $Cn00: PR#n init — sets output vector ($36/$37) to output routine
- *         $Cn10: Output routine — writes data byte to port, returns
- *
- * The ROM is generated at card construction and rebuilt whenever the slot
- * number changes, so the I/O addresses embedded in the 6502 code are
- * always correct for the installed slot.
+ *   $Cn00-$CnFF: 341-0005 "Parallel Printer" firmware (upper half of PROM 341-0057).
+ *                Self-locating via $C080,X indexing — slot-independent.
  *
  * Typically installed in Slot 1.
  */
@@ -84,7 +79,7 @@ public:
     size_t serialize(uint8_t* buffer, size_t maxSize) const override;
     size_t deserialize(const uint8_t* buffer, size_t size) override;
 
-    // ===== Printer interface =====
+    // ===== Centronics parallel port =====
 
     void setParallelTxCallback(ParallelTxCallback cb) { txCallback_ = std::move(cb); }
 
@@ -102,10 +97,8 @@ private:
 
     uint8_t slotNumber_ = 1;
 
-    // $Cn00 slot ROM (256 bytes). Holds the real 341-0005 firmware when the
-    // PROM is embedded in the build, otherwise a synthetic STA/RTS handler.
+    // $Cn00 slot ROM (256 bytes) — 341-0005 "Parallel Printer" firmware.
     uint8_t rom_[256];
-    bool    usingRealRom_ = false;
 
     ParallelTxCallback txCallback_;
 };

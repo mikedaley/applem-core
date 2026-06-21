@@ -33,7 +33,7 @@ set(CORE_SOURCES
     src/core/cards/softcard/softcard_z80.cpp
     src/core/cards/ssc/acia6551.cpp
     src/core/cards/ssc/ssc_card.cpp
-    src/core/cards/printer/parallel_card.cpp
+    src/core/cards/parallel/parallel_card.cpp
     src/core/cards/softcard/z80/z80.cpp
     src/core/cards/softcard/z80/z80_opcode_tables.cpp
     src/core/cards/softcard/z80/z80_opcodes_main.cpp
@@ -444,7 +444,7 @@ else()
         src/core/cards/softcard/softcard_z80.cpp
         src/core/cards/ssc/acia6551.cpp
         src/core/cards/ssc/ssc_card.cpp
-        src/core/cards/printer/parallel_card.cpp
+        src/core/cards/parallel/parallel_card.cpp
         src/core/cards/softcard/z80/z80.cpp
         src/core/cards/softcard/z80/z80_opcode_tables.cpp
         src/core/cards/softcard/z80/z80_opcodes_main.cpp

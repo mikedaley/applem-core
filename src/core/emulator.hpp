@@ -15,7 +15,7 @@
 #include "cards/mockingboard/mockingboard_card.hpp"
 #include "cards/mouse/mouse_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
-#include "cards/printer/parallel_card.hpp"
+#include "cards/parallel/parallel_card.hpp"
 #include "cards/softcard/softcard_z80.hpp"
 #include "cards/ssc/ssc_card.hpp"
 #include "mmu/mmu.hpp"
