@@ -165,6 +165,15 @@ private:
   void denibblizeTrack(int track);
 
   /**
+   * Scan a recovered nibble stream for sector address/data fields and decode
+   * them into sector_data_. `search_count` bounds where a sector may start;
+   * `total_count` bounds how far a field body may be read (wrap tail).
+   * Shared by denibblizeTrack and denibblizeBitTrack.
+   */
+  void scanAndDecodeSectors(int track, const uint8_t *nibbles,
+                            size_t search_count, size_t total_count);
+
+  /**
    * Update head position based on phase magnet states
    * Called when a phase is turned OFF to check if stepping should occur
    */
@@ -186,9 +195,12 @@ private:
   void ensureTrackBitified();
 
   /**
-   * Convert a dirty bit track back to nibbles for denibblization
+   * Decode a dirty bit track straight into sector_data_ using self-syncing
+   * nibble recovery (bit7-latch) plus the shared sector scan. Replaces the old
+   * fixed-frame bitTrackToNibbleTrack, which misread writes that landed off the
+   * original nibble grid.
    */
-  void bitTrackToNibbleTrack(int track);
+  void denibblizeBitTrack(int track);
 
   /**
    * Decode a 4-and-4 encoded byte pair
