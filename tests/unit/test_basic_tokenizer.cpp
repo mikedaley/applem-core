@@ -1,6 +1,10 @@
 /*
  * test_basic_tokenizer.cpp - Unit tests for Applesoft BASIC tokenizer
  *
+ * Written by
+ *  Mike Daley <michael_daley@icloud.com>
+ *  Shawn Bullock <shawn@agenticexpert.ai>
+ *
  * Tests the BASIC tokenizer including:
  * - Single-line tokenization
  * - Multi-line programs
@@ -227,6 +231,65 @@ TEST_CASE("Quoted string content is preserved verbatim", "[basic][tokenizer]") {
         }
     }
     CHECK(foundQuotedAB);
+}
+
+// ---------------------------------------------------------------------------
+// Case handling: keywords fold case for matching, everything else verbatim
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Lowercase keyword is tokenized", "[basic][tokenizer]") {
+    BasicMemory m;
+    int count = loadBasicProgram("10 print \"x\"", m.readMem, m.writeMem);
+    REQUIRE(count == 1);
+
+    CHECK(m.mem[0x0805] == 0xBA);  // PRINT token, despite lowercase input
+}
+
+TEST_CASE("Mixed-case REM comment preserves original case", "[basic][tokenizer]") {
+    BasicMemory m;
+    int count = loadBasicProgram("10 REM Hello", m.readMem, m.writeMem);
+    REQUIRE(count == 1);
+
+    CHECK(m.mem[0x0805] == 0xB2);  // REM token
+    CHECK(m.mem[0x0807] == 'H');   // comment body emitted verbatim
+    CHECK(m.mem[0x0808] == 'e');
+    CHECK(m.mem[0x0809] == 'l');
+}
+
+TEST_CASE("Lowercase string literal preserves original case", "[basic][tokenizer]") {
+    BasicMemory m;
+    int count = loadBasicProgram("10 PRINT \"aB\"", m.readMem, m.writeMem);
+    REQUIRE(count == 1);
+
+    uint16_t nextAddr = m.read16(0x0801);
+    bool foundLowerAB = false;
+    for (uint16_t addr = 0x0805; addr + 3 < nextAddr; addr++) {
+        if (m.mem[addr] == '"' && m.mem[addr + 1] == 'a' &&
+            m.mem[addr + 2] == 'B' && m.mem[addr + 3] == '"') {
+            foundLowerAB = true;
+            break;
+        }
+    }
+    CHECK(foundLowerAB);
+}
+
+TEST_CASE("Mixed-case DATA values preserve original case", "[basic][tokenizer]") {
+    BasicMemory m;
+    int count = loadBasicProgram("10 DATA aB,cD", m.readMem, m.writeMem);
+    REQUIRE(count == 1);
+
+    CHECK(m.mem[0x0805] == 0x83);  // DATA token
+
+    // DATA body is emitted verbatim (case + spacing preserved)
+    uint16_t nextAddr = m.read16(0x0801);
+    bool foundLowerAB = false;
+    for (uint16_t addr = 0x0806; addr + 1 < nextAddr; addr++) {
+        if (m.mem[addr] == 'a' && m.mem[addr + 1] == 'B') {
+            foundLowerAB = true;
+            break;
+        }
+    }
+    CHECK(foundLowerAB);
 }
 
 // ---------------------------------------------------------------------------

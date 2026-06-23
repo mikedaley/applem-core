@@ -3,6 +3,7 @@
  *
  * Written by
  *  Mike Daley <michael_daley@icloud.com>
+ *  Shawn Bullock <shawn@agenticexpert.ai>
  */
 
 #include "basic_tokenizer.hpp"
@@ -42,7 +43,7 @@ static std::vector<KeywordEntry> buildKeywordList() {
 // Parsed BASIC line
 struct BasicLine {
     int lineNumber;
-    std::string content; // uppercase content after line number
+    std::string content; // content after line number, original case
 };
 
 // Parse source into lines, extracting line numbers
@@ -87,22 +88,10 @@ static std::vector<BasicLine> parseSource(const char* source) {
         // Skip lines with only a line number and no content
         if (content.empty()) continue;
 
-        // Convert to uppercase, preserving case inside quoted strings
-        std::string upper;
-        upper.reserve(content.size());
-        bool inQuote = false;
-        for (char c : content) {
-            if (c == '"') {
-                inQuote = !inQuote;
-                upper += c;
-            } else if (inQuote) {
-                upper += c;
-            } else {
-                upper += static_cast<char>(toupper(static_cast<unsigned char>(c)));
-            }
-        }
-
-        lines.push_back({lineNum, upper});
+        // Store content with original case. tokenizeLine folds case only when
+        // matching keywords; strings, REM comments, DATA and variable names are
+        // emitted verbatim so nothing outside a keyword is altered.
+        lines.push_back({lineNum, content});
     }
 
     // Sort by line number
@@ -111,6 +100,21 @@ static std::vector<BasicLine> parseSource(const char* source) {
     });
 
     return lines;
+}
+
+// Case-insensitive prefix match: does `text` (length textLen) begin with the
+// already-uppercase keyword `kw` (length kwLen)? Lets source keywords be typed
+// in any case while leaving the source bytes themselves untouched.
+static bool matchKeyword(const char* text, size_t textLen,
+                         const char* kw, size_t kwLen) {
+    if (kwLen > textLen) return false;
+    for (size_t j = 0; j < kwLen; j++) {
+        if (toupper(static_cast<unsigned char>(text[j])) !=
+            static_cast<unsigned char>(kw[j])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Tokenize a single line's content
@@ -179,8 +183,7 @@ static std::vector<uint8_t> tokenizeLine(const std::string& text,
         size_t remainingLen = text.size() - i;
 
         for (const auto& kw : keywords) {
-            if (kw.length <= remainingLen &&
-                strncmp(remaining, kw.keyword, kw.length) == 0) {
+            if (matchKeyword(remaining, remainingLen, kw.keyword, kw.length)) {
                 bytes.push_back(kw.token);
                 i += kw.length;
                 matched = true;
