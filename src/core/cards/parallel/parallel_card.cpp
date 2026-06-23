@@ -13,6 +13,7 @@
 namespace a2e {
 
 ParallelCard::ParallelCard() {
+    memset(expansionRom_, 0xFF, sizeof(expansionRom_));  // 4KB: bank0=0x000-0x7FF, bank1=0x800-0xFFF
     buildROM();
 }
 
@@ -76,6 +77,10 @@ uint8_t ParallelCard::readROM(uint8_t offset) {
     return rom_[offset];
 }
 
+uint8_t ParallelCard::readExpansionROM(uint16_t offset) {
+    return expansionRom_[(offset & 0x7FF) | romBank_];
+}
+
 void ParallelCard::reset() {
     dataLatch_  = 0x00;
     statusReg_  = 0b01010000;
@@ -91,7 +96,8 @@ size_t ParallelCard::serialize(uint8_t* buffer, size_t maxSize) const {
     buffer[offset++] = controlReg_;
     buffer[offset++] = prevStrobe_ ? 1 : 0;
     buffer[offset++] = slotNumber_;
-    buffer[offset++] = 0; // reserved
+    buffer[offset++] = static_cast<uint8_t>(romBank_ >> 8);
+    buffer[offset++] = static_cast<uint8_t>(romBank_ & 0xFF);
     buffer[offset++] = 0; // reserved
     buffer[offset++] = 0; // reserved
     return offset;
@@ -105,7 +111,9 @@ size_t ParallelCard::deserialize(const uint8_t* buffer, size_t size) {
     controlReg_ = buffer[offset++];
     prevStrobe_ = buffer[offset++] != 0;
     slotNumber_ = buffer[offset++];
-    offset += 3; // reserved
+    romBank_    = (static_cast<uint16_t>(buffer[offset]) << 8) | buffer[offset + 1];
+    offset += 2;
+    offset += 2; // reserved
     buildROM();
     return offset;
 }

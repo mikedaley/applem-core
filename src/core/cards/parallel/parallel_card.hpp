@@ -68,13 +68,16 @@ public:
     uint8_t readROM(uint8_t offset) override;
     bool hasROM() const override { return true; }
 
+    bool hasExpansionROM() const override { return hasExpansionRom_; }
+    uint8_t readExpansionROM(uint16_t offset) override;
+
     void reset() override;
 
     const char* getName() const override { return "Parallel Card"; }
     uint8_t getPreferredSlot() const override { return 1; }
 
     // State serialization
-    static constexpr size_t STATE_SIZE = 8; // dataLatch + status + control + prevStrobe + slot + 3 reserved
+    static constexpr size_t STATE_SIZE = 9; // dataLatch + status + control + prevStrobe + slot + romBank(2) + 2 reserved
     size_t getStateSize() const override { return STATE_SIZE; }
     size_t serialize(uint8_t* buffer, size_t maxSize) const override;
     size_t deserialize(const uint8_t* buffer, size_t size) override;
@@ -99,6 +102,12 @@ private:
 
     // $Cn00 slot ROM (256 bytes) — 341-0005 "Parallel Printer" firmware.
     uint8_t rom_[256];
+
+    // $C800-$CFFF expansion ROM (2KB window, bank-switched from a 4KB ROM).
+    // Inactive until hasExpansionRom_ is set — current 341-0057 card has none.
+    bool     hasExpansionRom_ = false;
+    uint16_t romBank_         = 0;       // 0 or 0x800 — selects which 2KB half of the 4KB ROM
+    uint8_t  expansionRom_[4096];
 
     ParallelTxCallback txCallback_;
 };
