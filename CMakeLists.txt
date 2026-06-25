@@ -759,6 +759,13 @@ else()
         ${TEST_COMMON_SOURCES}
     )
 
+    # Parallel card PR#1 firmware drive (PROMSEL ACK-modulated ROM addressing)
+    add_catch2_test(test_parallel_pr1
+        tests/integration/test_parallel_pr1.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
     # Condition evaluator (needs full emulator)
     add_catch2_test(test_condition_evaluator
         tests/unit/test_condition_evaluator.cpp

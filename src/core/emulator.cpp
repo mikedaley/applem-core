@@ -234,6 +234,7 @@ void Emulator::runCycles(int cycles) {
       if (mockingboard_) mockingboard_->update(static_cast<int>(cyclesUsed));
       if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
       softcard_->update(static_cast<int>(cyclesUsed));
+      if (parallelCard_) parallelCard_->update(static_cast<int>(cyclesUsed));
 
       // Progressive rendering and frame boundary
       video_->renderUpToCycle(cpu_->getTotalCycles());
@@ -478,6 +479,9 @@ void Emulator::runCycles(int cycles) {
     // Update Z-80 SoftCard (runs Z80 T-states when active)
     if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
 
+    // Update parallel card Centronics BUSY/ACK handshake timer
+    if (parallelCard_) parallelCard_->update(static_cast<int>(cyclesUsed));
+
     // Progressive rendering: render scanlines up to current cycle
     video_->renderUpToCycle(cpu_->getTotalCycles());
 
@@ -687,6 +691,9 @@ void Emulator::stepInstruction() {
 
   // Update Z-80 SoftCard
   if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
+
+  // Update parallel card Centronics BUSY/ACK handshake timer
+  if (parallelCard_) parallelCard_->update(static_cast<int>(cyclesUsed));
 
   // Progressive rendering: render scanlines up to current cycle
   video_->renderUpToCycle(cpu_->getTotalCycles());
