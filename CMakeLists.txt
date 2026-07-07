@@ -33,6 +33,7 @@ set(CORE_SOURCES
     src/core/cards/softcard/softcard_z80.cpp
     src/core/cards/ssc/acia6551.cpp
     src/core/cards/ssc/ssc_card.cpp
+    src/core/cards/parallel/parallel_card.cpp
     src/core/cards/softcard/z80/z80.cpp
     src/core/cards/softcard/z80/z80_opcode_tables.cpp
     src/core/cards/softcard/z80/z80_opcodes_main.cpp
@@ -61,6 +62,7 @@ set(ROM_FILES
     "roms/Thunderclock Plus ROM.bin"                 # Thunderclock card ROM
     "roms/Apple Mouse Interface Card ROM - 342-0270-C.bin"  # Mouse Interface Card ROM
     "roms/Super Serial Card ROM - 341-0065-A.bin"           # Super Serial Card ROM
+    "roms/Apple Parallel Interface Card ROM - 341-0057.bin" # Parallel Interface Card PROM (341-0005/341-0019)
 )
 
 # Custom command to generate ROM header
@@ -355,7 +357,9 @@ if(EMSCRIPTEN)
                 \"_isNoSlotClockEnabled\", \
                 \"_serialReceive\", \
                 \"_isSSCInstalled\", \
-                \"_setSerialTxCallback\" \
+                \"_setSerialTxCallback\", \
+                \"_isParallelCardInstalled\", \
+                \"_setParallelTxCallback\" \
             ]' \
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
@@ -440,6 +444,7 @@ else()
         src/core/cards/softcard/softcard_z80.cpp
         src/core/cards/ssc/acia6551.cpp
         src/core/cards/ssc/ssc_card.cpp
+        src/core/cards/parallel/parallel_card.cpp
         src/core/cards/softcard/z80/z80.cpp
         src/core/cards/softcard/z80/z80_opcode_tables.cpp
         src/core/cards/softcard/z80/z80_opcodes_main.cpp
@@ -741,9 +746,22 @@ else()
         ${TEST_COMMON_SOURCES}
     )
 
+    add_catch2_test(test_basic_load_trace
+        tests/integration/test_basic_load_trace.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
     # Super Serial Card
     add_catch2_test(test_ssc
         tests/integration/test_ssc.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
+    )
+
+    # Parallel card PR#1 firmware drive (PROMSEL ACK-modulated ROM addressing)
+    add_catch2_test(test_parallel_pr1
+        tests/integration/test_parallel_pr1.cpp
         ${CORE_TEST_SOURCES}
         ${TEST_COMMON_SOURCES}
     )

@@ -3,6 +3,7 @@
  *
  * Written by
  *  Mike Daley <michael_daley@icloud.com>
+ *  Shawn Bullock <shawn@agenticexpert.ai>
  */
 
 #include "basic_tokenizer.hpp"
@@ -42,7 +43,7 @@ static std::vector<KeywordEntry> buildKeywordList() {
 // Parsed BASIC line
 struct BasicLine {
     int lineNumber;
-    std::string content; // uppercase content after line number
+    std::string content; // content after line number, original case
 };
 
 // Parse source into lines, extracting line numbers
@@ -87,22 +88,10 @@ static std::vector<BasicLine> parseSource(const char* source) {
         // Skip lines with only a line number and no content
         if (content.empty()) continue;
 
-        // Convert to uppercase, preserving case inside quoted strings
-        std::string upper;
-        upper.reserve(content.size());
-        bool inQuote = false;
-        for (char c : content) {
-            if (c == '"') {
-                inQuote = !inQuote;
-                upper += c;
-            } else if (inQuote) {
-                upper += c;
-            } else {
-                upper += static_cast<char>(toupper(static_cast<unsigned char>(c)));
-            }
-        }
-
-        lines.push_back({lineNum, upper});
+        // Store content with original case. tokenizeLine folds case only when
+        // matching keywords; strings, REM comments, DATA and variable names are
+        // emitted verbatim so nothing outside a keyword is altered.
+        lines.push_back({lineNum, content});
     }
 
     // Sort by line number
@@ -111,6 +100,21 @@ static std::vector<BasicLine> parseSource(const char* source) {
     });
 
     return lines;
+}
+
+// Case-insensitive prefix match: does `text` (length textLen) begin with the
+// already-uppercase keyword `kw` (length kwLen)? Lets source keywords be typed
+// in any case while leaving the source bytes themselves untouched.
+static bool matchKeyword(const char* text, size_t textLen,
+                         const char* kw, size_t kwLen) {
+    if (kwLen > textLen) return false;
+    for (size_t j = 0; j < kwLen; j++) {
+        if (toupper(static_cast<unsigned char>(text[j])) !=
+            static_cast<unsigned char>(kw[j])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Tokenize a single line's content
@@ -179,8 +183,7 @@ static std::vector<uint8_t> tokenizeLine(const std::string& text,
         size_t remainingLen = text.size() - i;
 
         for (const auto& kw : keywords) {
-            if (kw.length <= remainingLen &&
-                strncmp(remaining, kw.keyword, kw.length) == 0) {
+            if (matchKeyword(remaining, remainingLen, kw.keyword, kw.length)) {
                 bytes.push_back(kw.token);
                 i += kw.length;
                 matched = true;
@@ -260,7 +263,7 @@ int loadBasicProgram(const char* source, MemReadFn readMem, MemWriteFn writeMem)
 
     uint16_t endAddr = addr + 2;
 
-    // Read MEMSIZE ($73/$74) from memory
+    // FRETOP (top of string space) tracks MEMSIZE/HIMEM ($73/$74).
     uint16_t memsize = readMem(0x73) | (readMem(0x74) << 8);
 
     // Set zero page pointers
@@ -279,6 +282,22 @@ int loadBasicProgram(const char* source, MemReadFn readMem, MemWriteFn writeMem)
     // Set interpreter state for direct mode
     writePtr(0xB8, txttab - 1); // TXTPTR
     writeMem(0x76, 0xFF);       // CURLIN+1 high byte = $FF (direct mode)
+
+    // Clear Applesoft TRACE so a freshly injected program never starts traced.
+    // Injecting bypasses the ROM's program-entry path, so any stale trace flag
+    // survives and RUN then prints "#<line>" before every line.
+    //
+    // The flag lives in different places depending on the environment:
+    //  - Raw Applesoft: TRCFLG is $F2.
+    //  - ProDOS BASIC.SYSTEM: $F2 is repurposed as an $A5 "sentinel"; the live
+    //    TRCFLG is parked in BASIC.SYSTEM's save slot at $BE41. Clearing $F2 there
+    //    only appears to work because BASIC.SYSTEM re-saves $F2 into $BE41 on the
+    //    next carriage return — fragile. So when the sentinel is present, clear
+    //    $BE41 directly, independent of output timing.
+    if (readMem(0x00F2) == 0xA5) {
+        writeMem(0xBE41, 0x00); // BASIC.SYSTEM live TRCFLG save slot
+    }
+    writeMem(0x00F2, 0x00);
 
     return static_cast<int>(tokenizedLines.size());
 }

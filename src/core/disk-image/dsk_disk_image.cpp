@@ -349,33 +349,19 @@ bool DskDiskImage::decode6and2(const uint8_t *encoded, uint8_t *output) {
   return true;
 }
 
-void DskDiskImage::denibblizeTrack(int track) {
-  if (track < 0 || track >= TRACKS)
-    return;
-
-  auto &nt = nibble_tracks_[track];
-  if (!nt.valid || !nt.dirty)
-    return;
-
-  // Create an extended buffer that handles wrap-around at track boundary.
-  // When ProDOS writes near the end of a track, data can wrap to the beginning.
-  // We append a copy of the first ~500 nibbles to handle this case.
-  std::vector<uint8_t> nibbles = nt.nibbles;  // Make a copy
-  const size_t original_size = nibbles.size();
-  const size_t wrap_extension = 500;  // Enough for one full sector
-  if (original_size > wrap_extension) {
-    nibbles.insert(nibbles.end(), nt.nibbles.begin(),
-                   nt.nibbles.begin() + wrap_extension);
-  }
-
+void DskDiskImage::scanAndDecodeSectors(int track, const uint8_t *nibbles,
+                                        size_t search_count,
+                                        size_t total_count) {
+  // Scan a recovered nibble stream for address/data field pairs and decode each
+  // sector into sector_data_. `search_count` bounds where a new sector may
+  // START (one disk revolution); `total_count` bounds how far a field body may
+  // be READ (revolution + wrap-around tail). Shared by the nibble-grid path
+  // (denibblizeTrack) and the self-syncing bit path (denibblizeBitTrack).
   size_t pos = 0;
-  size_t size = original_size;  // Only search within one revolution
-
-  // Find and decode each sector
-  while (pos < size) {
+  while (pos < search_count) {
     // Look for address field prologue: D5 AA 96
     bool found_addr = false;
-    while (pos + 3 < size) {
+    while (pos + 3 <= total_count && pos < search_count) {
       if (nibbles[pos] == 0xD5 && nibbles[pos + 1] == 0xAA &&
           nibbles[pos + 2] == 0x96) {
         found_addr = true;
@@ -389,8 +375,7 @@ void DskDiskImage::denibblizeTrack(int track) {
       break;
 
     // Read address field (4-and-4 encoded: volume, track, sector, checksum)
-    // Use extended buffer size in case address field wraps around
-    if (pos + 8 > nibbles.size())
+    if (pos + 8 > total_count)
       break;
 
     uint8_t volume = decode4and4(nibbles[pos], nibbles[pos + 1]);
@@ -404,21 +389,21 @@ void DskDiskImage::denibblizeTrack(int track) {
 
     // Verify address checksum using the volume read from the disk,
     // not volume_number_ which may be different
-    if ((volume ^ addr_track ^ sector) != checksum) {
+    if ((volume ^ addr_track ^ sector) != checksum)
       continue; // Invalid address field
-    }
 
     // Verify track number matches
-    if (addr_track != track) {
+    if (addr_track != track)
       continue; // Wrong track
-    }
+
+    // Guard against a corrupt sector index so we never clobber sector 0
+    if (sector >= SECTORS_PER_TRACK)
+      continue;
 
     // Skip address epilogue and look for data prologue: D5 AA AD
-    // Use nibbles.size() (extended buffer) to allow finding data prologue
-    // that wraps around the track boundary
     bool found_data = false;
     size_t search_limit = pos + 50; // Don't search too far
-    while (pos + 3 <= nibbles.size() && pos < search_limit) {
+    while (pos + 3 <= total_count && pos < search_limit) {
       if (nibbles[pos] == 0xD5 && nibbles[pos + 1] == 0xAA &&
           nibbles[pos + 2] == 0xAD) {
         found_data = true;
@@ -431,15 +416,12 @@ void DskDiskImage::denibblizeTrack(int track) {
     if (!found_data)
       continue;
 
-    // Read 343 nibbles of data field
-    // Use nibbles.size() (extended buffer) instead of size (original) for bounds check
-    if (pos + 343 > nibbles.size())
+    // Read and decode 343 nibbles of data field
+    if (pos + 343 > total_count)
       break;
 
-    // Decode the sector data
     uint8_t decoded[256];
-    if (decode6and2(nibbles.data() + pos, decoded)) {
-      // Write to sector data array
+    if (decode6and2(nibbles + pos, decoded)) {
       int log_sector = getLogicalSector(sector);
       int offset = (track * SECTORS_PER_TRACK + log_sector) * BYTES_PER_SECTOR;
       std::memcpy(&sector_data_[offset], decoded, BYTES_PER_SECTOR);
@@ -447,6 +429,27 @@ void DskDiskImage::denibblizeTrack(int track) {
 
     pos += 343;
   }
+}
+
+void DskDiskImage::denibblizeTrack(int track) {
+  if (track < 0 || track >= TRACKS)
+    return;
+
+  auto &nt = nibble_tracks_[track];
+  if (!nt.valid || !nt.dirty)
+    return;
+
+  // Extend the nibble buffer with a copy of the first ~500 nibbles so a sector
+  // that wraps past the track index is still decoded whole.
+  std::vector<uint8_t> nibbles = nt.nibbles;
+  const size_t original_size = nibbles.size();
+  const size_t wrap_extension = 500;
+  if (original_size > wrap_extension) {
+    nibbles.insert(nibbles.end(), nt.nibbles.begin(),
+                   nt.nibbles.begin() + wrap_extension);
+  }
+
+  scanAndDecodeSectors(track, nibbles.data(), original_size, nibbles.size());
 
   nt.dirty = false;
   modified_ = true;
@@ -665,51 +668,54 @@ void DskDiskImage::ensureTrackBitified() {
   bt.valid = true;
 }
 
-void DskDiskImage::bitTrackToNibbleTrack(int track) {
-  if (track < 0 || track >= TRACKS) return;
+void DskDiskImage::denibblizeBitTrack(int track) {
+  if (track < 0 || track >= TRACKS)
+    return;
 
   auto &bt = bit_tracks_[track];
-  if (!bt.valid || !bt.dirty) return;
-
-  auto &nt = nibble_tracks_[track];
-  bool have_sync_flags = (nt.is_sync.size() == nt.nibbles.size());
-
-  // Read nibbles back from bit stream, respecting sync byte widths
-  uint32_t bit_pos = 0;
-  size_t nibble_count = nt.nibbles.size();
-  if (nibble_count == 0) {
-    // Fallback: estimate nibble count from bit count
-    nibble_count = bt.bit_count / 8;
-    nt.nibbles.resize(nibble_count);
-    nt.is_sync.assign(nibble_count, false);
-    have_sync_flags = true;
-  }
+  if (!bt.valid || bt.bit_count == 0)
+    return;
 
   auto getBit = [&](uint32_t idx) -> uint8_t {
-    if (idx >= bt.bit_count) return 0;
     uint32_t byte_off = idx / 8;
     uint8_t bit_off = 7 - (idx % 8);
-    return (byte_off < bt.bits.size() && (bt.bits[byte_off] & (1 << bit_off))) ? 1 : 0;
+    return (byte_off < bt.bits.size() && (bt.bits[byte_off] & (1 << bit_off)))
+               ? 1
+               : 0;
   };
 
-  for (size_t i = 0; i < nibble_count && bit_pos < bt.bit_count; i++) {
-    uint8_t nibble = 0;
-    for (int b = 7; b >= 0; b--) {
-      if (getBit(bit_pos)) {
-        nibble |= (1 << b);
-      }
-      bit_pos++;
-    }
-    nt.nibbles[i] = nibble;
-    // Skip the 2 extra zero bits for sync bytes
-    if (have_sync_flags && i < nt.is_sync.size() && nt.is_sync[i]) {
-      bit_pos += 2;
+  // Recover the nibble stream straight from the raw bits using a
+  // self-synchronizing shift register: every valid GCR nibble has bit 7 set,
+  // and 10-bit self-sync bytes realign the register. This mirrors the real
+  // Disk II LSS, so writes that landed off the original nibble grid (which the
+  // old fixed-frame bitTrackToNibbleTrack misread) are recovered correctly.
+  std::vector<uint8_t> nibbles;
+  nibbles.reserve(bt.bit_count / 8 + 16);
+
+  // Scan one revolution plus a wrap tail (~500 nibbles) so a sector straddling
+  // the index mark is still recovered whole.
+  const uint32_t wrap_bits = std::min<uint32_t>(bt.bit_count, 4000);
+  uint8_t shift = 0;
+  size_t rev_nibbles = 0;
+  for (uint32_t i = 0; i < bt.bit_count + wrap_bits; i++) {
+    if (i == bt.bit_count)
+      rev_nibbles = nibbles.size(); // sectors may only START in one revolution
+    shift = static_cast<uint8_t>((shift << 1) | getBit(i % bt.bit_count));
+    if (shift & 0x80) {
+      nibbles.push_back(shift);
+      shift = 0;
     }
   }
+  if (rev_nibbles == 0)
+    rev_nibbles = nibbles.size();
 
-  nt.valid = true;
-  nt.dirty = true;  // Mark nibble track dirty so denibblizeTrack() will process it
+  scanAndDecodeSectors(track, nibbles.data(), rev_nibbles, nibbles.size());
+
   bt.dirty = false;
+  // The bit stream is the source of truth after a bit-level write; drop any
+  // stale nibble-track dirty flag so getSectorData's nibble pass skips it.
+  nibble_tracks_[track].dirty = false;
+  modified_ = true;
 }
 
 uint8_t DskDiskImage::readBit() {
@@ -769,14 +775,16 @@ const uint8_t *DskDiskImage::getSectorData(size_t *size) const {
     return nullptr;
   }
 
-  // First flush any dirty bit tracks back to nibble tracks
+  // Decode any dirty bit tracks directly from their bit stream. A self-syncing
+  // scan (bit7-latch) recovers nibbles regardless of where the writes landed,
+  // matching the real Disk II LSS read path.
   for (int t = 0; t < TRACKS; t++) {
     if (bit_tracks_[t].dirty) {
-      const_cast<DskDiskImage *>(this)->bitTrackToNibbleTrack(t);
+      const_cast<DskDiskImage *>(this)->denibblizeBitTrack(t);
     }
   }
 
-  // Then denibblize any dirty nibble tracks
+  // Then denibblize any tracks dirtied via the nibble-level write path.
   for (int t = 0; t < TRACKS; t++) {
     if (nibble_tracks_[t].dirty) {
       const_cast<DskDiskImage *>(this)->denibblizeTrack(t);

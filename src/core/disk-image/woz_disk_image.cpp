@@ -550,6 +550,7 @@ void WozDiskImage::writeBit(uint8_t bit) {
   writeBitInternal(bit);
   bit_position_ = (bit_position_ + 1) % track->bit_count;
   modified_ = true;
+  sectors_decoded_ = false; // bitstream changed — drop stale logical-sector cache
 }
 
 // ===== Write Operations =====
@@ -610,6 +611,7 @@ void WozDiskImage::writeNibble(uint8_t nibble) {
   }
 
   modified_ = true;
+  sectors_decoded_ = false; // bitstream changed — drop stale logical-sector cache
 }
 
 const uint8_t *WozDiskImage::getSectorData(size_t *size) const {

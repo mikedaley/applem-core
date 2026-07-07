@@ -16,7 +16,9 @@
 #include "catch.hpp"
 
 #include "dsk_disk_image.hpp"
+#include "gcr_encoding.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -312,4 +314,113 @@ TEST_CASE("DskDiskImage isProDOSOrder false for .dsk file", "[dsk]") {
     img.load(data.data(), data.size(), "dos33.dsk");
 
     REQUIRE_FALSE(img.isProDOSOrder());
+}
+
+// ---------------------------------------------------------------------------
+// Bit-level write-back round-trip
+//
+// Regression guard for the .po write-back bug: in-emulator writes arrive at the
+// disk through writeBit() (the LSS bit-level path). getSectorData() must recover
+// them by re-syncing on the GCR prologues at the BIT level, exactly like a real
+// Disk II. The previous fixed-frame reader (bitTrackToNibbleTrack) walked the
+// stale is_sync grid and dropped any sector whose write landed off that grid.
+// ---------------------------------------------------------------------------
+
+// Build one complete sector as a GCR nibble stream (sync gap, address field,
+// gap, data field). Mirrors the on-disk structure the controller produces.
+static std::vector<uint8_t> buildSectorNibbles(uint8_t volume, uint8_t track,
+                                               uint8_t sector,
+                                               const uint8_t* data256) {
+    std::vector<uint8_t> n;
+    auto enc44 = [&](uint8_t v) {
+        n.push_back((v >> 1) | 0xAA);
+        n.push_back(v | 0xAA);
+    };
+    for (int i = 0; i < 12; ++i) n.push_back(0xFF); // sync gap
+    n.push_back(0xD5); n.push_back(0xAA); n.push_back(0x96); // addr prologue
+    enc44(volume); enc44(track); enc44(sector);
+    enc44(static_cast<uint8_t>(volume ^ track ^ sector)); // checksum
+    n.push_back(0xDE); n.push_back(0xAA); n.push_back(0xEB); // addr epilogue
+    for (int i = 0; i < 6; ++i) n.push_back(0xFF);  // gap 2
+    n.push_back(0xD5); n.push_back(0xAA); n.push_back(0xAD); // data prologue
+    auto encoded = GCR::encode6and2(data256);       // 343 nibbles
+    n.insert(n.end(), encoded.begin(), encoded.end());
+    n.push_back(0xDE); n.push_back(0xAA); n.push_back(0xEB); // data epilogue
+    return n;
+}
+
+TEST_CASE("DskDiskImage bit-level write round-trips through getSectorData", "[dsk]") {
+    DskDiskImage img;
+    auto data = createBlankDSK();
+    img.load(data.data(), data.size(), "rttest.po");
+    REQUIRE(img.getFormat() == DiskImage::Format::PO);
+
+    const int track = 17;
+
+    // Build a fresh 16-sector track image carrying NEW data. Physical sector p
+    // is filled with the pattern (p ^ k) so each sector is uniquely identifiable
+    // and every byte is integrity-checkable.
+    std::vector<uint8_t> trackNibbles;
+    for (int p = 0; p < 16; ++p) {
+        uint8_t sectorData[256];
+        for (int k = 0; k < 256; ++k)
+            sectorData[k] = static_cast<uint8_t>(p ^ k);
+        auto s = buildSectorNibbles(254, track, static_cast<uint8_t>(p), sectorData);
+        trackNibbles.insert(trackNibbles.end(), s.begin(), s.end());
+    }
+    // Pack nibbles to a bit stream, 8 bits MSB-first (data-byte cadence).
+    std::vector<uint8_t> streamBits;
+    streamBits.reserve(trackNibbles.size() * 8);
+    for (uint8_t nib : trackNibbles)
+        for (int b = 7; b >= 0; --b)
+            streamBits.push_back((nib >> b) & 1);
+
+    // Position the head and measure the track's bit length by reading one full
+    // revolution (the first readBit bitifies the track; the wrap is detected
+    // when the nibble position drops back to 0). This leaves bit_position_ at 0.
+    img.setQuarterTrack(track * 4);
+    img.readBit();
+    size_t bitCount = 1;
+    size_t prev = img.getCurrentNibblePosition();
+    for (;;) {
+        img.readBit();
+        ++bitCount;
+        size_t cur = img.getCurrentNibblePosition();
+        if (cur < prev) break; // wrapped past the index mark
+        prev = cur;
+    }
+    REQUIRE(streamBits.size() < bitCount); // one full track copy must fit
+
+    // Drive the new track in through the bit-level write path, overwriting the
+    // whole revolution (cycling the stream; the trailing partial copy is just
+    // skipped by the scanner).
+    for (size_t i = 0; i < bitCount; ++i)
+        img.writeBit(streamBits[i % streamBits.size()]);
+
+    REQUIRE(img.isModified());
+
+    // Read back: every physical sector must reappear, each in a distinct logical
+    // slot, byte-for-byte intact.
+    size_t size = 0;
+    const uint8_t* sd = img.getSectorData(&size);
+    REQUIRE(size == 143360);
+
+    std::vector<int> recovered;
+    for (int logical = 0; logical < 16; ++logical) {
+        const uint8_t* blk = sd + (track * 16 + logical) * 256;
+        uint8_t p = blk[0]; // data[k] = p ^ k, so data[0] == p
+        REQUIRE(p < 16);
+        bool intact = true;
+        for (int k = 0; k < 256; ++k)
+            if (blk[k] != static_cast<uint8_t>(p ^ k)) { intact = false; break; }
+        REQUIRE(intact);
+        recovered.push_back(p);
+    }
+    std::sort(recovered.begin(), recovered.end());
+    for (int p = 0; p < 16; ++p)
+        REQUIRE(recovered[p] == p); // all 16 sectors present, none dropped
+
+    // A different, untouched track must remain blank (no cross-track damage).
+    for (int k = 0; k < 256; ++k)
+        REQUIRE(sd[(0 * 16 + 0) * 256 + k] == 0x00);
 }
