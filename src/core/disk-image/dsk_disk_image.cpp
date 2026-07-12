@@ -48,7 +48,6 @@ DskDiskImage::DskDiskImage() { sector_data_.fill(0); }
 void DskDiskImage::resetState() {
   quarter_track_ = 0;
   phase_states_ = 0;
-  current_phase_ = 0;
   nibble_position_ = 0;
   bit_position_ = 0;
   last_cycle_count_ = 0;
@@ -87,7 +86,6 @@ bool DskDiskImage::load(const uint8_t *data, size_t size,
   // Reset head position
   quarter_track_ = 0;
   phase_states_ = 0;
-  current_phase_ = 0; // Reset to phase 0 for correct stepper tracking
   nibble_position_ = 0;
   bit_position_ = 0;
   last_cycle_count_ = 0;
@@ -465,53 +463,41 @@ void DskDiskImage::setPhase(int phase, bool on) {
     phase_states_ |= phase_bit;
   } else {
     phase_states_ &= ~phase_bit;
-    // Stepping happens when the current phase is turned OFF
-    // and an adjacent phase is ON (like apple2ts)
-    updateHeadPosition();
   }
+
+  // Re-evaluate head position on every magnet change (both ON and OFF). The
+  // head is pulled toward a newly energised magnet, so we must step on ON, not
+  // only on OFF.
+  updateHeadPosition();
 }
 
 void DskDiskImage::updateHeadPosition() {
-  // The Disk II stepper motor only moves when:
-  // 1. The current phase (where head is settled) is turned OFF
-  // 2. An adjacent phase is ON
+  // Canonical 4-magnet stepper model (as used by AppleWin / OpenEmulator).
   //
-  // This matches apple2ts behavior and real hardware.
-
+  // The head *position* is the state; the magnet currently aligned with the
+  // head is derived from the position (each magnet spans 2 quarter-tracks, the
+  // four magnets repeating every 8 quarter-tracks). On any magnet-state change
+  // we sum the pull from the two neighbouring magnets and, if there is a net
+  // pull, move one half-track (2 quarter-tracks) toward the energised
+  // neighbour. Deriving the aligned magnet from the position (rather than
+  // tracking a separate "current phase") keeps the head in sync through
+  // recalibration and non-overlapping step patterns.
   constexpr int MAX_QUARTER_TRACK = (TRACKS * 4) - 1;
 
-  // Check if current phase is now off
-  uint8_t current_phase_bit = 1 << current_phase_;
-  if (phase_states_ & current_phase_bit) {
-    // Current phase is still on, don't step
-    return;
+  int aligned = (quarter_track_ >> 1) & 3;
+  int direction = 0;
+  if (phase_states_ & (1 << ((aligned + 1) & 3))) {
+    direction += 1; // pull inward (toward higher track numbers)
+  }
+  if (phase_states_ & (1 << ((aligned + 3) & 3))) {
+    direction -= 1; // pull outward (toward track 0)
   }
 
-  // Current phase is off - check adjacent phases
-  int next_phase = (current_phase_ + 1) % 4;
-  int prev_phase = (current_phase_ + 3) % 4;
-
-  bool next_on = (phase_states_ & (1 << next_phase)) != 0;
-  bool prev_on = (phase_states_ & (1 << prev_phase)) != 0;
-
-  if (next_on && !prev_on) {
-    // Step inward (toward higher track numbers)
-    current_phase_ = next_phase;
-    if (quarter_track_ < MAX_QUARTER_TRACK - 1) {
-      quarter_track_ += 2;
-    } else if (quarter_track_ < MAX_QUARTER_TRACK) {
-      quarter_track_ = MAX_QUARTER_TRACK;
-    }
-  } else if (prev_on && !next_on) {
-    // Step outward (toward track 0)
-    current_phase_ = prev_phase;
-    if (quarter_track_ > 1) {
-      quarter_track_ -= 2;
-    } else if (quarter_track_ > 0) {
-      quarter_track_ = 0;
-    }
+  if (direction != 0) {
+    quarter_track_ = std::max(
+        0, std::min(MAX_QUARTER_TRACK, quarter_track_ + 2 * direction));
   }
-  // If both or neither adjacent phases are on, don't step
+  // If both or neither neighbouring magnets are energised, the head is settled.
 }
 
 bool DskDiskImage::hasData() const {

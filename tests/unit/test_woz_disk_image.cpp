@@ -206,6 +206,72 @@ TEST_CASE("WozDiskImage setPhase stepping moves head", "[woz]") {
     REQUIRE(img.getQuarterTrack() > 0);
 }
 
+// Helpers that drive the stepper the way real firmware does, one half-track
+// per iteration. quarter-track position advances 2 per half-track step.
+namespace {
+// Overlapping style: energise the next magnet before de-energising the current.
+void seekOverlap(WozDiskImage &img, int halfTracks, int dir) {
+    int half = 0; // caller guarantees the head is at track 0 (magnet 0 aligned)
+    for (int i = 0; i < halfTracks; ++i) {
+        int oldPhase = ((half % 4) + 4) % 4;
+        half += dir;
+        int newPhase = ((half % 4) + 4) % 4;
+        img.setPhase(newPhase, true);
+        img.setPhase(oldPhase, false);
+    }
+}
+// Non-overlapping style: pulse each magnet fully on then off, no overlap. Some
+// copy-protected loaders (e.g. subLOGIC Flight Simulator II) seek like this.
+void seekPulse(WozDiskImage &img, int halfTracks, int dir) {
+    int half = 0; // caller guarantees the head is at track 0 (magnet 0 aligned)
+    for (int i = 0; i < halfTracks; ++i) {
+        half += dir;
+        int phase = ((half % 4) + 4) % 4;
+        img.setPhase(phase, true);
+        img.setPhase(phase, false);
+    }
+}
+} // namespace
+
+TEST_CASE("WozDiskImage overlapping seek reaches exact track", "[woz]") {
+    WozDiskImage img;
+    img.createBlank();
+
+    img.resetState();
+    seekOverlap(img, 20, +1); // 10 whole tracks inward
+    REQUIRE(img.getTrack() == 10);
+    REQUIRE(img.getQuarterTrack() == 40);
+}
+
+// Regression: non-overlapping (pulse) stepping must move the head. The old
+// stepper only stepped when a phase was turned OFF while an adjacent phase was
+// still ON, so pulse seeks moved the head zero tracks and disks that stepped
+// this way (Flight Simulator II) hung mid-load.
+TEST_CASE("WozDiskImage non-overlapping pulse seek moves head", "[woz]") {
+    WozDiskImage img;
+    img.createBlank();
+
+    img.resetState();
+    seekPulse(img, 20, +1); // 10 whole tracks inward
+    REQUIRE(img.getTrack() == 10);
+    REQUIRE(img.getQuarterTrack() == 40);
+}
+
+// Recalibration (banging the head against track 0) must not desync the stepper:
+// a subsequent inward seek must still land on the exact track.
+TEST_CASE("WozDiskImage recalibration then seek lands on exact track", "[woz]") {
+    WozDiskImage img;
+    img.createBlank();
+
+    img.resetState();
+    seekPulse(img, 80, -1); // bang outward against track 0
+    REQUIRE(img.getQuarterTrack() == 0);
+
+    seekOverlap(img, 24, +1); // now seek 12 tracks inward
+    REQUIRE(img.getTrack() == 12);
+    REQUIRE(img.getQuarterTrack() == 48);
+}
+
 // ---------------------------------------------------------------------------
 // Reset state
 // ---------------------------------------------------------------------------

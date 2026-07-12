@@ -128,7 +128,6 @@ private:
   // Head position (0-139 quarter-tracks)
   int quarter_track_ = 0;
   uint8_t phase_states_ = 0; // Bit field of active phases
-  int current_phase_ = 0; // Current phase where head is settled (for stepper)
 
   // Nibble position within current track
   size_t nibble_position_ = 0;

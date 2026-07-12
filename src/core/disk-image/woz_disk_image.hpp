@@ -205,7 +205,6 @@ private:
   // ===== Head positioning state =====
   uint8_t phase_states_ = 0; // Bit field for phase magnet states (bits 0-3)
   int quarter_track_ = 0;    // Current head position (0-159)
-  int current_phase_ = 0;    // Current phase where head is settled (for stepper)
 
   // ===== Bit position =====
   uint32_t bit_position_ = 0; // Current bit position within track
@@ -268,9 +267,11 @@ private:
   uint8_t readBitInternal() const;
 
   /**
-   * Update head position based on phase magnet states
-   * Called when a phase is turned OFF to check if stepping should occur
-   * Uses 4-phase stepper motor physics matching real hardware
+   * Update head position based on phase magnet states.
+   * Called on every phase magnet change (ON and OFF). Uses the canonical
+   * 4-magnet stepper model where the aligned magnet is derived from the head
+   * position, so it tracks correctly through recalibration and non-overlapping
+   * step patterns.
    */
   void updateHeadPosition();
 

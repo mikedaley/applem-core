@@ -275,6 +275,7 @@ private:
     uint8_t busData_ = 0;           // CPU bus data for LOAD operations
     uint8_t lssClock_ = 0;         // 8-phase clock (0-7), disk I/O at phase 4
     uint8_t writeLevel_ = 0;       // Previous write amplifier level for transition encoding
+    uint32_t weakBitLfsr_ = 0x2545F4914F6CDD1Du & 0xFFFFFFFFu; // noise PRNG state (non-zero)
 
     // Disk images for each drive
     std::unique_ptr<DiskImage> diskImages_[2];
@@ -290,6 +291,20 @@ private:
             return cycleCallback_();
         }
         return totalCycles_;
+    }
+
+    /**
+     * Generate a random "weak bit" for reading an unformatted/empty track.
+     * Real drives read random flux noise from the MC3470 when the head is over
+     * a track with no recorded data; a 1 appears with ~30% probability, which
+     * yields plausible nibbles rather than a hung read loop.
+     */
+    uint8_t nextWeakBit() {
+        // xorshift32
+        weakBitLfsr_ ^= weakBitLfsr_ << 13;
+        weakBitLfsr_ ^= weakBitLfsr_ >> 17;
+        weakBitLfsr_ ^= weakBitLfsr_ << 5;
+        return (weakBitLfsr_ < 0x4CCCCCCCu) ? 1 : 0; // ~30% ones
     }
 
     /**

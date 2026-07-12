@@ -383,10 +383,17 @@ int Disk2Card::getQuarterTrack() const {
 
 void Disk2Card::clockLSS() {
     DiskImage* disk = diskImages_[selectedDrive_].get();
-    if (!disk || !disk->hasData()) {
+    if (!disk) {
         if (++lssClock_ > 7) lssClock_ = 0;
         return;
     }
+
+    // Whether the head is currently over a track that has recorded data. When
+    // it is not (unformatted / empty track, e.g. a protection check that seeks
+    // the head to the inner stop past the last data track), we still clock the
+    // sequencer but feed it random weak bits so read loops see noise instead of
+    // a frozen data register.
+    const bool trackHasData = disk->hasData();
 
     // Read pulse from disk only at phase 4 of the 8-phase clock.
     // On all other phases, pulse is 0 (inverted -> 1 in address).
@@ -394,7 +401,8 @@ void Disk2Card::clockLSS() {
     // so we skip the read and let writeBit handle head advance.
     uint8_t readPulse = 0;
     if (lssClock_ == 4 && !q7_) {
-        readPulse = disk->readBit();  // reads and advances head
+        readPulse = trackHasData ? disk->readBit()  // reads and advances head
+                                 : nextWeakBit();    // empty track -> noise
     }
 
     // P6 ROM lookup (every tick, BAPD format with inverted pulse)
