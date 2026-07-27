@@ -380,3 +380,19 @@ TEST_CASE("Alt keys generate no character", "[keyboard][buttons]") {
     CHECK(kb.handleKeyDown(ALT, false, false, true, false, false, LEFT) == -1);
     CHECK(kb.handleKeyDown(ALT, false, false, true, false, false, RIGHT) == -1);
 }
+
+TEST_CASE("state converges when the last Alt is released, whatever the location",
+          "[keyboard][buttons]") {
+    Keyboard kb;
+
+    altDown(kb, LEFT);
+    altDown(kb, RIGHT);
+
+    // macOS browsers deliver no event at all when one of two held Option keys
+    // is released, then a single key-up naming an arbitrary side once both are
+    // up. Only `alt` being false is dependable, and it must clear everything.
+    altUp(kb, LEFT, false);
+
+    CHECK_FALSE(kb.isOpenApplePressed());
+    CHECK_FALSE(kb.isClosedApplePressed());
+}
