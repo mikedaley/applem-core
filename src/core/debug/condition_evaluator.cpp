@@ -6,6 +6,7 @@
  */
 
 #include "condition_evaluator.hpp"
+#include "../basic/applesoft_vars.hpp"
 #include "../emulator.hpp"
 #include <cctype>
 #include <cmath>
@@ -13,21 +14,15 @@
 
 namespace a2e {
 
-// Decode 5-byte Applesoft float to int32_t (truncated)
+// Read a 5-byte Applesoft float out of memory and truncate toward zero.
+// The decoding itself lives in ApplesoftVars so the debugger's variable
+// inspector and this evaluator cannot drift apart.
 static int32_t decodeApplesoftFloat(const Emulator& emu, uint16_t addr) {
-  uint8_t exp = emu.peekMemory(addr);
-  if (exp == 0) return 0;
-
-  int sign = (emu.peekMemory(addr + 1) & 0x80) ? -1 : 1;
-  double mantissa = 1.0;
-  mantissa += (emu.peekMemory(addr + 1) & 0x7F) / 128.0;
-  mantissa += emu.peekMemory(addr + 2) / 32768.0;
-  mantissa += emu.peekMemory(addr + 3) / 8388608.0;
-  mantissa += emu.peekMemory(addr + 4) / 2147483648.0;
-
-  int actualExp = exp - 129;
-  double value = sign * mantissa * pow(2.0, actualExp);
-  return static_cast<int32_t>(value);
+  uint8_t bytes[APPLESOFT_FLOAT_SIZE];
+  for (int i = 0; i < APPLESOFT_FLOAT_SIZE; i++) {
+    bytes[i] = emu.peekMemory(static_cast<uint16_t>(addr + i));
+  }
+  return static_cast<int32_t>(ApplesoftVars::decodeFloat(bytes));
 }
 
 // Read a BASIC simple variable value by its encoded name bytes
