@@ -8,6 +8,7 @@
 #include "basic_detokenizer.hpp"
 #include "basic_program_builder.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -262,4 +263,35 @@ TEST_CASE("detokenizeApplesoft empty program returns empty string", "[basic][app
     uint8_t data[] = {0x00, 0x00};
     const char* result = BasicDetokenizer::detokenizeApplesoft(data, sizeof(data), false);
     CHECK(strlen(result) == 0);
+}
+
+// ============================================================================
+// Applesoft: programs longer than the old 4096-line cap
+// ============================================================================
+
+TEST_CASE("detokenizeApplesoft emits lines past 4096", "[basic][applesoft][limits]") {
+    // The decoder used to fill a 4096-entry LineInfo array that nothing read,
+    // and the bounds check guarding it also guarded the output append — so
+    // every line past 4096 was silently dropped. Output is now limited only by
+    // MAX_OUTPUT.
+    ApplesoftProgramBuilder builder;
+
+    constexpr int LINE_COUNT = 5000;
+    for (int i = 0; i < LINE_COUNT; i++) {
+        // `i` END — one token, so 5000 lines stay well inside MAX_OUTPUT.
+        builder.addLine(i + 1, std::vector<uint8_t>{0x80});
+    }
+
+    auto data = builder.build();
+    const char* result = BasicDetokenizer::detokenizeApplesoft(data.data(),
+                                                               static_cast<int>(data.size()),
+                                                               false);
+    std::string output(result);
+
+    // One newline per line after the first.
+    const auto newlines = std::count(output.begin(), output.end(), '\n');
+    CHECK(newlines == LINE_COUNT - 1);
+
+    // The last line must actually be present, not truncated away.
+    CHECK(output.find(" 5000 END") != std::string::npos);
 }

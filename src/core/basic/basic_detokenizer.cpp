@@ -51,14 +51,10 @@ const char* BasicDetokenizer::detokenizeApplesoft(const uint8_t* data, int size,
   // Track indentation
   int indentLevel = 0;
 
-  // Collect lines first, then format with indentation
-  struct LineInfo {
-    int lineNum;
-    int contentStart; // offset into outputBuffer_
-    int contentLen;
-    int indent;
-  };
-  LineInfo lines[4096];
+  // Lines are appended to outputBuffer_ as they are decoded — indentation is
+  // known at that point, so nothing needs collecting first. (This previously
+  // also filled a 4096-entry LineInfo array that was never read, and the bounds
+  // check guarding it silently dropped every line past 4096 from the output.)
   int lineCount = 0;
 
   // Temporary buffer for line content
@@ -251,30 +247,25 @@ const char* BasicDetokenizer::detokenizeApplesoft(const uint8_t* data, int size,
       if (indentLevel < 0) indentLevel = 0;
     }
 
-    if (lineCount < 4096) {
-      lines[lineCount].lineNum = lineNum;
-      lines[lineCount].contentStart = contentStart;
-      lines[lineCount].contentLen = lineBufLen - contentStart;
-      lines[lineCount].indent = indentLevel;
+    // Append to output buffer. Truncation is bounded by MAX_OUTPUT alone —
+    // appendChar() stops there — so a long program loses its tail rather than
+    // being cut at an arbitrary line count.
+    if (!firstLine) appendChar('\n');
+    firstLine = false;
 
-      // Now append to output buffer
-      if (!firstLine) appendChar('\n');
-      firstLine = false;
+    appendPaddedLineNum(lineNum);
+    appendChar(' ');
 
-      appendPaddedLineNum(lineNum);
+    // Indent
+    int indentChars = indentLevel * 3;
+    for (int i = 0; i < indentChars && outputLen_ < MAX_OUTPUT - 1; i++)
       appendChar(' ');
 
-      // Indent
-      int indentChars = indentLevel * 3;
-      for (int i = 0; i < indentChars && outputLen_ < MAX_OUTPUT - 1; i++)
-        appendChar(' ');
+    // Content
+    for (int i = contentStart; i < lineBufLen && outputLen_ < MAX_OUTPUT - 1; i++)
+      appendChar(lineBuf[i]);
 
-      // Content
-      for (int i = contentStart; i < lineBufLen && outputLen_ < MAX_OUTPUT - 1; i++)
-        appendChar(lineBuf[i]);
-
-      lineCount++;
-    }
+    lineCount++;
 
     if (forCount > 0) {
       indentLevel += forCount;
