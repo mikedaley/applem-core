@@ -140,6 +140,8 @@ if(EMSCRIPTEN)
                 \"_stepBasicStatement\", \
                 \"_getBasicTxtptr\", \
                 \"_getBasicStatementIndex\", \
+                \"_getBasicStatementCountForLine\", \
+                \"_getBasicStatementIndexForLine\", \
                 \"_setBasicHeatMapEnabled\", \
                 \"_clearBasicHeatMap\", \
                 \"_getBasicHeatMapSize\", \

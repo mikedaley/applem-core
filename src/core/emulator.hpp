@@ -123,6 +123,12 @@ public:
   uint16_t getBasicTxtptr() const;  // Get current TXTPTR for statement highlighting
   int getBasicStatementIndex();     // Get current statement index (0-based)
 
+  // Statement geometry for an arbitrary line, for the debugger UI. These use
+  // the same colon scan that drives statement breakpoint matching, so what the
+  // UI highlights and where execution actually breaks cannot disagree.
+  int getBasicStatementCountForLine(uint16_t lineNumber);
+  int getBasicStatementIndexForLine(uint16_t lineNumber, uint16_t txtptr);
+
   // BASIC line heat map
   void setBasicHeatMapEnabled(bool enabled) { basicHeatMapEnabled_ = enabled; }
   bool isBasicHeatMapEnabled() const { return basicHeatMapEnabled_; }
