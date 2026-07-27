@@ -114,6 +114,7 @@ if(EMSCRIPTEN)
                 \"_keyUp\", \
                 \"_handleRawKeyDown\", \
                 \"_handleRawKeyUp\", \
+                \"_releaseModifiers\", \
                 \"_charToAppleKey\", \
                 \"_insertDisk\", \
                 \"_insertBlankDisk\", \

@@ -569,8 +569,10 @@ const uint8_t *Emulator::getFramebuffer() const {
 }
 
 int Emulator::handleRawKeyDown(int browserKeycode, bool shift, bool ctrl,
-                                bool alt, bool meta, bool capsLock) {
-  int result = keyboard_->handleKeyDown(browserKeycode, shift, ctrl, alt, meta, capsLock);
+                                bool alt, bool meta, bool capsLock,
+                                int keyLocation) {
+  int result = keyboard_->handleKeyDown(browserKeycode, shift, ctrl, alt, meta,
+                                        capsLock, keyLocation);
 
   // Update button state from modifier keys
   setButton(0, keyboard_->isOpenApplePressed());   // Open Apple
@@ -580,12 +582,18 @@ int Emulator::handleRawKeyDown(int browserKeycode, bool shift, bool ctrl,
 }
 
 void Emulator::handleRawKeyUp(int browserKeycode, bool shift, bool ctrl,
-                              bool alt, bool meta) {
-  keyboard_->handleKeyUp(browserKeycode, shift, ctrl, alt, meta);
+                              bool alt, bool meta, int keyLocation) {
+  keyboard_->handleKeyUp(browserKeycode, shift, ctrl, alt, meta, keyLocation);
 
   // Update button state from modifier keys
   setButton(0, keyboard_->isOpenApplePressed());   // Open Apple
   setButton(1, keyboard_->isClosedApplePressed()); // Closed Apple
+}
+
+void Emulator::releaseModifiers() {
+  keyboard_->releaseModifiers();
+  setButton(0, keyboard_->isOpenApplePressed());
+  setButton(1, keyboard_->isClosedApplePressed());
 }
 
 void Emulator::keyDown(int keycode) {

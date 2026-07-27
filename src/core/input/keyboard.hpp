@@ -23,6 +23,13 @@ public:
   // Callback type for sending translated keys to emulator
   using KeyCallback = std::function<void(int)>;
 
+  /**
+   * Which physical key produced an event, mirroring DOM_KEY_LOCATION_*.
+   * Both Alt keys share one keycode, so this is the only thing separating
+   * Open Apple from Closed Apple.
+   */
+  enum KeyLocation { LOCATION_STANDARD = 0, LOCATION_LEFT = 1, LOCATION_RIGHT = 2 };
+
   Keyboard();
 
   /**
@@ -39,10 +46,11 @@ public:
    * @param alt Alt/Option key is pressed (Open Apple)
    * @param meta Meta/Command key is pressed (Closed Apple)
    * @param capsLock Caps Lock is active
+   * @param keyLocation Which side of the keyboard the key is on
    * @return The translated Apple II keycode, or -1 if not mapped
    */
   int handleKeyDown(int browserKeycode, bool shift, bool ctrl, bool alt,
-                    bool meta, bool capsLock);
+                    bool meta, bool capsLock, int keyLocation = LOCATION_STANDARD);
 
   /**
    * Handle a raw key up event from the browser
@@ -51,9 +59,10 @@ public:
    * @param ctrl Control key is pressed
    * @param alt Alt/Option key is pressed
    * @param meta Meta/Command key is pressed
+   * @param keyLocation Which side of the keyboard the key is on
    */
   void handleKeyUp(int browserKeycode, bool shift, bool ctrl, bool alt,
-                   bool meta);
+                   bool meta, int keyLocation = LOCATION_STANDARD);
 
   /**
    * Get the current Open Apple (Alt) button state
@@ -66,12 +75,22 @@ public:
   bool isClosedApplePressed() const { return closedApplePressed_; }
 
   /**
+   * Release every modifier the host may be holding.
+   *
+   * A key held while the host loses focus never delivers its key-up, which
+   * would otherwise leave an Apple button latched until it was pressed again.
+   */
+  void releaseModifiers() {
+    altLeftDown_ = false;
+    altRightDown_ = false;
+    metaDown_ = false;
+    syncAppleButtons();
+  }
+
+  /**
    * Reset keyboard state (clears modifier key states)
    */
-  void reset() {
-    openApplePressed_ = false;
-    closedApplePressed_ = false;
-  }
+  void reset() { releaseModifiers(); }
 
 private:
   /**
@@ -96,7 +115,21 @@ private:
    */
   int applyControl(int key) const;
 
+  /** Recompute the Apple buttons from the modifier keys currently held. */
+  void syncAppleButtons() {
+    openApplePressed_ = altLeftDown_;
+    closedApplePressed_ = altRightDown_ || metaDown_;
+  }
+
   KeyCallback keyCallback_;
+
+  // Which modifiers are physically down. The Apple button states are derived
+  // from these rather than being toggled directly, so a key-up that names the
+  // wrong side cannot leave a button stuck on.
+  bool altLeftDown_ = false;
+  bool altRightDown_ = false;
+  bool metaDown_ = false;
+
   bool openApplePressed_ = false;
   bool closedApplePressed_ = false;
 };

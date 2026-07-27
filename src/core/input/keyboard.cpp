@@ -12,14 +12,24 @@ namespace a2e {
 Keyboard::Keyboard() {}
 
 int Keyboard::handleKeyDown(int browserKeycode, bool shift, bool ctrl,
-                            bool alt, bool meta, bool capsLock) {
-  // Track modifier keys (Apple buttons)
+                            bool alt, bool meta, bool capsLock,
+                            int keyLocation) {
+  // Track modifier keys (Apple buttons). Both Alt keys report keycode 18, so
+  // the location is what separates Open Apple from Closed Apple. An
+  // unspecified location is treated as the left key, which keeps Open Apple
+  // working rather than silently producing Closed Apple.
   if (browserKeycode == 18) { // Alt
-    openApplePressed_ = true;
+    if (keyLocation == LOCATION_RIGHT) {
+      altRightDown_ = true;
+    } else {
+      altLeftDown_ = true;
+    }
+    syncAppleButtons();
     return -1; // Don't generate a key
   }
   if (browserKeycode == 91 || browserKeycode == 93) { // Meta (left/right)
-    closedApplePressed_ = true;
+    metaDown_ = true;
+    syncAppleButtons();
     return -1;
   }
 
@@ -64,17 +74,42 @@ int Keyboard::handleKeyDown(int browserKeycode, bool shift, bool ctrl,
 }
 
 void Keyboard::handleKeyUp(int browserKeycode, bool shift, bool ctrl,
-                           bool alt, bool meta) {
+                           bool alt, bool meta, int keyLocation) {
   (void)shift;
   (void)ctrl;
 
   // Track modifier keys
   if (browserKeycode == 18) { // Alt
-    openApplePressed_ = false;
+    // Hosts do not reliably say which Alt went up. Two things go wrong, both
+    // observed on macOS browsers, which synthesise Option key events from the
+    // modifier flag rather than the physical key:
+    //
+    //  - the location on a key-up can name the wrong side, so it cannot be
+    //    trusted to decide which button to clear;
+    //  - releasing one of two held Option keys produces no event at all,
+    //    because the flag does not change while the other is still down.
+    //
+    // The second is not recoverable: the release never reaches us, so that
+    // button stays down until the last Alt comes up. Do not try to work around
+    // it here — the information does not exist.
+    //
+    // What is dependable is `alt`, which says whether any Alt remains held.
+    // When it is clear, both sides are released regardless of what was tracked,
+    // so state always converges once the keys are actually up.
+    if (!alt) {
+      altLeftDown_ = false;
+      altRightDown_ = false;
+    } else if (keyLocation == LOCATION_RIGHT) {
+      altRightDown_ = false;
+    } else {
+      altLeftDown_ = false;
+    }
+    syncAppleButtons();
     return;
   }
   if (browserKeycode == 91 || browserKeycode == 93) { // Meta
-    closedApplePressed_ = false;
+    metaDown_ = false;
+    syncAppleButtons();
     return;
   }
 }
