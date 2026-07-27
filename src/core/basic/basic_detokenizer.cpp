@@ -241,9 +241,16 @@ const char* BasicDetokenizer::detokenizeApplesoft(const uint8_t* data, int size,
     while (contentStart < lineBufLen && lineBuf[contentStart] == ' ')
       contentStart++;
 
-    // Adjust indentation
-    if (nextCount > 0) {
-      indentLevel -= nextCount;
+    // A line can both open and close loops (FOR I = 1 TO 5 : NEXT). Only the
+    // unmatched ones may change the indent: dedent for NEXTs this line did not
+    // open, and indent what follows for FORs it did not close. Applying the raw
+    // counts separately let the clamp at zero swallow the decrement, so a
+    // self-contained FOR/NEXT line left every following line indented.
+    const int unmatchedNext = nextCount > forCount ? nextCount - forCount : 0;
+    const int unmatchedFor = forCount > nextCount ? forCount - nextCount : 0;
+
+    if (unmatchedNext > 0) {
+      indentLevel -= unmatchedNext;
       if (indentLevel < 0) indentLevel = 0;
     }
 
@@ -267,9 +274,7 @@ const char* BasicDetokenizer::detokenizeApplesoft(const uint8_t* data, int size,
 
     lineCount++;
 
-    if (forCount > 0) {
-      indentLevel += forCount;
-    }
+    indentLevel += unmatchedFor;
   }
 
   outputBuffer_[outputLen_] = '\0';
@@ -394,9 +399,16 @@ const char* BasicDetokenizer::detokenizeIntegerBasic(const uint8_t* data, int si
     while (contentStart < lineBufLen && lineBuf[contentStart] == ' ')
       contentStart++;
 
-    // Adjust indentation
-    if (nextCount > 0) {
-      indentLevel -= nextCount;
+    // A line can both open and close loops (FOR I = 1 TO 5 : NEXT). Only the
+    // unmatched ones may change the indent: dedent for NEXTs this line did not
+    // open, and indent what follows for FORs it did not close. Applying the raw
+    // counts separately let the clamp at zero swallow the decrement, so a
+    // self-contained FOR/NEXT line left every following line indented.
+    const int unmatchedNext = nextCount > forCount ? nextCount - forCount : 0;
+    const int unmatchedFor = forCount > nextCount ? forCount - nextCount : 0;
+
+    if (unmatchedNext > 0) {
+      indentLevel -= unmatchedNext;
       if (indentLevel < 0) indentLevel = 0;
     }
 
@@ -413,9 +425,7 @@ const char* BasicDetokenizer::detokenizeIntegerBasic(const uint8_t* data, int si
     for (int i = contentStart; i < lineBufLen && outputLen_ < MAX_OUTPUT - 1; i++)
       appendChar(lineBuf[i]);
 
-    if (forCount > 0) {
-      indentLevel += forCount;
-    }
+    indentLevel += unmatchedFor;
 
     offset += lineLength;
   }

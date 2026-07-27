@@ -295,3 +295,91 @@ TEST_CASE("detokenizeApplesoft emits lines past 4096", "[basic][applesoft][limit
     // The last line must actually be present, not truncated away.
     CHECK(output.find(" 5000 END") != std::string::npos);
 }
+
+// ============================================================================
+// Applesoft: FOR/NEXT indentation
+// ============================================================================
+
+TEST_CASE("detokenizeApplesoft does not indent after a self-contained FOR/NEXT",
+          "[basic][applesoft][indent]") {
+    // 10 FOR AD = 1 TO 5 : NEXT
+    // 20 PRINT
+    // The loop opens and closes on line 10, so line 20 must sit at column zero.
+    // Previously the NEXT decrement was clamped at zero before the FOR
+    // increment was applied, leaving every following line indented forever.
+    ApplesoftProgramBuilder builder;
+    builder.addLine(10, std::vector<uint8_t>{
+        0x81, 'A', 'D', 0xD0, '1', 0xC1, '5', 0x3A, 0x82}); // FOR AD=1 TO 5 : NEXT
+    builder.addLine(20, std::vector<uint8_t>{0xBA});         // PRINT
+
+    auto data = builder.build();
+    std::string out(BasicDetokenizer::detokenizeApplesoft(
+        data.data(), static_cast<int>(data.size()), false));
+
+    // Take the text after the 5-wide line number and its single separator space.
+    const auto secondLine = out.substr(out.find('\n') + 1);
+    const auto body = secondLine.substr(6);
+
+    CHECK(body.rfind("PRINT", 0) == 0);
+}
+
+TEST_CASE("detokenizeApplesoft still indents inside an open FOR",
+          "[basic][applesoft][indent]") {
+    // 10 FOR I = 1 TO 5
+    // 20 PRINT
+    // 30 NEXT
+    // Line 20 is inside the loop and must be indented; line 30 closes it.
+    ApplesoftProgramBuilder builder;
+    builder.addLine(10, std::vector<uint8_t>{0x81, 'I', 0xD0, '1', 0xC1, '5'});
+    builder.addLine(20, std::vector<uint8_t>{0xBA});
+    builder.addLine(30, std::vector<uint8_t>{0x82});
+
+    auto data = builder.build();
+    std::string out(BasicDetokenizer::detokenizeApplesoft(
+        data.data(), static_cast<int>(data.size()), false));
+
+    std::vector<std::string> lines;
+    size_t pos = 0;
+    while (pos <= out.size()) {
+        const auto nl = out.find('\n', pos);
+        lines.push_back(out.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+
+    REQUIRE(lines.size() == 3);
+    CHECK(lines[1].substr(6).rfind("   PRINT", 0) == 0); // indented one level
+    CHECK(lines[2].substr(6).rfind("NEXT", 0) == 0);     // back to column zero
+}
+
+TEST_CASE("detokenizeApplesoft handles nested loops closing on one line",
+          "[basic][applesoft][indent]") {
+    // 10 FOR I = 1 TO 2 : FOR J = 1 TO 2
+    // 20 PRINT
+    // 30 NEXT J : NEXT I
+    // 40 END
+    // Line 20 sits two levels in; line 40 must return to column zero.
+    ApplesoftProgramBuilder builder;
+    builder.addLine(10, std::vector<uint8_t>{
+        0x81, 'I', 0xD0, '1', 0xC1, '2', 0x3A, 0x81, 'J', 0xD0, '1', 0xC1, '2'});
+    builder.addLine(20, std::vector<uint8_t>{0xBA});
+    builder.addLine(30, std::vector<uint8_t>{0x82, 'J', 0x3A, 0x82, 'I'});
+    builder.addLine(40, std::vector<uint8_t>{0x80});
+
+    auto data = builder.build();
+    std::string out(BasicDetokenizer::detokenizeApplesoft(
+        data.data(), static_cast<int>(data.size()), false));
+
+    std::vector<std::string> lines;
+    size_t pos = 0;
+    while (pos <= out.size()) {
+        const auto nl = out.find('\n', pos);
+        lines.push_back(out.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+
+    REQUIRE(lines.size() == 4);
+    CHECK(lines[1].substr(6).rfind("      PRINT", 0) == 0); // two levels
+    CHECK(lines[3].substr(6).rfind("END", 0) == 0);         // fully unwound
+}
