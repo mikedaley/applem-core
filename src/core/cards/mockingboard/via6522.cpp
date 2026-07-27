@@ -7,9 +7,7 @@
 
 #include "via6522.hpp"
 #include "ay8910.hpp"
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
+#include "../../debug/debug_log.hpp"
 
 namespace a2e {
 
@@ -323,13 +321,9 @@ void VIA6522::updatePSG() {
     if (resetActive && !wasResetActive) {
         // Reset just became active - reset the PSG
         psg_->reset();
-#ifdef __EMSCRIPTEN__
         if (viaDebugLogging_) {
-            EM_ASM({
-                console.log("VIA" + $0 + ": PSG RESET asserted");
-            }, viaId_);
+            debugLog("VIA%d: PSG RESET asserted", viaId_);
         }
-#endif
     }
 
     // Only perform PSG operations on state TRANSITIONS
@@ -340,13 +334,10 @@ void VIA6522::updatePSG() {
     uint8_t prevControl = prevPsgControl_;
     prevPsgControl_ = control;
 
-#ifdef __EMSCRIPTEN__
     if (viaDebugLogging_) {
-        EM_ASM({
-            console.log("VIA" + $4 + ": ctrl " + $0 + "->" + $1 + " ORA=0x" + $2.toString(16) + " DDRA=0x" + $3.toString(16));
-        }, prevControl, control, ora_, ddra_, viaId_);
+        debugLog("VIA%d: ctrl %d->%d ORA=0x%X DDRA=0x%X", viaId_, prevControl,
+                 control, ora_, ddra_);
     }
-#endif
 
     // Compute PSG function from control bits: BC1=bit0, BDIR=bit1
     // 0b00=INACTIVE, 0b01=READ, 0b10=WRITE, 0b11=LATCH
@@ -384,13 +375,9 @@ void VIA6522::updatePSG() {
             psgAddressLatched_ = true;
         } else {
             psgAddressLatched_ = false;
-#ifdef __EMSCRIPTEN__
             if (viaDebugLogging_) {
-                EM_ASM({
-                    console.log("VIA: Rejected invalid address 0x" + $0.toString(16).toUpperCase());
-                }, addr);
+                debugLog("VIA: Rejected invalid address 0x%X", addr);
             }
-#endif
         }
         return;
     }
@@ -400,13 +387,10 @@ void VIA6522::updatePSG() {
         if (psgAddressLatched_) {
             psg_->writeRegister(ora_ & ddra_);
         } else {
-#ifdef __EMSCRIPTEN__
             if (viaDebugLogging_) {
-                EM_ASM({
-                    console.log("VIA: Write rejected - no address latched, data=0x" + $0.toString(16).toUpperCase());
-                }, ora_ & ddra_);
+                debugLog("VIA: Write rejected - no address latched, data=0x%X",
+                         ora_ & ddra_);
             }
-#endif
         }
         return;
     }

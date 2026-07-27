@@ -23,6 +23,7 @@ set(CORE_SOURCES
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
     src/core/cards/mockingboard/ay8910.cpp
+    src/core/debug/debug_log.cpp
     src/core/cards/mockingboard/via6522.cpp
     src/core/cards/mockingboard/mockingboard_card.cpp
     src/core/cards/disk2/disk2_card.cpp
@@ -434,6 +435,7 @@ else()
         src/core/input/keyboard.cpp
         src/core/disassembler/disassembler.cpp
         src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/mockingboard_card.cpp
         src/core/cards/disk2/disk2_card.cpp
@@ -549,6 +551,7 @@ else()
         src/core/cards/mockingboard/mockingboard_card.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
     )
 
     # Keyboard (only keyboard.cpp)
@@ -561,6 +564,7 @@ else()
     add_catch2_test(test_ay8910
         tests/unit/test_ay8910.cpp
         src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
     )
 
     # VIA 6522 (via6522.cpp + ay8910.cpp since VIA connects to PSG)
@@ -568,6 +572,7 @@ else()
         tests/unit/test_via6522.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
     )
 
     # Block device (only block_device.cpp)
@@ -647,6 +652,7 @@ else()
         src/core/cards/mockingboard/mockingboard_card.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
     )
 
     # Thunderclock (Catch2 version)
@@ -707,6 +713,7 @@ else()
         src/core/cards/smartport/block_device.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -770,6 +777,12 @@ else()
     add_catch2_test(test_condition_evaluator
         tests/unit/test_condition_evaluator.cpp
         ${CORE_TEST_SOURCES}
+    )
+
+    # Debug log sink (only debug_log.cpp)
+    add_catch2_test(test_debug_log
+        tests/unit/test_debug_log.cpp
+        src/core/debug/debug_log.cpp
     )
 
 endif()

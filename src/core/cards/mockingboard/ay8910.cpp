@@ -7,9 +7,7 @@
 
 #include "ay8910.hpp"
 #include <cmath>
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
+#include "../../debug/debug_log.hpp"
 
 namespace a2e {
 
@@ -90,18 +88,10 @@ void AY8910::writeRegister(uint8_t value) {
     // Apply register write immediately
     applyRegisterWrite(currentRegister_, value);
 
-#ifdef __EMSCRIPTEN__
     if (debugLogging_) {
-        const char* regName = getRegisterName(currentRegister_);
-        EM_ASM({
-            const reg = $0;
-            const val = $1;
-            const regName = UTF8ToString($2);
-            const psgId = $3;
-            console.log(`PSG${psgId}: R${reg} (${regName}) = $${val.toString(16).toUpperCase().padStart(2,'0')} (${val})`);
-        }, currentRegister_, value, regName, psgId_);
+        debugLog("PSG%d: R%d (%s) = $%02X (%d)", psgId_, currentRegister_,
+                 getRegisterName(currentRegister_), value, value);
     }
-#endif
 }
 
 void AY8910::applyRegisterWrite(uint8_t reg, uint8_t value) {
