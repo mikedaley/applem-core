@@ -223,6 +223,26 @@ int Emulator::getBasicStatementIndex() {
   return countColonsBetween(lineStart, txtptr);
 }
 
+int Emulator::getBasicStatementCountForLine(uint16_t lineNumber) {
+  const uint16_t lineStart = findCurrentLineStart(lineNumber);
+
+  // An unknown line still has one statement as far as the UI is concerned.
+  if (lineStart == 0) return 1;
+
+  // countColonsBetween stops at the line's NUL terminator, so an end address
+  // beyond any possible line body scans exactly one whole line.
+  return countColonsBetween(lineStart, 0xBFFF) + 1;
+}
+
+int Emulator::getBasicStatementIndexForLine(uint16_t lineNumber, uint16_t txtptr) {
+  const uint16_t lineStart = findCurrentLineStart(lineNumber);
+
+  // Before the line's text begins, execution is still on its first statement.
+  if (lineStart == 0 || txtptr < lineStart) return 0;
+
+  return countColonsBetween(lineStart, txtptr);
+}
+
 int Emulator::countColonsBetween(uint16_t lineStart, uint16_t txtptr) {
   // If TXTPTR is at or before line start, we're at statement 0
   if (lineStart == 0 || txtptr <= lineStart) return 0;
