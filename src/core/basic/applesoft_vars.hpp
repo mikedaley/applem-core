@@ -20,8 +20,14 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
 
 namespace a2e {
+
+/** Reads one byte of emulated memory. Matches basic_tokenizer's convention. */
+using VarMemReadFn = std::function<uint8_t(uint16_t)>;
 
 /** Applesoft variable types, as encoded in the high bits of the name bytes. */
 enum class BasicVarType { Real, Integer, String };
@@ -68,6 +74,60 @@ public:
 
   /** Decode a 2-byte big-endian Applesoft integer as signed. */
   static int32_t decodeInteger(uint8_t high, uint8_t low);
+};
+
+/** One simple (non-array) variable, with its value already decoded. */
+struct BasicVariableInfo {
+  std::string name;
+  BasicVarType type = BasicVarType::Real;
+  uint16_t address = 0;
+  double realValue = 0.0;  // Real
+  int32_t intValue = 0;    // Integer
+  std::string stringValue; // String
+};
+
+/** One array variable, with every element decoded. */
+struct BasicArrayInfo {
+  std::string name;
+  BasicVarType type = BasicVarType::Real;
+  uint16_t address = 0;
+  uint16_t totalSize = 0;
+  uint8_t numDims = 0;
+  std::vector<uint16_t> dimensions;
+  uint32_t elementCount = 0;
+  // Only the vector matching `type` is populated.
+  std::vector<double> realValues;
+  std::vector<int32_t> intValues;
+  std::vector<std::string> stringValues;
+};
+
+/**
+ * Walks Applesoft's variable and array tables in emulated memory.
+ *
+ * Applesoft lays these out as two contiguous regions: simple variables from
+ * VARTAB ($69) to ARYTAB ($6B), each a fixed seven bytes, then arrays from
+ * ARYTAB to STREND ($6D), each self-describing via a total-size field.
+ *
+ * Reading them here rather than in the debugger UI keeps the format knowledge
+ * next to the interpreter it belongs to, and collapses what used to be one
+ * memory read per byte of array data into a single call.
+ */
+class ApplesoftVarReader {
+public:
+  /**
+   * Arrays can address far more elements than a debugger can usefully show, and
+   * a corrupt header can claim an absurd count, so enumeration stops here.
+   */
+  static constexpr uint32_t MAX_ARRAY_ELEMENTS = 10000;
+
+  /** Read all simple variables between VARTAB and ARYTAB. */
+  static std::vector<BasicVariableInfo> readVariables(const VarMemReadFn &read);
+
+  /** Read all arrays between ARYTAB and STREND, including element values. */
+  static std::vector<BasicArrayInfo> readArrays(const VarMemReadFn &read);
+
+  /** Read a string body, masking off the high bit Applesoft leaves set. */
+  static std::string readString(const VarMemReadFn &read, uint16_t ptr, uint8_t length);
 };
 
 } // namespace a2e

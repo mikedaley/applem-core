@@ -321,6 +321,25 @@ if(EMSCRIPTEN)
                 \"_getSmartPortActivityWrite\", \
                 \"_clearSmartPortActivity\", \
                 \"_loadBasicProgram\", \
+                \"_refreshBasicVariables\", \
+                \"_getBasicVariableName\", \
+                \"_getBasicVariableType\", \
+                \"_getBasicVariableAddress\", \
+                \"_getBasicVariableReal\", \
+                \"_getBasicVariableInt\", \
+                \"_getBasicVariableString\", \
+                \"_refreshBasicArrays\", \
+                \"_getBasicArrayName\", \
+                \"_getBasicArrayType\", \
+                \"_getBasicArrayAddress\", \
+                \"_getBasicArrayNumDims\", \
+                \"_getBasicArrayDim\", \
+                \"_getBasicArrayElementCount\", \
+                \"_getBasicArrayReals\", \
+                \"_getBasicArrayInts\", \
+                \"_getBasicArrayStrings\", \
+                \"_getBasicArrayStringsSize\", \
+                \"_writeApplesoftFloat\", \
                 \"_generateStereoAudioSamples\", \
                 \"_setAudioVolume\", \
                 \"_setAudioMuted\", \
