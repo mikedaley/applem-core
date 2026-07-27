@@ -45,6 +45,7 @@ set(CORE_SOURCES
     src/core/cards/softcard/z80/z80_opcodes_ddcb.cpp
     src/core/cards/softcard/z80/z80_opcodes_fdcb.cpp
     src/core/noslot_clock.cpp
+    src/core/basic/applesoft_vars.cpp
     src/core/debug/condition_evaluator.cpp
     src/core/filesystem/dos33.cpp
     src/core/filesystem/prodos.cpp
@@ -457,6 +458,7 @@ else()
         src/core/cards/softcard/z80/z80_opcodes_ddcb.cpp
         src/core/cards/softcard/z80/z80_opcodes_fdcb.cpp
         src/core/noslot_clock.cpp
+        src/core/basic/applesoft_vars.cpp
         src/core/debug/condition_evaluator.cpp
         src/core/filesystem/dos33.cpp
         src/core/filesystem/prodos.cpp
@@ -783,6 +785,12 @@ else()
     add_catch2_test(test_debug_log
         tests/unit/test_debug_log.cpp
         src/core/debug/debug_log.cpp
+    )
+
+    # Applesoft variable representation (only applesoft_vars.cpp)
+    add_catch2_test(test_applesoft_vars
+        tests/unit/test_applesoft_vars.cpp
+        src/core/basic/applesoft_vars.cpp
     )
 
 endif()
