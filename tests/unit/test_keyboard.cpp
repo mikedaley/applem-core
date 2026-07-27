@@ -260,3 +260,123 @@ TEST_CASE("Shift+number produces correct symbols", "[keyboard][shift_symbols]") 
     CHECK(kb.handleKeyDown(48, true, false, false, false, false) == 0x29); // 0 -> )
     CHECK(kb.handleKeyDown(57, true, false, false, false, false) == 0x28); // 9 -> (
 }
+
+// ============================================================================
+// Apple buttons from the Alt keys
+//
+// Both Alt keys report browser keycode 18, so the location is the only thing
+// separating Open Apple from Closed Apple. The button states are derived from
+// which modifiers are held rather than toggled directly, so a key-up naming
+// the wrong side cannot leave a button stuck on.
+// ============================================================================
+
+namespace {
+
+constexpr int ALT = 18;
+constexpr int LEFT = Keyboard::LOCATION_LEFT;
+constexpr int RIGHT = Keyboard::LOCATION_RIGHT;
+constexpr int STANDARD = Keyboard::LOCATION_STANDARD;
+
+// handleKeyDown(keycode, shift, ctrl, alt, meta, capsLock, location)
+void altDown(Keyboard& kb, int location) {
+    kb.handleKeyDown(ALT, false, false, true, false, false, location);
+}
+
+// handleKeyUp(keycode, shift, ctrl, alt, meta, location)
+void altUp(Keyboard& kb, int location, bool anyAltStillHeld) {
+    kb.handleKeyUp(ALT, false, false, anyAltStillHeld, false, location);
+}
+
+} // namespace
+
+TEST_CASE("left Alt is Open Apple and right Alt is Closed Apple", "[keyboard][buttons]") {
+    Keyboard kb;
+
+    altDown(kb, LEFT);
+    CHECK(kb.isOpenApplePressed());
+    CHECK_FALSE(kb.isClosedApplePressed());
+
+    altUp(kb, LEFT, false);
+    kb.releaseModifiers();
+
+    altDown(kb, RIGHT);
+    CHECK_FALSE(kb.isOpenApplePressed());
+    CHECK(kb.isClosedApplePressed());
+}
+
+TEST_CASE("an unspecified Alt location is treated as the left key", "[keyboard][buttons]") {
+    Keyboard kb;
+
+    // Falling back to left keeps Open Apple working rather than silently
+    // producing Closed Apple on an event that did not report a side.
+    altDown(kb, STANDARD);
+
+    CHECK(kb.isOpenApplePressed());
+    CHECK_FALSE(kb.isClosedApplePressed());
+}
+
+TEST_CASE("releasing one Alt leaves the other held", "[keyboard][buttons]") {
+    Keyboard kb;
+
+    altDown(kb, LEFT);
+    altDown(kb, RIGHT);
+    REQUIRE(kb.isOpenApplePressed());
+    REQUIRE(kb.isClosedApplePressed());
+
+    // Left goes up while right is still down.
+    altUp(kb, LEFT, true);
+
+    CHECK_FALSE(kb.isOpenApplePressed());
+    CHECK(kb.isClosedApplePressed());
+}
+
+TEST_CASE("a key-up naming the wrong side still clears once Alt is released",
+          "[keyboard][buttons]") {
+    Keyboard kb;
+
+    altDown(kb, LEFT);
+    altDown(kb, RIGHT);
+
+    // Both releases arrive claiming the same side, which hosts do when two
+    // instances of a modifier are held. The first mis-attributes...
+    altUp(kb, LEFT, true);
+    // ...but the last one reports no Alt remaining, which is authoritative.
+    altUp(kb, LEFT, false);
+
+    CHECK_FALSE(kb.isOpenApplePressed());
+    CHECK_FALSE(kb.isClosedApplePressed());
+}
+
+TEST_CASE("Meta keys drive Closed Apple independently of Alt", "[keyboard][buttons]") {
+    Keyboard kb;
+
+    kb.handleKeyDown(91, false, false, false, true, false);
+    CHECK(kb.isClosedApplePressed());
+
+    // Right Alt also held: releasing Meta must not clear the button.
+    altDown(kb, RIGHT);
+    kb.handleKeyUp(91, false, false, true, false);
+
+    CHECK(kb.isClosedApplePressed());
+}
+
+TEST_CASE("releaseModifiers drops every held button", "[keyboard][buttons]") {
+    Keyboard kb;
+
+    altDown(kb, LEFT);
+    altDown(kb, RIGHT);
+    kb.handleKeyDown(91, false, false, true, true, false);
+
+    // A key held while the host loses focus never delivers its key-up.
+    kb.releaseModifiers();
+
+    CHECK_FALSE(kb.isOpenApplePressed());
+    CHECK_FALSE(kb.isClosedApplePressed());
+}
+
+TEST_CASE("Alt keys generate no character", "[keyboard][buttons]") {
+    Keyboard kb;
+
+    CHECK(kb.handleKeyDown(ALT, false, false, true, false, false, LEFT) == -1);
+    CHECK(kb.handleKeyDown(ALT, false, false, true, false, false, RIGHT) == -1);
+}

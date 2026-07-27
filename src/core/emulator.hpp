@@ -61,9 +61,12 @@ public:
 
   // Input - raw browser keycodes (preferred)
   int handleRawKeyDown(int browserKeycode, bool shift, bool ctrl, bool alt,
-                       bool meta, bool capsLock);
+                       bool meta, bool capsLock, int keyLocation = 0);
   void handleRawKeyUp(int browserKeycode, bool shift, bool ctrl, bool alt,
-                      bool meta);
+                      bool meta, int keyLocation = 0);
+
+  /** Release every held modifier — for when the host loses keyboard focus. */
+  void releaseModifiers();
 
   // Input - direct Apple II keycodes (for paste functionality)
   void keyDown(int keycode);
