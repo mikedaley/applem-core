@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using namespace a2e;
 
@@ -177,4 +178,166 @@ TEST_CASE("decodeInteger is big-endian and signed", "[applesoft][integer]") {
   // Values at or above $8000 are negative.
   CHECK(ApplesoftVars::decodeInteger(0xFF, 0xFF) == -1);
   CHECK(ApplesoftVars::decodeInteger(0x80, 0x00) == -32768);
+}
+
+// ============================================================================
+// Table walking
+// ============================================================================
+
+namespace {
+
+/** A 64K memory image that tests can lay Applesoft tables into by hand. */
+struct FakeMemory {
+  std::vector<uint8_t> ram = std::vector<uint8_t>(0x10000, 0);
+
+  VarMemReadFn reader() {
+    return [this](uint16_t addr) { return ram[addr]; };
+  }
+
+  void writePointer(uint16_t zp, uint16_t value) {
+    ram[zp] = value & 0xFF;
+    ram[zp + 1] = (value >> 8) & 0xFF;
+  }
+
+  /** Lay down a simple variable entry: 2 name bytes + 5 value bytes. */
+  void putVar(uint16_t addr, uint8_t b1, uint8_t b2, std::initializer_list<uint8_t> value) {
+    ram[addr] = b1;
+    ram[addr + 1] = b2;
+    int i = 0;
+    for (uint8_t v : value) ram[addr + 2 + i++] = v;
+  }
+
+  /** Applesoft stores string bodies with the high bit set. */
+  void putString(uint16_t addr, const std::string &text) {
+    for (size_t i = 0; i < text.size(); i++) {
+      ram[addr + i] = static_cast<uint8_t>(text[i]) | 0x80;
+    }
+  }
+};
+
+constexpr uint16_t VARTAB = 0x0900;
+
+} // namespace
+
+TEST_CASE("readVariables decodes each variable type", "[applesoft][reader]") {
+  FakeMemory mem;
+
+  // Three 7-byte entries: a real, an integer and a string.
+  mem.putVar(VARTAB + 0, 'A', 'B', {0x84, 0x20, 0x00, 0x00, 0x00}); // AB = 10.0
+  mem.putVar(VARTAB + 7, 'C' | 0x80, 'D' | 0x80, {0xFF, 0xFF, 0, 0, 0}); // CD% = -1
+  mem.putVar(VARTAB + 14, 'E', 'F' | 0x80, {5, 0x00, 0x0A, 0, 0}); // EF$ -> $0A00, len 5
+  mem.putString(0x0A00, "HELLO");
+
+  mem.writePointer(0x69, VARTAB);
+  mem.writePointer(0x6B, VARTAB + 21); // ARYTAB
+  mem.writePointer(0x6D, VARTAB + 21); // STREND
+
+  const auto vars = ApplesoftVarReader::readVariables(mem.reader());
+
+  REQUIRE(vars.size() == 3);
+
+  CHECK(vars[0].name == "AB");
+  CHECK(vars[0].type == BasicVarType::Real);
+  CHECK(vars[0].realValue == Approx(10.0));
+  CHECK(vars[0].address == VARTAB);
+
+  CHECK(vars[1].name == "CD%");
+  CHECK(vars[1].type == BasicVarType::Integer);
+  CHECK(vars[1].intValue == -1);
+
+  CHECK(vars[2].name == "EF$");
+  CHECK(vars[2].type == BasicVarType::String);
+  CHECK(vars[2].stringValue == "HELLO");
+}
+
+TEST_CASE("readVariables stops at an empty slot", "[applesoft][reader]") {
+  FakeMemory mem;
+  mem.putVar(VARTAB, 'A', 'B', {0x81, 0, 0, 0, 0});
+  // Next entry left as zeros: a zero name byte ends the table.
+
+  mem.writePointer(0x69, VARTAB);
+  mem.writePointer(0x6B, VARTAB + 70);
+  mem.writePointer(0x6D, VARTAB + 70);
+
+  CHECK(ApplesoftVarReader::readVariables(mem.reader()).size() == 1);
+}
+
+TEST_CASE("readVariables rejects implausible pointers", "[applesoft][reader]") {
+  FakeMemory mem;
+
+  auto empty = [&] { return ApplesoftVarReader::readVariables(mem.reader()).empty(); };
+
+  mem.writePointer(0x69, 0);      mem.writePointer(0x6B, 0x1000); CHECK(empty());
+  mem.writePointer(0x69, 0x1000); mem.writePointer(0x6B, 0x1000); CHECK(empty()); // equal
+  mem.writePointer(0x69, 0x2000); mem.writePointer(0x6B, 0x1000); CHECK(empty()); // inverted
+  mem.writePointer(0x69, 0x0100); mem.writePointer(0x6B, 0x1000); CHECK(empty()); // below TXTTAB
+  mem.writePointer(0x69, 0x1000); mem.writePointer(0x6B, 0xD000); CHECK(empty()); // into I/O
+}
+
+TEST_CASE("readArrays decodes dimensions and elements", "[applesoft][reader][array]") {
+  FakeMemory mem;
+
+  // A(3): header 2 name + 2 total size + 1 numDims + 2 per dimension, then
+  // three 5-byte reals holding 1.0, 2.0 and 10.0.
+  const uint16_t base = 0x0900;
+  const uint16_t total = 5 + 2 + 3 * 5; // 22
+  mem.ram[base] = 'A';
+  mem.ram[base + 1] = 0;
+  mem.ram[base + 2] = total & 0xFF;      // total size is little-endian
+  mem.ram[base + 3] = (total >> 8) & 0xFF;
+  mem.ram[base + 4] = 1;                 // one dimension
+  mem.ram[base + 5] = 0;                 // dimension size is BIG-endian
+  mem.ram[base + 6] = 3;
+
+  const uint16_t data = base + 7;
+  const uint8_t one[] = {0x81, 0x00, 0x00, 0x00, 0x00};
+  const uint8_t two[] = {0x82, 0x00, 0x00, 0x00, 0x00};
+  const uint8_t ten[] = {0x84, 0x20, 0x00, 0x00, 0x00};
+  for (int i = 0; i < 5; i++) {
+    mem.ram[data + i] = one[i];
+    mem.ram[data + 5 + i] = two[i];
+    mem.ram[data + 10 + i] = ten[i];
+  }
+
+  mem.writePointer(0x6B, base);          // ARYTAB
+  mem.writePointer(0x6D, base + total);  // STREND
+
+  const auto arrays = ApplesoftVarReader::readArrays(mem.reader());
+
+  REQUIRE(arrays.size() == 1);
+  CHECK(arrays[0].name == "A");
+  CHECK(arrays[0].type == BasicVarType::Real);
+  CHECK(arrays[0].numDims == 1);
+  CHECK(arrays[0].dimensions == std::vector<uint16_t>{3});
+  CHECK(arrays[0].elementCount == 3);
+  REQUIRE(arrays[0].realValues.size() == 3);
+  CHECK(arrays[0].realValues[0] == Approx(1.0));
+  CHECK(arrays[0].realValues[1] == Approx(2.0));
+  CHECK(arrays[0].realValues[2] == Approx(10.0));
+}
+
+TEST_CASE("readArrays does not spin on a corrupt total size", "[applesoft][reader][array]") {
+  FakeMemory mem;
+  const uint16_t base = 0x0900;
+
+  mem.ram[base] = 'A';
+  mem.ram[base + 1] = 0;
+  mem.ram[base + 2] = 0; // total size 0 would never advance the walk
+  mem.ram[base + 3] = 0;
+  mem.ram[base + 4] = 1;
+
+  mem.writePointer(0x6B, base);
+  mem.writePointer(0x6D, base + 100);
+
+  // Must terminate rather than loop forever.
+  CHECK(ApplesoftVarReader::readArrays(mem.reader()).empty());
+}
+
+TEST_CASE("readString masks the Applesoft high bit", "[applesoft][reader][string]") {
+  FakeMemory mem;
+  mem.putString(0x0A00, "HI!");
+
+  CHECK(ApplesoftVarReader::readString(mem.reader(), 0x0A00, 3) == "HI!");
+  CHECK(ApplesoftVarReader::readString(mem.reader(), 0x0A00, 0).empty());
+  CHECK(ApplesoftVarReader::readString(mem.reader(), 0, 5).empty());
 }
