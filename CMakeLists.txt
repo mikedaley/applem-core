@@ -161,6 +161,7 @@ if(EMSCRIPTEN)
                 \"_readMemory\", \
                 \"_writeMemory\", \
                 \"_disassembleAt\", \
+                \"_disassembleRange\", \
                 \"_getSoftSwitchState\", \
                 \"_screenCodeToAscii\", \
                 \"_readScreenText\", \

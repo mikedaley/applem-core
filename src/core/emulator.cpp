@@ -254,8 +254,11 @@ void Emulator::runCycles(int cycles) {
 
       // Check temp breakpoint (step over / step out)
       if (tempBreakpointActive_ && pc == tempBreakpoint_) {
-        tempBreakpointHit_ = true;
+        // Disarm FIRST, then record the hit: clearTempBreakpoint() resets
+        // tempBreakpointHit_, so setting the flag before the call wiped it
+        // again and isTempBreakpointHit() could never report true.
         clearTempBreakpoint();
+        tempBreakpointHit_ = true;
         breakpointHit_ = true;
         breakpointAddress_ = pc;
         paused_ = true;
