@@ -575,6 +575,14 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
   breakpointHit_ = false;
   paused_ = false;
 
+  // basicProgramRunning_ is inferred from ROM entry points ($D912 RUN, $D43C
+  // RESTART), so reset() above cleared it and a state captured mid-RUN would
+  // never see $D912 again — the flag would stay false for the rest of the
+  // program. Rederive it from the restored RAM using the ROM's own direct-mode
+  // test: CURLIN+1 ($76) == $FF means we are at the ] prompt, anything else
+  // means a program is executing.
+  basicProgramRunning_ = mmu_->readRAM(0x76, false) != 0xFF;
+
   return true;
 }
 

@@ -161,3 +161,44 @@ TEST_CASE("Emulator importState rejects empty data", "[emulator][state]") {
     bool result = emu.importState(nullptr, 0);
     REQUIRE_FALSE(result);
 }
+
+// ---------------------------------------------------------------------------
+// Round-trip: BASIC running state
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emulator state round-trip restores BASIC running flag", "[emulator][state][basic]") {
+    Emulator emu;
+    emu.init();
+
+    // basicProgramRunning_ is normally set by the $D912 ROM hook, which a
+    // restored mid-RUN state will never cross again. Stand in for that by
+    // setting CURLIN ($75/$76) to a real line number, as the ROM does while a
+    // program executes.
+    emu.writeMemory(0x0075, 0x0A);  // CURLIN lo = line 10
+    emu.writeMemory(0x0076, 0x00);  // CURLIN hi != $FF -> not direct mode
+
+    size_t size = 0;
+    const uint8_t* data = emu.exportState(&size);
+    std::vector<uint8_t> stateCopy(data, data + size);
+
+    emu.reset();
+    REQUIRE_FALSE(emu.isBasicProgramRunning());
+
+    REQUIRE(emu.importState(stateCopy.data(), stateCopy.size()));
+    REQUIRE(emu.isBasicProgramRunning());
+}
+
+TEST_CASE("Emulator state round-trip leaves BASIC idle at the prompt", "[emulator][state][basic]") {
+    Emulator emu;
+    emu.init();
+
+    // CURLIN+1 == $FF is the ROM's direct-mode marker: sitting at the ] prompt.
+    emu.writeMemory(0x0076, 0xFF);
+
+    size_t size = 0;
+    const uint8_t* data = emu.exportState(&size);
+    std::vector<uint8_t> stateCopy(data, data + size);
+
+    REQUIRE(emu.importState(stateCopy.data(), stateCopy.size()));
+    REQUIRE_FALSE(emu.isBasicProgramRunning());
+}
