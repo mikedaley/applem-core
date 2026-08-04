@@ -318,7 +318,11 @@ void WozDiskImage::createBlank() {
   }
 
   loaded_ = true;
-  modified_ = true;  // Mark as modified so it will be saved
+
+  // Deliberately NOT marked modified. Creating the disk is not a change to it:
+  // a blank disk nobody has written to holds nothing worth saving, and marking
+  // it here made every eject offer to save an empty image.
+  modified_ = false;
 }
 
 bool WozDiskImage::isLoaded() const { return loaded_; }
