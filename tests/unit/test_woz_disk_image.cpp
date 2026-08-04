@@ -115,11 +115,16 @@ TEST_CASE("WozDiskImage createBlank is not write-protected", "[woz]") {
     REQUIRE_FALSE(img.isWriteProtected());
 }
 
-TEST_CASE("WozDiskImage createBlank is marked as modified", "[woz]") {
+TEST_CASE("WozDiskImage createBlank is not modified until written", "[woz]") {
     WozDiskImage img;
     img.createBlank();
 
-    // createBlank marks the image as modified so it will be saved
+    // Creating a disk is not a change to it. A blank disk nobody has written
+    // to holds nothing worth saving, and marking it modified here made every
+    // eject offer to save an empty image.
+    REQUIRE_FALSE(img.isModified());
+
+    img.writeBit(1);
     REQUIRE(img.isModified());
 }
 
