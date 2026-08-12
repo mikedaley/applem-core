@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdio>
 #include <unordered_set>
+#include <vector>
 
 namespace a2e {
 
@@ -23,8 +24,8 @@ void ProDOS::readBlock(const uint8_t* data, size_t size, int blockNum,
     int prodosSector1 = blockInTrack * 2;
     int prodosSector2 = blockInTrack * 2 + 1;
 
-    int sector1 = dosOrder ? PRODOS_TO_DOS_SECTOR[prodosSector1] : prodosSector1;
-    int sector2 = dosOrder ? PRODOS_TO_DOS_SECTOR[prodosSector2] : prodosSector2;
+    int sector1 = dosOrder ? GCR::PRODOS_TO_DOS_SECTOR[prodosSector1] : prodosSector1;
+    int sector2 = dosOrder ? GCR::PRODOS_TO_DOS_SECTOR[prodosSector2] : prodosSector2;
 
     int offset1 = (track * 16 + sector1) * 256;
     int offset2 = (track * 16 + sector2) * 256;
@@ -354,6 +355,346 @@ int ProDOS::mapFileTypeForViewer(uint8_t prodosType) {
     case 0xFF: return 0x04; // SYS -> Binary
     default:   return -1;
   }
+}
+
+// ============================================================================
+// Writing
+// ============================================================================
+
+void ProDOS::writeBlock(uint8_t* data, size_t size, int blockNum,
+                        bool dosOrder, const uint8_t* in) {
+  if (blockNum < 0) return;
+
+  if (size <= static_cast<size_t>(DISK_140K_SIZE)) {
+    int track = blockNum / 8;
+    int blockInTrack = blockNum % 8;
+    int prodosSector1 = blockInTrack * 2;
+    int prodosSector2 = blockInTrack * 2 + 1;
+
+    int sector1 = dosOrder ? GCR::PRODOS_TO_DOS_SECTOR[prodosSector1] : prodosSector1;
+    int sector2 = dosOrder ? GCR::PRODOS_TO_DOS_SECTOR[prodosSector2] : prodosSector2;
+
+    int offset1 = (track * 16 + sector1) * 256;
+    int offset2 = (track * 16 + sector2) * 256;
+
+    if (offset1 >= 0 && offset1 + 256 <= static_cast<int>(size)) {
+      memcpy(data + offset1, in, 256);
+    }
+    if (offset2 >= 0 && offset2 + 256 <= static_cast<int>(size)) {
+      memcpy(data + offset2, in + 256, 256);
+    }
+  } else {
+    int offset = blockNum * BLOCK_SIZE;
+    if (offset >= 0 && offset + BLOCK_SIZE <= static_cast<int>(size)) {
+      memcpy(data + offset, in, BLOCK_SIZE);
+    }
+  }
+}
+
+bool ProDOS::isBlockFree(const uint8_t* data, size_t size, bool dosOrder,
+                         int bitmapBlock, int blockNum) {
+  int blocksPerBitmapBlock = BLOCK_SIZE * 8;
+  int whichBlock = bitmapBlock + blockNum / blocksPerBitmapBlock;
+  int indexInBlock = blockNum % blocksPerBitmapBlock;
+
+  uint8_t bitmap[BLOCK_SIZE];
+  readBlock(data, size, whichBlock, dosOrder, bitmap);
+  return (bitmap[indexInBlock / 8] >> (7 - (indexInBlock % 8))) & 1;
+}
+
+void ProDOS::setBlockAllocated(uint8_t* data, size_t size, bool dosOrder,
+                               int bitmapBlock, int blockNum, bool allocated) {
+  int blocksPerBitmapBlock = BLOCK_SIZE * 8;
+  int whichBlock = bitmapBlock + blockNum / blocksPerBitmapBlock;
+  int indexInBlock = blockNum % blocksPerBitmapBlock;
+
+  uint8_t bitmap[BLOCK_SIZE];
+  readBlock(data, size, whichBlock, dosOrder, bitmap);
+  uint8_t mask = static_cast<uint8_t>(1 << (7 - (indexInBlock % 8)));
+  if (allocated) {
+    bitmap[indexInBlock / 8] &= static_cast<uint8_t>(~mask);
+  } else {
+    bitmap[indexInBlock / 8] |= mask;
+  }
+  writeBlock(data, size, whichBlock, dosOrder, bitmap);
+}
+
+bool ProDOS::allocateBlock(uint8_t* data, size_t size, bool dosOrder,
+                           int bitmapBlock, int totalBlocks, int* blockNum) {
+  for (int b = 0; b < totalBlocks; b++) {
+    if (isBlockFree(data, size, dosOrder, bitmapBlock, b)) {
+      setBlockAllocated(data, size, dosOrder, bitmapBlock, b, true);
+      *blockNum = b;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ProDOS::normaliseFilename(const char* filename, char* out, int maxLen) {
+  if (!filename || maxLen < MAX_PRODOS_NAME + 1) return false;
+
+  int len = 0;
+  for (const char* p = filename; *p; p++) {
+    char c = *p;
+    if (len >= MAX_PRODOS_NAME) return false;
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+
+    bool isLetter = (c >= 'A' && c <= 'Z');
+    bool isDigit = (c >= '0' && c <= '9');
+    bool isPeriod = (c == '.');
+    // ProDOS names are letters, digits and periods, and must start with a
+    // letter — a name outside that set cannot be typed at a ProDOS prompt.
+    if (!isLetter && !isDigit && !isPeriod) return false;
+    if (len == 0 && !isLetter) return false;
+
+    out[len++] = c;
+  }
+
+  if (len == 0) return false;
+  out[len] = '\0';
+  return true;
+}
+
+void ProDOS::freeFileBlocks(uint8_t* data, size_t size, bool dosOrder,
+                            int bitmapBlock, uint8_t storageType,
+                            int keyBlock, uint32_t eof) {
+  auto freeIndexed = [&](int indexBlock, int maxEntries) {
+    uint8_t index[BLOCK_SIZE];
+    readBlock(data, size, indexBlock, dosOrder, index);
+    for (int i = 0; i < maxEntries; i++) {
+      int block = index[i] | (index[i + 256] << 8);
+      if (block != 0) setBlockAllocated(data, size, dosOrder, bitmapBlock, block, false);
+    }
+    setBlockAllocated(data, size, dosOrder, bitmapBlock, indexBlock, false);
+  };
+
+  switch (storageType) {
+    case STORAGE_SEEDLING:
+      setBlockAllocated(data, size, dosOrder, bitmapBlock, keyBlock, false);
+      break;
+    case STORAGE_SAPLING:
+      freeIndexed(keyBlock, 256);
+      break;
+    case STORAGE_TREE: {
+      uint8_t master[BLOCK_SIZE];
+      readBlock(data, size, keyBlock, dosOrder, master);
+      for (int i = 0; i < 128; i++) {
+        int indexBlock = master[i] | (master[i + 256] << 8);
+        if (indexBlock != 0) freeIndexed(indexBlock, 256);
+      }
+      setBlockAllocated(data, size, dosOrder, bitmapBlock, keyBlock, false);
+      break;
+    }
+    default:
+      break;
+  }
+  (void)eof;
+}
+
+FsWriteStatus ProDOS::writeFile(uint8_t* data, size_t size, const char* filename,
+                                uint8_t fileType, uint16_t auxType,
+                                const uint8_t* fileData, uint32_t fileLen) {
+  if (size < static_cast<size_t>(DISK_140K_SIZE)) return FsWriteStatus::ImageTooSmall;
+
+  bool dosOrder = false;
+  if (!detectSectorOrder(data, size, &dosOrder)) return FsWriteStatus::NotFormatted;
+
+  char name[MAX_PRODOS_NAME + 1];
+  if (!normaliseFilename(filename, name, sizeof(name))) return FsWriteStatus::InvalidName;
+  int nameLen = static_cast<int>(strlen(name));
+
+  uint8_t header[BLOCK_SIZE];
+  readBlock(data, size, VOLUME_DIR_BLOCK, dosOrder, header);
+  int bitmapBlock = header[0x27] | (header[0x28] << 8);
+  int totalBlocks = header[0x29] | (header[0x2A] << 8);
+  int imageBlocks = static_cast<int>(size / BLOCK_SIZE);
+  if (totalBlocks <= 0 || totalBlocks > imageBlocks) totalBlocks = imageBlocks;
+  if (bitmapBlock <= 0 || bitmapBlock >= totalBlocks) return FsWriteStatus::NotFormatted;
+
+  // Seedling holds one block; sapling adds an index block addressing up to 256
+  // data blocks. Beyond that a tree file would be needed, which nothing this
+  // writer is used for produces.
+  const uint32_t MAX_SAPLING_BYTES = 256u * BLOCK_SIZE;
+  if (fileLen > MAX_SAPLING_BYTES) return FsWriteStatus::FileTooLarge;
+
+  uint32_t dataBlockCount = (fileLen + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  if (dataBlockCount == 0) dataBlockCount = 1;
+  bool sapling = dataBlockCount > 1;
+
+  // ------------------------------------------------------------------
+  // Find the entry to use: same name replaces in place, otherwise the first
+  // free slot in the (fixed-size) volume directory.
+  // ------------------------------------------------------------------
+  int entryBlock = 0, entryOffset = 0;
+  int freeBlockNum = 0, freeOffset = 0;
+  bool replacing = false;
+
+  {
+    int blockNum = VOLUME_DIR_BLOCK;
+    int guard = 0;
+    while (blockNum != 0 && guard++ < 64) {
+      uint8_t block[BLOCK_SIZE];
+      readBlock(data, size, blockNum, dosOrder, block);
+      int nextBlock = block[0x02] | (block[0x03] << 8);
+
+      int firstEntry = (blockNum == VOLUME_DIR_BLOCK) ? 1 : 0;
+      for (int i = firstEntry; i < ENTRIES_PER_BLOCK; i++) {
+        int offset = 0x04 + i * ENTRY_LENGTH;
+        const uint8_t* entry = block + offset;
+        uint8_t storageType = (entry[0x00] >> 4) & 0x0F;
+        int entryNameLen = entry[0x00] & 0x0F;
+
+        if (storageType == STORAGE_DELETED || entryNameLen == 0) {
+          if (freeBlockNum == 0) {
+            freeBlockNum = blockNum;
+            freeOffset = offset;
+          }
+          continue;
+        }
+
+        if (entryNameLen == nameLen &&
+            memcmp(entry + 0x01, name, static_cast<size_t>(nameLen)) == 0) {
+          if (storageType == STORAGE_SUBDIR) return FsWriteStatus::FileLocked;
+          if ((entry[0x1E] & 0x02) == 0) return FsWriteStatus::FileLocked;
+          entryBlock = blockNum;
+          entryOffset = offset;
+          replacing = true;
+          break;
+        }
+      }
+      if (replacing) break;
+      blockNum = nextBlock;
+    }
+  }
+
+  if (!replacing) {
+    if (freeBlockNum == 0) return FsWriteStatus::DirectoryFull;
+    entryBlock = freeBlockNum;
+    entryOffset = freeOffset;
+  }
+
+  // Only the bitmap changes before the point of no return, so backing it up is
+  // enough to undo a half-finished allocation on a full disk.
+  int bitmapBlockCount = (totalBlocks + BLOCK_SIZE * 8 - 1) / (BLOCK_SIZE * 8);
+  std::vector<uint8_t> bitmapBackup(static_cast<size_t>(bitmapBlockCount) * BLOCK_SIZE);
+  for (int i = 0; i < bitmapBlockCount; i++) {
+    readBlock(data, size, bitmapBlock + i, dosOrder,
+              bitmapBackup.data() + static_cast<size_t>(i) * BLOCK_SIZE);
+  }
+
+  auto restoreBitmap = [&]() {
+    for (int i = 0; i < bitmapBlockCount; i++) {
+      writeBlock(data, size, bitmapBlock + i, dosOrder,
+                 bitmapBackup.data() + static_cast<size_t>(i) * BLOCK_SIZE);
+    }
+  };
+
+  // Reclaim the replaced file's blocks first, so a rewrite at a similar size
+  // always fits and nothing is leaked.
+
+  if (replacing) {
+    uint8_t block[BLOCK_SIZE];
+    readBlock(data, size, entryBlock, dosOrder, block);
+    const uint8_t* entry = block + entryOffset;
+    freeFileBlocks(data, size, dosOrder, bitmapBlock,
+                   static_cast<uint8_t>((entry[0x00] >> 4) & 0x0F),
+                   entry[0x11] | (entry[0x12] << 8),
+                   entry[0x15] | (entry[0x16] << 8) | (entry[0x17] << 16));
+  }
+
+  // ------------------------------------------------------------------
+  // Allocate every block before writing anything the reader can see
+  // ------------------------------------------------------------------
+  std::vector<int> dataBlocks;
+  dataBlocks.reserve(dataBlockCount);
+  int indexBlock = 0;
+  bool full = false;
+
+  if (sapling && !allocateBlock(data, size, dosOrder, bitmapBlock, totalBlocks, &indexBlock)) {
+    full = true;
+  }
+  for (uint32_t i = 0; i < dataBlockCount && !full; i++) {
+    int block = 0;
+    if (allocateBlock(data, size, dosOrder, bitmapBlock, totalBlocks, &block)) {
+      dataBlocks.push_back(block);
+    } else {
+      full = true;
+    }
+  }
+
+  if (full) {
+    restoreBitmap();
+    return FsWriteStatus::DiskFull;
+  }
+
+  // ------------------------------------------------------------------
+  // Data blocks, then the index block that addresses them
+  // ------------------------------------------------------------------
+  for (size_t i = 0; i < dataBlocks.size(); i++) {
+    uint8_t block[BLOCK_SIZE];
+    memset(block, 0, BLOCK_SIZE);
+    uint32_t offset = static_cast<uint32_t>(i) * BLOCK_SIZE;
+    if (offset < fileLen) {
+      uint32_t chunk = fileLen - offset;
+      if (chunk > BLOCK_SIZE) chunk = BLOCK_SIZE;
+      memcpy(block, fileData + offset, chunk);
+    }
+    writeBlock(data, size, dataBlocks[i], dosOrder, block);
+  }
+
+  if (sapling) {
+    uint8_t index[BLOCK_SIZE];
+    memset(index, 0, BLOCK_SIZE);
+    for (size_t i = 0; i < dataBlocks.size(); i++) {
+      index[i] = static_cast<uint8_t>(dataBlocks[i] & 0xFF);
+      index[i + 256] = static_cast<uint8_t>((dataBlocks[i] >> 8) & 0xFF);
+    }
+    writeBlock(data, size, indexBlock, dosOrder, index);
+  }
+
+  // ------------------------------------------------------------------
+  // Directory entry
+  // ------------------------------------------------------------------
+  uint8_t dirBlock[BLOCK_SIZE];
+  readBlock(data, size, entryBlock, dosOrder, dirBlock);
+  uint8_t* entry = dirBlock + entryOffset;
+  memset(entry, 0, ENTRY_LENGTH);
+
+  uint8_t storageType = sapling ? STORAGE_SAPLING : STORAGE_SEEDLING;
+  int keyBlock = sapling ? indexBlock : dataBlocks[0];
+  int blocksUsed = static_cast<int>(dataBlocks.size()) + (sapling ? 1 : 0);
+
+  entry[0x00] = static_cast<uint8_t>((storageType << 4) | nameLen);
+  memcpy(entry + 0x01, name, static_cast<size_t>(nameLen));
+  entry[0x10] = fileType;
+  entry[0x11] = static_cast<uint8_t>(keyBlock & 0xFF);
+  entry[0x12] = static_cast<uint8_t>((keyBlock >> 8) & 0xFF);
+  entry[0x13] = static_cast<uint8_t>(blocksUsed & 0xFF);
+  entry[0x14] = static_cast<uint8_t>((blocksUsed >> 8) & 0xFF);
+  entry[0x15] = static_cast<uint8_t>(fileLen & 0xFF);
+  entry[0x16] = static_cast<uint8_t>((fileLen >> 8) & 0xFF);
+  entry[0x17] = static_cast<uint8_t>((fileLen >> 16) & 0xFF);
+  // Creation and modification stamps stay zero: ProDOS shows <NO DATE> rather
+  // than a wrong date, and the core has no clock of its own to ask.
+  entry[0x1E] = 0xC3; // Destroy, rename, write and read enabled
+  entry[0x1F] = static_cast<uint8_t>(auxType & 0xFF);
+  entry[0x20] = static_cast<uint8_t>((auxType >> 8) & 0xFF);
+  entry[0x25] = static_cast<uint8_t>(VOLUME_DIR_BLOCK & 0xFF);
+  entry[0x26] = static_cast<uint8_t>((VOLUME_DIR_BLOCK >> 8) & 0xFF);
+
+  writeBlock(data, size, entryBlock, dosOrder, dirBlock);
+
+  if (!replacing) {
+    readBlock(data, size, VOLUME_DIR_BLOCK, dosOrder, header);
+    int fileCount = header[0x25] | (header[0x26] << 8);
+    fileCount++;
+    header[0x25] = static_cast<uint8_t>(fileCount & 0xFF);
+    header[0x26] = static_cast<uint8_t>((fileCount >> 8) & 0xFF);
+    writeBlock(data, size, VOLUME_DIR_BLOCK, dosOrder, header);
+  }
+
+  return FsWriteStatus::OK;
 }
 
 int ProDOS::readDirectory(const uint8_t* data, size_t size,

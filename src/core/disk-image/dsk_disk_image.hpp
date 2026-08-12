@@ -47,6 +47,19 @@ public:
   // ===== Loading =====
   bool load(const uint8_t *data, size_t size,
             const std::string &filename) override;
+
+  /**
+   * Load with the sector order stated rather than detected.
+   *
+   * Format detection reads the data looking for filesystem signatures, which
+   * is right for a file whose order is unknown but wrong for data a caller has
+   * already put in a known order — a ProDOS volume laid out in DOS order can
+   * look like a ProDOS-order image to the detector.
+   *
+   * @param format Must be Format::DSK, Format::DO or Format::PO
+   */
+  bool loadAs(const uint8_t *data, size_t size, const std::string &filename,
+              Format format);
   bool isLoaded() const override { return loaded_; }
   Format getFormat() const override { return format_; }
 
@@ -71,6 +84,7 @@ public:
 
   // ===== Write Operations =====
   void writeNibble(uint8_t nibble) override;
+  bool writeSectorData(size_t offset, const uint8_t *data, size_t len) override;
 
   // ===== Bit-Level Access (for LSS) =====
   uint8_t readBit() override;
@@ -104,6 +118,19 @@ public:
    * Set the volume number for address field encoding
    */
   void setVolumeNumber(uint8_t volume) { volume_number_ = volume; }
+
+  /**
+   * Produce the GCR bit stream for a track, as a drive would read it.
+   *
+   * This is the encoding side of the same path the emulated head uses, exposed
+   * so a sector image can be converted to a bit-stream format (WOZ).
+   *
+   * @param track    Track number (0-34)
+   * @param bits     Output: packed bits, MSB first
+   * @param bitCount Output: number of valid bits (sync bytes take 10)
+   * @return true if the track was encoded
+   */
+  bool getTrackBits(int track, std::vector<uint8_t> &bits, uint32_t &bitCount);
 
 private:
   // Raw sector data storage
@@ -154,6 +181,15 @@ private:
   Format detectFormat(const std::string &filename) const;
 
   /**
+   * Follow the DOS 3.3 catalog chain, reading sectors as if the image were
+   * stored in the given order, and return how many links held up.
+   *
+   * Used to tell the two sector orders apart on a DOS 3.3 disk, whose VTOC
+   * sits at the same file offset either way.
+   */
+  int countCatalogChain(int track, int sector, bool prodosOrder) const;
+
+  /**
    * Nibblize a track from sector data
    */
   void nibblizeTrack(int track);
@@ -194,6 +230,11 @@ private:
   void ensureTrackBitified();
 
   /**
+   * Build the packed bit stream for a track from its nibbles
+   */
+  void bitifyTrack(int track);
+
+  /**
    * Decode a dirty bit track straight into sector_data_ using self-syncing
    * nibble recovery (bit7-latch) plus the shared sector scan. Replaces the old
    * fixed-frame bitTrackToNibbleTrack, which misread writes that landed off the
@@ -201,15 +242,7 @@ private:
    */
   void denibblizeBitTrack(int track);
 
-  /**
-   * Decode a 4-and-4 encoded byte pair
-   */
-  static uint8_t decode4and4(uint8_t odd, uint8_t even);
 
-  /**
-   * Decode 6-and-2 encoded data back to 256 bytes
-   */
-  static bool decode6and2(const uint8_t *encoded, uint8_t *output);
 };
 
 } // namespace a2e

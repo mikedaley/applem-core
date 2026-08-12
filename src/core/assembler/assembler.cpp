@@ -23,7 +23,7 @@ static const char* DIRECTIVES[] = {
 static const char* UNSUPPORTED_DIRECTIVES[] = {
   "PUT", "USE", "MAC", "EOM", "<<<", "DO", "ELSE", "FIN",
   "LUP", "ELUP", "--^", "OBJ", "LST", "REL", "TYP", "SAV",
-  "DSK", "CHN", "ENT", "EXT", "DUM", "DEND", "ERR", "CYC",
+  "CHN", "ENT", "EXT", "DUM", "DEND", "ERR", "CYC",
   "DAT", "EXP", "PAU", "SW", "USR", "XC", "MX", "TR",
   "KBD", "PMC", "PAG", "TTL", "SKP", "CHK", "IF", "END",
   "ADR", "ADRL", "LNK", "STR", "STRL", "REV", nullptr
@@ -722,6 +722,33 @@ int Assembler::getDirectiveSize(const std::string& directive,
 // Directive emission
 // ============================================================================
 
+void Assembler::forEachOperandValue(
+    const std::string& operand, bool& error, std::string& errorMsg,
+    int lineNumber, const std::function<void(int32_t)>& emit) {
+  const char* p = operand.c_str();
+  while (*p) {
+    skipSpaces(p);
+    if (!*p) break;
+
+    // A value runs to the next comma that is not inside parentheses
+    const char* start = p;
+    int depth = 0;
+    while (*p && (*p != ',' || depth > 0)) {
+      if (*p == '(') depth++;
+      if (*p == ')') depth--;
+      p++;
+    }
+    std::string val(start, p - start);
+    while (!val.empty() && val.back() == ' ') val.pop_back();
+
+    int32_t value = evaluateExpression(val, error, errorMsg, lineNumber);
+    if (error) return;
+    emit(value);
+
+    if (*p == ',') p++;
+  }
+}
+
 void Assembler::emitDirective(const std::string& directive,
                               const std::string& operand,
                               std::vector<uint8_t>& output,
@@ -738,84 +765,29 @@ void Assembler::emitDirective(const std::string& directive,
     return;
   }
 
+  // DFB/DB, DW/DA and DDB walk the same comma-separated expression list and
+  // differ only in how each value is laid down.
   if (directive == "DFB" || directive == "DB") {
-    // Parse comma-separated byte values
-    const char* p = operand.c_str();
-    while (*p) {
-      skipSpaces(p);
-      if (!*p) break;
-
-      // Find end of this value (next comma or end)
-      const char* start = p;
-      int depth = 0;
-      while (*p && (*p != ',' || depth > 0)) {
-        if (*p == '(') depth++;
-        if (*p == ')') depth--;
-        p++;
-      }
-      std::string val(start, p - start);
-      // Trim
-      while (!val.empty() && val.back() == ' ') val.pop_back();
-
-      int32_t v = evaluateExpression(val, error, errorMsg, lineNumber);
-      if (error) return;
+    forEachOperandValue(operand, error, errorMsg, lineNumber, [&](int32_t v) {
       output.push_back(static_cast<uint8_t>(v & 0xFF));
-
-      if (*p == ',') p++;
-    }
+    });
     return;
   }
 
   if (directive == "DW" || directive == "DA") {
-    const char* p = operand.c_str();
-    while (*p) {
-      skipSpaces(p);
-      if (!*p) break;
-
-      const char* start = p;
-      int depth = 0;
-      while (*p && (*p != ',' || depth > 0)) {
-        if (*p == '(') depth++;
-        if (*p == ')') depth--;
-        p++;
-      }
-      std::string val(start, p - start);
-      while (!val.empty() && val.back() == ' ') val.pop_back();
-
-      int32_t v = evaluateExpression(val, error, errorMsg, lineNumber);
-      if (error) return;
+    forEachOperandValue(operand, error, errorMsg, lineNumber, [&](int32_t v) {
       output.push_back(static_cast<uint8_t>(v & 0xFF));
       output.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
-
-      if (*p == ',') p++;
-    }
+    });
     return;
   }
 
   if (directive == "DDB") {
-    const char* p = operand.c_str();
-    while (*p) {
-      skipSpaces(p);
-      if (!*p) break;
-
-      const char* start = p;
-      int depth = 0;
-      while (*p && (*p != ',' || depth > 0)) {
-        if (*p == '(') depth++;
-        if (*p == ')') depth--;
-        p++;
-      }
-      std::string val(start, p - start);
-      while (!val.empty() && val.back() == ' ') val.pop_back();
-
-      int32_t v = evaluateExpression(val, error, errorMsg, lineNumber);
-      if (error) return;
-      // Big-endian
+    // Big-endian
+    forEachOperandValue(operand, error, errorMsg, lineNumber, [&](int32_t v) {
       output.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
       output.push_back(static_cast<uint8_t>(v & 0xFF));
-
-      if (*p == ',') p++;
-    }
+    });
     return;
   }
 
@@ -879,6 +851,76 @@ void Assembler::emitDirective(const std::string& directive,
 }
 
 // ============================================================================
+// DSK directive operand
+// ============================================================================
+
+bool Assembler::parseObjectFileOperand(const std::string& operand,
+                                       std::string& filename, int& drive,
+                                       std::string& errorMsg) {
+  filename.clear();
+  drive = 1;
+
+  // Split on commas: the first field is the filename, the rest are Merlin's
+  // slot/drive qualifiers.
+  std::vector<std::string> fields;
+  std::string current;
+  for (char c : operand) {
+    if (c == ',') {
+      fields.push_back(current);
+      current.clear();
+    } else {
+      current += c;
+    }
+  }
+  fields.push_back(current);
+
+  auto trim = [](std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+    return s;
+  };
+
+  filename = trim(fields[0]);
+  // Merlin sources are unquoted, but a quoted name is the obvious thing to try
+  if (filename.size() >= 2 && (filename.front() == '"' || filename.front() == '\'') &&
+      filename.back() == filename.front()) {
+    filename = filename.substr(1, filename.size() - 2);
+  }
+
+  if (filename.empty()) {
+    errorMsg = "filename required";
+    return false;
+  }
+  // 30 is the DOS 3.3 limit; ProDOS is stricter still, and the filesystem
+  // itself rejects what it cannot store when the write happens.
+  if (filename.size() > 30) {
+    errorMsg = "filename too long (max 30 characters)";
+    return false;
+  }
+
+  for (size_t i = 1; i < fields.size(); i++) {
+    std::string qualifier = toUpper(trim(fields[i]));
+    if (qualifier.empty()) continue;
+
+    if (qualifier[0] == 'D' && qualifier.size() == 2 &&
+        (qualifier[1] == '1' || qualifier[1] == '2')) {
+      drive = qualifier[1] - '0';
+      continue;
+    }
+    // A slot qualifier is accepted only for the slot the drives are actually
+    // in; silently writing to a different drive than the source asked for
+    // would be worse than saying no.
+    if (qualifier[0] == 'S' && qualifier.size() == 2 && qualifier[1] == '6') {
+      continue;
+    }
+    errorMsg = "unsupported qualifier '" + qualifier + "' (D1, D2 or S6 only)";
+    return false;
+  }
+
+  return true;
+}
+
+// ============================================================================
 // Main assemble function
 // ============================================================================
 
@@ -887,6 +929,9 @@ AsmResult Assembler::assemble(const char* source) {
   result.origin = 0x0800;
   result.endAddress = 0x0800;
   result.success = false;
+  result.hasObjectFile = false;
+  result.objectFilename[0] = '\0';
+  result.objectDrive = 1;
 
   buildReverseOpcodeTable();
   symbols.clear();
@@ -954,6 +999,29 @@ AsmResult Assembler::assemble(const char* source) {
     }
 
     if (mnem.empty()) continue;
+
+    // Handle DSK: name the object file the assembled code is written to. It
+    // emits nothing, so it is resolved here and skipped in pass 2.
+    if (mnem == "DSK") {
+      if (result.hasObjectFile) {
+        addError(line.lineNumber,
+                 "DSK: only one object file per assembly is supported");
+        continue;
+      }
+      std::string filename;
+      std::string errorMsg;
+      int drive = 1;
+      if (!parseObjectFileOperand(line.operand, filename, drive, errorMsg)) {
+        addError(line.lineNumber, "DSK: " + errorMsg);
+        continue;
+      }
+      strncpy(result.objectFilename, filename.c_str(),
+              sizeof(result.objectFilename) - 1);
+      result.objectFilename[sizeof(result.objectFilename) - 1] = '\0';
+      result.objectDrive = drive;
+      result.hasObjectFile = true;
+      continue;
+    }
 
     // Handle unsupported directives
     if (isUnsupportedDirective(mnem)) {
@@ -1039,6 +1107,9 @@ AsmResult Assembler::assemble(const char* source) {
     }
 
     if (mnem.empty()) continue;
+
+    // DSK was resolved in pass 1 and emits nothing
+    if (mnem == "DSK") continue;
 
     // Skip unsupported directives (already errored in pass 1)
     if (isUnsupportedDirective(mnem)) continue;

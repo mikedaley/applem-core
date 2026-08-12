@@ -13,6 +13,8 @@
 #include "cards/smartport/smartport_card.hpp"
 #include "cards/softcard/softcard_z80.hpp"
 #include "debug/condition_evaluator.hpp"
+#include "filesystem/dos33.hpp"
+#include "filesystem/prodos.hpp"
 #include <algorithm>
 #include <cstring>
 
@@ -655,6 +657,93 @@ const uint8_t *Emulator::getDiskData(int drive, size_t *size) const {
 const uint8_t *Emulator::exportDiskData(int drive, size_t *size) {
   if (!disk_) return nullptr;
   return disk_->exportDiskData(drive, size);
+}
+
+const uint8_t *Emulator::exportDiskDataAs(int drive, DiskSaveFormat format,
+                                          size_t *size) {
+  if (size) *size = 0;
+  if (!disk_) return nullptr;
+
+  DiskImage *image = disk_->getMutableDiskImage(drive);
+  if (!image || !image->isLoaded()) return nullptr;
+
+  if (!DiskConverter::convert(*image, format, diskExportBuffer_)) {
+    return nullptr;
+  }
+
+  if (size) *size = diskExportBuffer_.size();
+  return diskExportBuffer_.data();
+}
+
+const uint8_t *Emulator::getDiskSectorsDOSOrder(int drive, size_t *size) {
+  if (size) *size = 0;
+  if (!disk_) return nullptr;
+
+  DiskImage *image = disk_->getMutableDiskImage(drive);
+  if (!image || !image->isLoaded()) return nullptr;
+
+  if (!DiskConverter::convert(*image, DiskSaveFormat::DOSOrder,
+                              diskSectorBuffer_)) {
+    return nullptr;
+  }
+
+  if (size) *size = diskSectorBuffer_.size();
+  return diskSectorBuffer_.data();
+}
+
+bool Emulator::canExportDiskAs(int drive, DiskSaveFormat format) {
+  if (!disk_) return false;
+  DiskImage *image = disk_->getMutableDiskImage(drive);
+  if (!image) return false;
+  return DiskConverter::canConvert(*image, format);
+}
+
+DiskSaveFormat Emulator::getDiskNativeFormat(int drive) {
+  if (!disk_) return DiskSaveFormat::DOSOrder;
+  const DiskImage *image = disk_->getDiskImage(drive);
+  if (!image) return DiskSaveFormat::DOSOrder;
+  return DiskConverter::nativeFormat(*image);
+}
+
+FsWriteStatus Emulator::writeBinaryFileToDisk(int drive, const char *filename,
+                                              uint16_t loadAddress,
+                                              const uint8_t *data, size_t len) {
+  if (!disk_) return FsWriteStatus::NoDisk;
+
+  DiskImage *image = disk_->getMutableDiskImage(drive);
+  if (!image || !image->isLoaded()) return FsWriteStatus::NoDisk;
+  if (image->isWriteProtected()) return FsWriteStatus::WriteProtected;
+
+  size_t sectorSize = 0;
+  const uint8_t *sectors = image->getSectorData(&sectorSize);
+  if (!sectors || sectorSize == 0) return FsWriteStatus::UnsupportedImage;
+
+  // Work on a copy: the filesystem writer must not touch the live image unless
+  // it succeeds, and writeSectorData is what makes a change visible to the
+  // drive anyway.
+  std::vector<uint8_t> working(sectors, sectors + sectorSize);
+
+  // Which filesystem is on the disk is decided by the disk, not the file
+  // extension — a .dsk holding a ProDOS volume is common.
+  FsWriteStatus status;
+  if (DOS33::isDOS33(working.data(), working.size())) {
+    status = DOS33::writeBinaryFile(working.data(), working.size(), filename,
+                                    loadAddress, data, len);
+  } else if (ProDOS::isProDOS(working.data(), working.size())) {
+    status = ProDOS::writeFile(working.data(), working.size(), filename, 0x06,
+                               loadAddress, data, static_cast<uint32_t>(len));
+  } else {
+    return FsWriteStatus::NotFormatted;
+  }
+
+  if (status != FsWriteStatus::OK) return status;
+
+  if (!image->writeSectorData(0, working.data(), working.size())) {
+    // A bit-stream image (WOZ) has no sector data to replace
+    return FsWriteStatus::UnsupportedImage;
+  }
+
+  return FsWriteStatus::OK;
 }
 
 const char *Emulator::getDiskFilename(int drive) const {

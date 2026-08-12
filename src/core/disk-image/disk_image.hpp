@@ -203,6 +203,31 @@ public:
   virtual const uint8_t *getSectorData(size_t *size) const = 0;
 
   /**
+   * Replace a run of raw sector data in the image.
+   *
+   * This is the path a host-side write takes — a file written into the image's
+   * filesystem rather than through the emulated drive head. Formats that store
+   * a bit stream rather than sectors (WOZ) cannot honour it and return false,
+   * because re-encoding a track would discard the flux-level detail such an
+   * image exists to preserve.
+   *
+   * Implementations must fold any pending head writes into the sector data
+   * first, then discard cached encodings of the affected tracks so the drive
+   * reads the new contents back.
+   *
+   * @param offset Byte offset into the raw sector image
+   * @param data   Replacement bytes
+   * @param len    Number of bytes to replace
+   * @return true if the data was written
+   */
+  virtual bool writeSectorData(size_t offset, const uint8_t *data, size_t len) {
+    (void)offset;
+    (void)data;
+    (void)len;
+    return false;
+  }
+
+  /**
    * Export disk data in its native format for saving
    * This reconstructs the disk image file that can be saved to disk.
    * The returned pointer is valid until the next call to exportData()

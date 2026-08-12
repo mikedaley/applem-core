@@ -12,37 +12,6 @@
 
 namespace a2e {
 
-// DOS 3.3 logical to physical sector mapping
-// When reading a DSK file, logical sector N is at file offset N * 256
-// But on disk, sectors are interleaved for performance
-static constexpr std::array<int, 16> DOS_LOGICAL_TO_PHYSICAL = {
-    0, 13, 11, 9, 7, 5, 3, 1, 14, 12, 10, 8, 6, 4, 2, 15};
-
-// Reverse mapping: physical to logical
-static constexpr std::array<int, 16> DOS_PHYSICAL_TO_LOGICAL = {
-    0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15};
-
-// ProDOS logical to physical sector mapping
-static constexpr std::array<int, 16> PRODOS_LOGICAL_TO_PHYSICAL = {
-    0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15};
-
-// ProDOS reverse mapping
-static constexpr std::array<int, 16> PRODOS_PHYSICAL_TO_LOGICAL = {
-    0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15};
-
-// 6-and-2 decoding table (reverse of ENCODE_6_AND_2)
-static constexpr std::array<int8_t, 256> DECODE_6_AND_2 = []() {
-  std::array<int8_t, 256> table{};
-  for (int i = 0; i < 256; i++) {
-    table[i] = -1; // Invalid by default
-  }
-  // Fill in valid mappings from the encode table
-  for (int i = 0; i < 64; i++) {
-    table[GCR::ENCODE_6_AND_2[i]] = static_cast<int8_t>(i);
-  }
-  return table;
-}();
-
 DskDiskImage::DskDiskImage() { sector_data_.fill(0); }
 
 void DskDiskImage::resetState() {
@@ -91,6 +60,89 @@ bool DskDiskImage::load(const uint8_t *data, size_t size,
   last_cycle_count_ = 0;
 
   return true;
+}
+
+bool DskDiskImage::loadAs(const uint8_t *data, size_t size,
+                          const std::string &filename, Format format) {
+  if (format != Format::DSK && format != Format::DO && format != Format::PO) {
+    return false;
+  }
+  if (!load(data, size, filename)) {
+    return false;
+  }
+  // load() detected an order from the content; the caller knows better
+  if (format_ != format) {
+    format_ = format;
+    for (auto &track : nibble_tracks_) {
+      track.valid = false;
+      track.nibbles.clear();
+      track.is_sync.clear();
+    }
+    for (auto &track : bit_tracks_) {
+      track.valid = false;
+      track.bits.clear();
+      track.bit_count = 0;
+    }
+  }
+  return true;
+}
+
+bool DskDiskImage::getTrackBits(int track, std::vector<uint8_t> &bits,
+                                uint32_t &bitCount) {
+  if (!loaded_ || track < 0 || track >= TRACKS) {
+    return false;
+  }
+
+  if (!nibble_tracks_[track].valid) {
+    nibblizeTrack(track);
+  }
+  bitifyTrack(track);
+
+  const auto &bt = bit_tracks_[track];
+  if (!bt.valid || bt.bit_count == 0) {
+    return false;
+  }
+
+  bits = bt.bits;
+  bitCount = bt.bit_count;
+  return true;
+}
+
+int DskDiskImage::countCatalogChain(int track, int sector,
+                                    bool prodosOrder) const {
+  int links = 0;
+  bool visited[TRACKS * SECTORS_PER_TRACK] = {};
+
+  while (track > 0 && track < TRACKS && sector >= 0 &&
+         sector < SECTORS_PER_TRACK) {
+    int key = track * SECTORS_PER_TRACK + sector;
+    if (visited[key]) break;
+    visited[key] = true;
+
+    // GCR::PRODOS_TO_DOS_SECTOR reads a track's sectors out of an image
+    // laid out in the other order
+    int stored = prodosOrder ? GCR::PRODOS_TO_DOS_SECTOR[sector] : sector;
+    size_t offset =
+        static_cast<size_t>(track * SECTORS_PER_TRACK + stored) * BYTES_PER_SECTOR;
+    if (offset + BYTES_PER_SECTOR > sector_data_.size()) break;
+
+    const uint8_t *catalog = sector_data_.data() + offset;
+    int nextTrack = catalog[0x01];
+    int nextSector = catalog[0x02];
+
+    // The end of the chain is a zero link, which is as valid as any other
+    if (nextTrack == 0 && nextSector == 0) {
+      links++;
+      break;
+    }
+    // A catalog sector always links to another sector on the catalog track
+    if (nextTrack != track || nextSector >= SECTORS_PER_TRACK) break;
+
+    links++;
+    sector = nextSector;
+  }
+
+  return links;
 }
 
 DiskImage::Format DskDiskImage::detectFormat(const std::string &filename) const {
@@ -146,7 +198,14 @@ DiskImage::Format DskDiskImage::detectFormat(const std::string &filename) const 
     bool valid_dos_version = (dos_version == 0x03);
 
     if (valid_catalog_track && valid_catalog_sector && valid_dos_version) {
-      return Format::DSK;
+      // The VTOC alone cannot tell the two orders apart: sector 0 of a track
+      // holds the same file offset either way, so a DOS 3.3 volume stored in
+      // ProDOS order still has its VTOC exactly here. The catalog chain does
+      // distinguish them — the sectors it links to move — so follow it under
+      // each order and believe whichever holds together.
+      int dosLinks = countCatalogChain(catalog_track, catalog_sector, false);
+      int prodosLinks = countCatalogChain(catalog_track, catalog_sector, true);
+      return (prodosLinks > dosLinks) ? Format::PO : Format::DSK;
     }
   }
 
@@ -180,9 +239,9 @@ int DskDiskImage::getLogicalSector(int physical_sector) const {
     return 0;
 
   if (format_ == Format::PO) {
-    return PRODOS_PHYSICAL_TO_LOGICAL[physical_sector];
+    return GCR::PRODOS_PHYSICAL_TO_LOGICAL[physical_sector];
   } else {
-    return DOS_PHYSICAL_TO_LOGICAL[physical_sector];
+    return GCR::DOS_PHYSICAL_TO_LOGICAL[physical_sector];
   }
 }
 
@@ -297,56 +356,6 @@ void DskDiskImage::nibblizeTrack(int track) {
   bit_tracks_[track].bit_count = 0;
 }
 
-uint8_t DskDiskImage::decode4and4(uint8_t odd, uint8_t even) {
-  // Reverse of encode4and4:
-  // odd has bits 7,5,3,1 of original in positions 6,4,2,0 (masked with 0x55,
-  // OR'd with 0xAA) even has bits 6,4,2,0 of original in positions 6,4,2,0
-  uint8_t result = ((odd << 1) & 0xAA) | (even & 0x55);
-  return result;
-}
-
-bool DskDiskImage::decode6and2(const uint8_t *encoded, uint8_t *output) {
-  // Decode 343 nibbles back to 256 bytes
-  // First, convert disk nibbles to 6-bit values
-  uint8_t buffer[342];
-
-  // XOR decode (reverse of encode)
-  uint8_t prev = 0;
-  for (int i = 0; i < 342; i++) {
-    int8_t decoded = DECODE_6_AND_2[encoded[i]];
-    if (decoded < 0) {
-      return false; // Invalid nibble
-    }
-    buffer[i] = decoded ^ prev;
-    prev = buffer[i];
-  }
-
-  // Verify checksum
-  int8_t checksum_decoded = DECODE_6_AND_2[encoded[342]];
-  if (checksum_decoded < 0 || (prev & 0x3F) != (checksum_decoded & 0x3F)) {
-    // Checksum mismatch - still try to decode
-    // Some disk images have minor errors
-  }
-
-  // Reconstruct 256 bytes from auxiliary (86) and primary (256) buffers
-  for (int i = 0; i < 256; i++) {
-    // High 6 bits from primary buffer
-    uint8_t high = buffer[86 + i] << 2;
-
-    // Low 2 bits from auxiliary buffer
-    // The encoder swaps bits 0 and 1, so we need to swap them back
-    uint8_t aux_byte = buffer[i % 86];
-    int shift = (i / 86) * 2;
-    uint8_t low = (aux_byte >> shift) & 0x03;
-    // Reverse the bit swap: ((low & 0x01) << 1) | ((low & 0x02) >> 1)
-    low = ((low & 0x01) << 1) | ((low & 0x02) >> 1);
-
-    output[i] = high | low;
-  }
-
-  return true;
-}
-
 void DskDiskImage::scanAndDecodeSectors(int track, const uint8_t *nibbles,
                                         size_t search_count,
                                         size_t total_count) {
@@ -376,13 +385,13 @@ void DskDiskImage::scanAndDecodeSectors(int track, const uint8_t *nibbles,
     if (pos + 8 > total_count)
       break;
 
-    uint8_t volume = decode4and4(nibbles[pos], nibbles[pos + 1]);
+    uint8_t volume = GCR::decode4and4(nibbles[pos], nibbles[pos + 1]);
     pos += 2;
-    uint8_t addr_track = decode4and4(nibbles[pos], nibbles[pos + 1]);
+    uint8_t addr_track = GCR::decode4and4(nibbles[pos], nibbles[pos + 1]);
     pos += 2;
-    uint8_t sector = decode4and4(nibbles[pos], nibbles[pos + 1]);
+    uint8_t sector = GCR::decode4and4(nibbles[pos], nibbles[pos + 1]);
     pos += 2;
-    uint8_t checksum = decode4and4(nibbles[pos], nibbles[pos + 1]);
+    uint8_t checksum = GCR::decode4and4(nibbles[pos], nibbles[pos + 1]);
     pos += 2;
 
     // Verify address checksum using the volume read from the disk,
@@ -419,7 +428,7 @@ void DskDiskImage::scanAndDecodeSectors(int track, const uint8_t *nibbles,
       break;
 
     uint8_t decoded[256];
-    if (decode6and2(nibbles + pos, decoded)) {
+    if (GCR::decode6and2(nibbles + pos, decoded, false)) {
       int log_sector = getLogicalSector(sector);
       int offset = (track * SECTORS_PER_TRACK + log_sector) * BYTES_PER_SECTOR;
       std::memcpy(&sector_data_[offset], decoded, BYTES_PER_SECTOR);
@@ -605,12 +614,18 @@ void DskDiskImage::writeNibble(uint8_t nibble) {
 void DskDiskImage::ensureTrackBitified() {
   int track = quarter_track_ / 4;
   if (track < 0 || track >= TRACKS) return;
-
-  auto &bt = bit_tracks_[track];
-  if (bt.valid) return;
+  if (bit_tracks_[track].valid) return;
 
   // Ensure nibble track is ready first
   ensureTrackNibblized();
+  bitifyTrack(track);
+}
+
+void DskDiskImage::bitifyTrack(int track) {
+  if (track < 0 || track >= TRACKS) return;
+
+  auto &bt = bit_tracks_[track];
+  if (bt.valid) return;
 
   const auto &nt = nibble_tracks_[track];
   if (!nt.valid || nt.nibbles.empty()) return;
@@ -779,6 +794,56 @@ const uint8_t *DskDiskImage::getSectorData(size_t *size) const {
 
   *size = DISK_SIZE;
   return sector_data_.data();
+}
+
+bool DskDiskImage::writeSectorData(size_t offset, const uint8_t *data,
+                                   size_t len) {
+  if (!loaded_ || write_protected_ || !data) {
+    return false;
+  }
+  if (offset > static_cast<size_t>(DISK_SIZE) ||
+      len > static_cast<size_t>(DISK_SIZE) - offset) {
+    return false;
+  }
+  if (len == 0) {
+    return true;
+  }
+
+  // Fold any pending head writes into sector_data_ first, or they would be
+  // decoded on top of the new bytes the next time the image is serialised.
+  size_t flushed = 0;
+  getSectorData(&flushed);
+
+  std::memcpy(sector_data_.data() + offset, data, len);
+
+  // Drop cached encodings of every track the write touched so the drive reads
+  // the new contents back rather than the nibbles made from the old ones.
+  int firstTrack = static_cast<int>(offset / TRACK_SIZE);
+  int lastTrack = static_cast<int>((offset + len - 1) / TRACK_SIZE);
+  bool currentTrackAffected = false;
+  int currentTrack = getTrack();
+
+  for (int t = firstTrack; t <= lastTrack && t < TRACKS; t++) {
+    nibble_tracks_[t].valid = false;
+    nibble_tracks_[t].dirty = false;
+    nibble_tracks_[t].nibbles.clear();
+    nibble_tracks_[t].is_sync.clear();
+    bit_tracks_[t].valid = false;
+    bit_tracks_[t].dirty = false;
+    bit_tracks_[t].bits.clear();
+    bit_tracks_[t].bit_count = 0;
+    if (t == currentTrack) currentTrackAffected = true;
+  }
+
+  // The head's position within a re-encoded track is meaningless, and the new
+  // track may be shorter than the old position.
+  if (currentTrackAffected) {
+    nibble_position_ = 0;
+    bit_position_ = 0;
+  }
+
+  modified_ = true;
+  return true;
 }
 
 const uint8_t *DskDiskImage::exportData(size_t *size) {

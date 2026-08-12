@@ -7,6 +7,9 @@
 
 #pragma once
 
+#include "../disk-image/gcr_encoding.hpp"
+#include "fs_write_status.hpp"
+
 #include <cstdint>
 #include <cstddef>
 
@@ -80,18 +83,39 @@ public:
    */
   static int mapFileTypeForViewer(uint8_t prodosType);
 
+  // ===== Writing =====
+
+  /**
+   * Write a file into the volume directory, replacing any existing file of the
+   * same name. Blocks come from the volume bitmap; a replaced file's blocks are
+   * returned to it first.
+   *
+   * Only the volume directory is written to, and only seedling and sapling
+   * files are produced (up to 128KB) — enough for anything an assembler emits,
+   * and the volume directory is fixed-size so it cannot be grown.
+   *
+   * @param data      Mutable disk image, in either sector order
+   * @param size      Image size in bytes
+   * @param filename  Name to write (case is folded up)
+   * @param fileType  ProDOS file type (0x06 = BIN)
+   * @param auxType   Aux type (load address for BIN)
+   * @param fileData  File contents
+   * @param fileLen   Length of fileData in bytes
+   */
+  static FsWriteStatus writeFile(uint8_t* data, size_t size, const char* filename,
+                                 uint8_t fileType, uint16_t auxType,
+                                 const uint8_t* fileData, uint32_t fileLen);
+
 private:
   static void readBlock(const uint8_t* data, size_t size, int blockNum,
                         bool dosOrder, uint8_t* out);
+  static void writeBlock(uint8_t* data, size_t size, int blockNum,
+                         bool dosOrder, const uint8_t* in);
   static bool isValidVolumeHeader(const uint8_t* block);
   static bool detectSectorOrder(const uint8_t* data, size_t size, bool* dosOrder);
   static void parseFilename(const uint8_t* bytes, int nameLen, char* out, int maxLen);
   static const char* getFileTypeName(uint8_t fileType);
 
-  // ProDOS-to-DOS sector conversion table
-  static constexpr uint8_t PRODOS_TO_DOS_SECTOR[16] = {
-    0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15
-  };
 
   // Storage types
   static constexpr uint8_t STORAGE_DELETED = 0x0;
@@ -114,6 +138,31 @@ private:
                                   bool dosOrder,
                                   ProDOSCatalogEntry* entries, int maxEntries,
                                   int currentCount);
+
+  // ===== Write helpers =====
+
+  static constexpr int ENTRY_LENGTH = 0x27;
+  static constexpr int ENTRIES_PER_BLOCK = 0x0D;
+  static constexpr int VOLUME_DIR_BLOCK = 2;
+  static constexpr int MAX_PRODOS_NAME = 15;
+
+  // Volume bitmap: one bit per block, 1 = free, MSB of each byte is the lowest
+  // numbered block. The bitmap starts at the block named in the volume header
+  // and runs on into following blocks for volumes over 4096 blocks.
+  static bool isBlockFree(const uint8_t* data, size_t size, bool dosOrder,
+                          int bitmapBlock, int blockNum);
+  static void setBlockAllocated(uint8_t* data, size_t size, bool dosOrder,
+                                int bitmapBlock, int blockNum, bool allocated);
+  static bool allocateBlock(uint8_t* data, size_t size, bool dosOrder,
+                            int bitmapBlock, int totalBlocks, int* blockNum);
+
+  // Fold a host filename into ProDOS's uppercase letters/digits/period form
+  static bool normaliseFilename(const char* filename, char* out, int maxLen);
+
+  // Release every block held by the file described by a directory entry
+  static void freeFileBlocks(uint8_t* data, size_t size, bool dosOrder,
+                             int bitmapBlock, uint8_t storageType,
+                             int keyBlock, uint32_t eof);
 };
 
 } // namespace a2e
