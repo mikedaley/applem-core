@@ -13,7 +13,9 @@
 #include "mmu/mmu.hpp"
 #include "roms.cpp"
 
+#include <array>
 #include <memory>
+#include <set>
 
 using namespace a2e;
 
@@ -552,4 +554,188 @@ TEST_CASE("warmReset resets switches but preserves RAM", "[mmu][reset]") {
 
     // RAM should be preserved
     CHECK(mmu->read(0x0400) == 0x42);
+}
+
+// ============================================================================
+// Video scanner address / floating bus
+// ============================================================================
+
+namespace {
+
+// The addresses the renderer draws from, so the scanner can be held to them
+constexpr std::array<int, 24> TEXT_ROW_OFFSETS = {
+    0x000, 0x080, 0x100, 0x180, 0x200, 0x280, 0x300, 0x380,
+    0x028, 0x0A8, 0x128, 0x1A8, 0x228, 0x2A8, 0x328, 0x3A8,
+    0x050, 0x0D0, 0x150, 0x1D0, 0x250, 0x2D0, 0x350, 0x3D0};
+
+uint16_t rendererTextAddress(int row, int col) {
+    return static_cast<uint16_t>(0x0400 + TEXT_ROW_OFFSETS[row] + col);
+}
+
+uint16_t rendererHiResAddress(int scanline, int col) {
+    return static_cast<uint16_t>(0x2000 + TEXT_ROW_OFFSETS[scanline / 8] +
+                                 (scanline % 8) * 0x400 + col);
+}
+
+// Cycle at which the scanner fetches a given visible column of a given line.
+// Our frame cycle counts from the start of horizontal blanking, so the visible
+// picture starts 25 cycles in.
+uint64_t visibleCycle(int scanline, int col) {
+    return static_cast<uint64_t>(scanline) * CYCLES_PER_SCANLINE + 25 + col;
+}
+
+uint64_t hblankCycle(int scanline, int hPos) {
+    return static_cast<uint64_t>(scanline) * CYCLES_PER_SCANLINE + hPos;
+}
+
+} // namespace
+
+TEST_CASE("Scanner addresses over the visible picture match what the renderer draws",
+          "[mmu][video][scanner]") {
+    auto mmu = createMMU();
+    uint64_t cycle = 0;
+    mmu->setCycleCallback([&cycle]() { return cycle; });
+
+    SECTION("Text") {
+        mmu->read(0xC051); // TEXT on
+        for (int row = 0; row < 24; row++) {
+            for (int line = 0; line < 8; line++) {
+                int scanline = row * 8 + line;
+                for (int col = 0; col < 40; col++) {
+                    uint16_t addr =
+                        mmu->getVideoScannerAddress(visibleCycle(scanline, col));
+                    REQUIRE(addr == rendererTextAddress(row, col));
+                }
+            }
+        }
+    }
+
+    SECTION("HiRes") {
+        mmu->read(0xC050); // GRAPHICS
+        mmu->read(0xC057); // HIRES
+        mmu->read(0xC052); // Full screen, no mixed text at the bottom
+        for (int scanline = 0; scanline < 192; scanline++) {
+            for (int col = 0; col < 40; col++) {
+                uint16_t addr =
+                    mmu->getVideoScannerAddress(visibleCycle(scanline, col));
+                REQUIRE(addr == rendererHiResAddress(scanline, col));
+            }
+        }
+    }
+}
+
+TEST_CASE("Scanner keeps fetching through horizontal blanking", "[mmu][video][scanner]") {
+    auto mmu = createMMU();
+    uint64_t cycle = 0;
+    mmu->setCycleCallback([&cycle]() { return cycle; });
+    mmu->read(0xC051); // TEXT
+
+    // Horizontal blanking reads the 25 bytes past the end of the row, which in
+    // text mode are the screen holes at $x78-$x7F and the unused bytes below
+    // them — never the same address twice, and never a stuck value.
+    std::set<uint16_t> seen;
+    for (int hPos = 0; hPos < 25; hPos++) {
+        uint16_t addr = mmu->getVideoScannerAddress(hblankCycle(0, hPos));
+        CHECK(addr >= 0x0400);
+        CHECK(addr < 0x0800);
+        // Past the 40 visible columns of row 0, which end at $0427
+        CHECK(addr >= 0x0428);
+        seen.insert(addr);
+    }
+    // 24 addresses over 25 cycles: the horizontal preset repeats one counter
+    // state, so the first two blanking cycles fetch the same address
+    CHECK(seen.size() == 24);
+
+    // The last blanking cycle is followed immediately by column 0 of the row
+    CHECK(mmu->getVideoScannerAddress(hblankCycle(0, 24)) == 0x047F);
+    CHECK(mmu->getVideoScannerAddress(visibleCycle(0, 0)) == 0x0400);
+}
+
+TEST_CASE("Floating bus returns real memory during horizontal blanking",
+          "[mmu][video][floatingbus]") {
+    auto mmu = createMMU();
+    uint64_t cycle = 0;
+    mmu->setCycleCallback([&cycle]() { return cycle; });
+    mmu->read(0xC051); // TEXT
+
+    // Put a known byte where the scanner will be during blanking
+    uint16_t hblankAddr = mmu->getVideoScannerAddress(hblankCycle(10, 5));
+    mmu->write(hblankAddr, 0xA5);
+
+    cycle = hblankCycle(10, 5);
+    CHECK(mmu->read(0xC020) == 0xA5); // Cassette toggle: floating bus read
+    CHECK(mmu->read(0xC021) == 0xA5); // Undriven address
+    CHECK(mmu->read(0xC030) == 0xA5); // Speaker
+
+    // And still tracks the picture during the visible part of the line
+    uint16_t visibleAddr = mmu->getVideoScannerAddress(visibleCycle(10, 7));
+    mmu->write(visibleAddr, 0x5A);
+    cycle = visibleCycle(10, 7);
+    CHECK(mmu->read(0xC020) == 0x5A);
+}
+
+TEST_CASE("Floating bus follows the beam across a whole line", "[mmu][video][floatingbus]") {
+    auto mmu = createMMU();
+    uint64_t cycle = 0;
+    mmu->setCycleCallback([&cycle]() { return cycle; });
+    mmu->read(0xC051); // TEXT
+
+    // Fill the row's whole 128-byte block with a position-dependent pattern
+    // that is never zero, so a stuck blanking value would stand out
+    for (uint16_t addr = 0x0400; addr < 0x0480; addr++) {
+        mmu->write(addr, static_cast<uint8_t>((addr & 0x7F) + 1));
+    }
+
+    std::set<uint16_t> addresses;
+    for (int hPos = 0; hPos < CYCLES_PER_SCANLINE; hPos++) {
+        cycle = hblankCycle(0, hPos);
+        CHECK(mmu->read(0xC020) != 0x00);
+        addresses.insert(mmu->getVideoScannerAddress(cycle));
+    }
+
+    // 65 cycles cover 64 addresses: the horizontal preset repeats one counter
+    // state, so the scanner fetches that address on two consecutive cycles
+    // (UTAIIe 3-11) — the first two cycles of blanking here.
+    CHECK(addresses.size() == 64);
+    CHECK(mmu->getVideoScannerAddress(hblankCycle(0, 0)) ==
+          mmu->getVideoScannerAddress(hblankCycle(0, 1)));
+}
+
+TEST_CASE("Scanner honours page and mixed-mode switches", "[mmu][video][scanner]") {
+    auto mmu = createMMU();
+    uint64_t cycle = 0;
+    mmu->setCycleCallback([&cycle]() { return cycle; });
+
+    SECTION("Text page 2") {
+        mmu->read(0xC051); // TEXT
+        mmu->read(0xC055); // PAGE2
+        CHECK(mmu->getVideoScannerAddress(visibleCycle(0, 0)) == 0x0800);
+    }
+
+    SECTION("80STORE pins the address to page 1") {
+        mmu->read(0xC051);
+        mmu->write(0xC001, 0); // 80STORE on
+        mmu->read(0xC055);     // PAGE2 now selects aux, not page 2
+        CHECK(mmu->getVideoScannerAddress(visibleCycle(0, 0)) == 0x0400);
+    }
+
+    SECTION("HiRes page 2") {
+        mmu->read(0xC050);
+        mmu->read(0xC057);
+        mmu->read(0xC052);
+        mmu->read(0xC055); // PAGE2
+        CHECK(mmu->getVideoScannerAddress(visibleCycle(0, 0)) == 0x4000);
+    }
+
+    SECTION("Mixed mode fetches the bottom four rows from text memory") {
+        mmu->read(0xC050); // GRAPHICS
+        mmu->read(0xC057); // HIRES
+        mmu->read(0xC053); // MIXED
+
+        // Rows 0-19 are hires
+        CHECK(mmu->getVideoScannerAddress(visibleCycle(0, 0)) == 0x2000);
+        // Rows 20-23 (scanlines 160+) are text
+        uint16_t addr = mmu->getVideoScannerAddress(visibleCycle(160, 0));
+        CHECK(addr == rendererTextAddress(20, 0));
+    }
 }

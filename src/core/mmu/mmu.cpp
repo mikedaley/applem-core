@@ -692,80 +692,102 @@ void MMU::write(uint16_t address, uint8_t value) {
   writeLanguageCard(address, value);
 }
 
-uint8_t MMU::getFloatingBusValue() {
-  // The floating bus returns whatever byte the video hardware is currently
-  // reading. This is determined by the current scanline and horizontal position
-  // within the frame.
-  //
-  // Apple IIe timing:
-  // - 65 cycles per scanline (25 hblank + 40 visible)
-  // - 262 scanlines per frame (192 visible + 70 vertical blank)
-  // - Cycles 0-24: horizontal blanking, cycles 25-64: visible display
+uint16_t MMU::getVideoScannerAddress(uint64_t cycles) const {
+  // Counter equations from Sather, Understanding the Apple IIe (5-8 T5.1,
+  // 5-9). The scanner's horizontal and vertical counters are not plain 0-based
+  // indices: H counts 0 then $40-$7F (65 states, achieved by a preset that
+  // repeats one state) and V counts $FA-$1FF (262 states). Addresses fall out
+  // of those counter bits, which is why they stay meaningful during blanking
+  // instead of running off the end of a row.
+  constexpr int H_CLOCK_0_STATE = 0x18; // H[543210] = 011000 at the first
+                                        // visible cycle
+  constexpr int H_PRESET_CLOCK = 41;    // Clock at which H presets
+  constexpr int V_LINE_0_STATE = 0x100; // V[543210CBA] at the first visible line
+  constexpr int V_PRESET_LINE = 256;
 
+  uint32_t frameCycle = static_cast<uint32_t>(cycles % CYCLES_PER_FRAME);
+
+  // Our frame cycle counts from the start of horizontal blanking, while the
+  // scanner's clock 0 is the first visible cycle 25 cycles later.
+  int hClock = static_cast<int>((frameCycle + (CYCLES_PER_SCANLINE - 25)) %
+                                CYCLES_PER_SCANLINE);
+  int hState = H_CLOCK_0_STATE + hClock;
+  if (hClock >= H_PRESET_CLOCK) {
+    hState -= 1; // The preset repeats a state, so one clock shares two
+  }
+
+  int h0 = (hState >> 0) & 1;
+  int h1 = (hState >> 1) & 1;
+  int h2 = (hState >> 2) & 1;
+  int h3 = (hState >> 3) & 1;
+  int h4 = (hState >> 4) & 1;
+  int h5 = (hState >> 5) & 1;
+
+  int vLine = static_cast<int>(frameCycle / CYCLES_PER_SCANLINE);
+  int vState = V_LINE_0_STATE + vLine;
+  if (vLine >= V_PRESET_LINE) {
+    vState -= SCANLINES_PER_FRAME;
+  }
+
+  int vA = (vState >> 0) & 1;
+  int vB = (vState >> 1) & 1;
+  int vC = (vState >> 2) & 1;
+  int v0 = (vState >> 3) & 1;
+  int v1 = (vState >> 4) & 1;
+  int v2 = (vState >> 5) & 1;
+  int v3 = (vState >> 6) & 1;
+  int v4 = (vState >> 7) & 1;
+
+  bool hires = switches_.hires && !switches_.text;
+  // In mixed mode the bottom four rows are text, and the scanner fetches them
+  // from text memory (HIRES TIME signal, UTAIIe 5-7 P3)
+  if (hires && switches_.mixed && v4 && v2) {
+    hires = false;
+  }
+
+  int addend0 = 0x0D;
+  int addend1 = (h5 << 2) | (h4 << 1) | (h3 << 0);
+  int addend2 = (v4 << 3) | (v3 << 2) | (v4 << 1) | (v3 << 0);
+  int sum = (addend0 + addend1 + addend2) & 0x0F;
+
+  uint16_t address = 0;
+  address |= static_cast<uint16_t>(h0 << 0);
+  address |= static_cast<uint16_t>(h1 << 1);
+  address |= static_cast<uint16_t>(h2 << 2);
+  address |= static_cast<uint16_t>(sum << 3);
+  address |= static_cast<uint16_t>(v0 << 7);
+  address |= static_cast<uint16_t>(v1 << 8);
+  address |= static_cast<uint16_t>(v2 << 9);
+
+  // 80STORE moves the aux/main choice to PAGE2 and pins the address to page 1
+  int page1 = (switches_.page2 && !switches_.store80) ? 0 : 1;
+  int page2 = (switches_.page2 && !switches_.store80) ? 1 : 0;
+
+  if (hires) {
+    address |= static_cast<uint16_t>(vA << 10);
+    address |= static_cast<uint16_t>(vB << 11);
+    address |= static_cast<uint16_t>(vC << 12);
+    address |= static_cast<uint16_t>(page1 << 13);
+    address |= static_cast<uint16_t>(page2 << 14);
+  } else {
+    address |= static_cast<uint16_t>(page1 << 10);
+    address |= static_cast<uint16_t>(page2 << 11);
+  }
+
+  return address;
+}
+
+uint8_t MMU::getFloatingBusValue() {
+  // Whatever byte the video scanner is fetching at this instant appears on the
+  // bus, and an undriven address such as $C020 leaves it there for the CPU to
+  // read. Blanking is not idle time — the scanner keeps fetching, and during
+  // horizontal blanking it reads the bytes past the end of the row (the screen
+  // holes in text mode), which is exactly what beam-timing code looks for.
   if (!cycleCallback_) {
     return 0x00;
   }
 
-  uint64_t cycles = cycleCallback_();
-  uint32_t frameCycle = cycles % CYCLES_PER_FRAME;
-  uint32_t scanline = frameCycle / CYCLES_PER_SCANLINE;
-  uint32_t hPos = frameCycle % CYCLES_PER_SCANLINE;
-
-  // During horizontal blank (cycles 0-24), video reads from
-  // unpredictable locations. Return 0 for simplicity during hblank.
-  if (hPos < 25) {
-    return 0x00;
-  }
-
-  // Convert to visible column (0-39)
-  uint32_t col = hPos - 25;
-
-  // During vertical blank (scanlines 192-261), return data from the
-  // last few lines' worth of addresses (video wraps during vblank)
-  if (scanline >= 192) {
-    scanline = scanline % 192;
-  }
-
-  // Calculate memory address based on current video mode
-  uint16_t address;
-
-  if (switches_.text || !switches_.hires) {
-    // Text mode or LoRes mode - reads from text page
-    // Each scanline covers 8 text rows due to character height
-    int textRow = scanline / 8;
-    if (textRow >= 24)
-      textRow = 23;
-
-    // Text/LoRes base address
-    uint16_t base = switches_.page2 ? 0x0800 : 0x0400;
-
-    // Apple II text memory is interleaved in groups of 8 rows
-    // Rows 0-7:   $000, $080, $100, $180, $200, $280, $300, $380
-    // Rows 8-15:  $028, $0A8, $128, $1A8, $228, $2A8, $328, $3A8
-    // Rows 16-23: $050, $0D0, $150, $1D0, $250, $2D0, $350, $3D0
-    static const uint16_t rowOffsets[24] = {
-        0x000, 0x080, 0x100, 0x180, 0x200, 0x280, 0x300, 0x380,
-        0x028, 0x0A8, 0x128, 0x1A8, 0x228, 0x2A8, 0x328, 0x3A8,
-        0x050, 0x0D0, 0x150, 0x1D0, 0x250, 0x2D0, 0x350, 0x3D0};
-
-    address = base + rowOffsets[textRow] + col;
-  } else {
-    // HiRes mode - reads from hi-res page
-    uint16_t base = switches_.page2 ? 0x4000 : 0x2000;
-
-    // Hi-res memory is also interleaved
-    // Each group of 64 lines shares a similar pattern
-    int group = scanline / 64;       // 0, 1, or 2
-    int lineInGroup = scanline % 64; // 0-63
-    int subGroup = lineInGroup / 8;  // 0-7
-    int lineInSubGroup = lineInGroup % 8;
-
-    // Calculate offset within page
-    // Lines 0,8,16,24,32,40,48,56 of each group start at group*$28
-    // Plus $80 for each subgroup, plus $400 for each line within subgroup
-    uint16_t offset = (group * 0x28) + (subGroup * 0x80) + (lineInSubGroup * 0x400);
-    address = base + offset + col;
-  }
+  uint16_t address = getVideoScannerAddress(cycleCallback_());
 
   // Read from the appropriate memory bank
   if (switches_.store80 && switches_.page2) {
