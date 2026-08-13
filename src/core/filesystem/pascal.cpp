@@ -21,8 +21,8 @@ void Pascal::readBlock(const uint8_t* data, size_t size, int blockNum,
     int prodosSector1 = blockInTrack * 2;
     int prodosSector2 = blockInTrack * 2 + 1;
 
-    int sector1 = dosOrder ? PRODOS_TO_DOS_SECTOR[prodosSector1] : prodosSector1;
-    int sector2 = dosOrder ? PRODOS_TO_DOS_SECTOR[prodosSector2] : prodosSector2;
+    int sector1 = dosOrder ? GCR::PRODOS_TO_DOS_SECTOR[prodosSector1] : prodosSector1;
+    int sector2 = dosOrder ? GCR::PRODOS_TO_DOS_SECTOR[prodosSector2] : prodosSector2;
 
     int offset1 = (track * 16 + sector1) * 256;
     int offset2 = (track * 16 + sector2) * 256;

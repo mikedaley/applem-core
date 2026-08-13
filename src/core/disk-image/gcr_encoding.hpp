@@ -36,6 +36,35 @@ constexpr uint8_t DATA_EPILOGUE[3] = {0xDE, 0xAA, 0xEB};
 // Self-sync byte
 constexpr uint8_t SYNC_BYTE = 0xFF;
 
+// ===== Sector interleave =====
+//
+// A track's sectors are not written in numerical order: the interleave gives
+// the CPU time to process one sector before the next passes the head. Which
+// interleave applies is a property of the filesystem that wrote the disk, so
+// both are here and the caller picks.
+
+// DOS 3.3: logical sector (file offset) -> physical sector (position on track)
+constexpr std::array<int, 16> DOS_LOGICAL_TO_PHYSICAL = {
+    0, 13, 11, 9, 7, 5, 3, 1, 14, 12, 10, 8, 6, 4, 2, 15};
+
+// DOS 3.3: physical -> logical
+constexpr std::array<int, 16> DOS_PHYSICAL_TO_LOGICAL = {
+    0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15};
+
+// ProDOS: logical -> physical
+constexpr std::array<int, 16> PRODOS_LOGICAL_TO_PHYSICAL = {
+    0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15};
+
+// ProDOS: physical -> logical
+constexpr std::array<int, 16> PRODOS_PHYSICAL_TO_LOGICAL = {
+    0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15};
+
+// ProDOS logical sector -> the DOS logical sector holding it, which is how a
+// ProDOS volume is found inside a DOS-ordered image (and the reverse, since
+// the mapping is its own inverse).
+constexpr std::array<uint8_t, 16> PRODOS_TO_DOS_SECTOR = {
+    0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15};
+
 /**
  * 4-and-4 encoding for address field values
  * Splits byte into odd bits (first) and even bits (second)
@@ -53,6 +82,16 @@ inline std::pair<uint8_t, uint8_t> encode4and4(uint8_t value) {
 }
 
 /**
+ * Decode a 4-and-4 encoded pair back to the byte it carries
+ *
+ * @param odd  First encoded byte (bits 7,5,3,1)
+ * @param even Second encoded byte (bits 6,4,2,0)
+ */
+inline uint8_t decode4and4(uint8_t odd, uint8_t even) {
+  return static_cast<uint8_t>(((odd << 1) & 0xAA) | (even & 0x55));
+}
+
+/**
  * Encode 256 bytes of sector data using 6-and-2 encoding
  * Returns 343 nibbles (342 encoded data + 1 checksum)
  *
@@ -60,6 +99,21 @@ inline std::pair<uint8_t, uint8_t> encode4and4(uint8_t value) {
  * @return Vector of 343 encoded nibbles
  */
 std::vector<uint8_t> encode6and2(const uint8_t *data);
+
+/**
+ * Decode 343 nibbles back to 256 bytes of sector data.
+ *
+ * @param nibbles         343 nibbles: 342 encoded bytes plus the checksum
+ * @param output          Receives 256 decoded bytes
+ * @param requireChecksum true to reject a sector whose checksum does not
+ *        match, false to decode it anyway. Sector images are routinely a
+ *        little imperfect and the data is still worth having; a bit-accurate
+ *        image is held to the stricter standard, since a sector that does not
+ *        verify is exactly what its copy protection is made of.
+ * @return true if the sector was decoded
+ */
+bool decode6and2(const uint8_t *nibbles, uint8_t *output,
+                 bool requireChecksum);
 
 /**
  * Build a complete sector as a nibble stream

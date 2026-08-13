@@ -10,8 +10,12 @@
 #include "catch.hpp"
 
 #include "emulator.hpp"
+#include "filesystem/dos33.hpp"
+#include "filesystem/prodos.hpp"
+#include "disk_image_builder.hpp"
 
 #include <cstring>
+#include <string>
 #include <vector>
 
 using namespace a2e;
@@ -150,4 +154,124 @@ TEST_CASE("Emulator insertDisk with invalid size returns false", "[emulator][dis
     std::vector<uint8_t> badData(1000, 0x00);
     bool result = emu.insertDisk(0, badData.data(), badData.size(), "bad.dsk");
     REQUIRE_FALSE(result);
+}
+
+// ---------------------------------------------------------------------------
+// Host-side file writing (Merlin DSK directive)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Emulator writeBinaryFileToDisk writes into a DOS 3.3 disk",
+          "[emulator][disk][write]") {
+    Emulator emu;
+    emu.init();
+
+    test::DOS33DiskBuilder builder;
+    auto img = builder.build();
+    REQUIRE(emu.insertDisk(0, img.data(), img.size(), "dos.dsk"));
+
+    std::vector<uint8_t> payload(500);
+    for (size_t i = 0; i < payload.size(); i++) payload[i] = static_cast<uint8_t>(i & 0xFF);
+
+    REQUIRE(emu.writeBinaryFileToDisk(0, "OBJ", 0x0300, payload.data(), payload.size())
+            == FsWriteStatus::OK);
+
+    // The change must be visible in what the image would serialise to
+    size_t size = 0;
+    const uint8_t* data = emu.getDiskData(0, &size);
+    REQUIRE(data != nullptr);
+
+    DOS33CatalogEntry entries[16];
+    int count = DOS33::readCatalog(data, size, entries, 16);
+    REQUIRE(count == 1);
+    CHECK(std::strcmp(entries[0].filename, "OBJ") == 0);
+    CHECK(entries[0].fileType == 0x04);
+
+    std::vector<uint8_t> readBack(2048);
+    int bytes = DOS33::readFile(data, size, entries[0].firstTrack, entries[0].firstSector,
+                                readBack.data(), static_cast<int>(readBack.size()));
+    REQUIRE(bytes >= static_cast<int>(payload.size()) + 4);
+    uint16_t addr = 0, len = 0;
+    REQUIRE(DOS33::getBinaryFileInfo(readBack.data(), bytes, &addr, &len));
+    CHECK(addr == 0x0300);
+    CHECK(len == payload.size());
+    CHECK(std::memcmp(readBack.data() + 4, payload.data(), payload.size()) == 0);
+}
+
+TEST_CASE("Emulator writeBinaryFileToDisk writes into a ProDOS disk",
+          "[emulator][disk][write]") {
+    Emulator emu;
+    emu.init();
+
+    test::ProDOSDiskBuilder builder("TESTDISK");
+    auto img = builder.build();
+    REQUIRE(emu.insertDisk(0, img.data(), img.size(), "prodos.po"));
+
+    std::vector<uint8_t> payload(400, 0x42);
+    REQUIRE(emu.writeBinaryFileToDisk(0, "OBJ", 0x2000, payload.data(), payload.size())
+            == FsWriteStatus::OK);
+
+    size_t size = 0;
+    const uint8_t* data = emu.getDiskData(0, &size);
+    REQUIRE(data != nullptr);
+
+    ProDOSCatalogEntry entries[16];
+    int count = ProDOS::readCatalog(data, size, entries, 16);
+    REQUIRE(count == 1);
+    CHECK(std::strcmp(entries[0].filename, "OBJ") == 0);
+    CHECK(entries[0].fileType == 0x06);
+    CHECK(entries[0].auxType == 0x2000);
+
+    std::vector<uint8_t> readBack(2048);
+    int bytes = ProDOS::readFile(data, size, &entries[0], readBack.data(),
+                                 static_cast<int>(readBack.size()));
+    REQUIRE(bytes == static_cast<int>(payload.size()));
+    CHECK(std::memcmp(readBack.data(), payload.data(), payload.size()) == 0);
+}
+
+TEST_CASE("Emulator writeBinaryFileToDisk marks the disk modified",
+          "[emulator][disk][write]") {
+    Emulator emu;
+    emu.init();
+
+    test::DOS33DiskBuilder builder;
+    auto img = builder.build();
+    REQUIRE(emu.insertDisk(0, img.data(), img.size(), "dos.dsk"));
+    REQUIRE_FALSE(emu.getDisk().getDiskImage(0)->isModified());
+
+    const uint8_t payload[] = {1, 2, 3};
+    REQUIRE(emu.writeBinaryFileToDisk(0, "OBJ", 0x0300, payload, sizeof(payload))
+            == FsWriteStatus::OK);
+    CHECK(emu.getDisk().getDiskImage(0)->isModified());
+}
+
+TEST_CASE("Emulator writeBinaryFileToDisk reports drive and format problems",
+          "[emulator][disk][write]") {
+    Emulator emu;
+    emu.init();
+    const uint8_t payload[] = {1, 2, 3};
+
+    SECTION("Empty drive") {
+        CHECK(emu.writeBinaryFileToDisk(0, "OBJ", 0x0300, payload, sizeof(payload))
+              == FsWriteStatus::NoDisk);
+    }
+
+    SECTION("Out-of-range drive") {
+        CHECK(emu.writeBinaryFileToDisk(5, "OBJ", 0x0300, payload, sizeof(payload))
+              == FsWriteStatus::NoDisk);
+    }
+
+    SECTION("Unformatted disk") {
+        auto img = makeDskImage();
+        REQUIRE(emu.insertDisk(0, img.data(), img.size(), "blank.dsk"));
+        CHECK(emu.writeBinaryFileToDisk(0, "OBJ", 0x0300, payload, sizeof(payload))
+              == FsWriteStatus::NotFormatted);
+    }
+
+    SECTION("Invalid name") {
+        test::DOS33DiskBuilder builder;
+        auto img = builder.build();
+        REQUIRE(emu.insertDisk(0, img.data(), img.size(), "dos.dsk"));
+        CHECK(emu.writeBinaryFileToDisk(0, "", 0x0300, payload, sizeof(payload))
+              == FsWriteStatus::InvalidName);
+    }
 }

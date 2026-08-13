@@ -11,6 +11,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <functional>
 #include <unordered_map>
 
 namespace a2e {
@@ -38,6 +39,14 @@ struct AsmResult {
   uint16_t origin;
   uint16_t endAddress;
   bool success;
+
+  // DSK directive: the object file the assembled code should be written to,
+  // and the drive to write it to (1 or 2). The assembler only records what was
+  // asked for — it has no disk of its own to write to, so the caller that owns
+  // the drives performs the write.
+  bool hasObjectFile;
+  char objectFilename[32];
+  int objectDrive;
 };
 
 class Assembler {
@@ -100,6 +109,18 @@ private:
   void emitDirective(const std::string& directive, const std::string& operand,
                      std::vector<uint8_t>& output,
                      bool& error, std::string& errorMsg, int lineNumber);
+
+  // Walk a comma-separated operand list, evaluating each expression and handing
+  // the value to `emit`. Parentheses are respected, so an expression with a
+  // comma inside them stays one value.
+  void forEachOperandValue(const std::string& operand, bool& error,
+                           std::string& errorMsg, int lineNumber,
+                           const std::function<void(int32_t)>& emit);
+
+  // DSK directive: split "NAME" or "NAME,D2" into filename and drive.
+  // Returns false with errorMsg set if the operand cannot be used.
+  bool parseObjectFileOperand(const std::string& operand, std::string& filename,
+                              int& drive, std::string& errorMsg);
 
   // Mnemonic lookup
   int findMnemonicIndex(const std::string& mnemonic);

@@ -18,6 +18,8 @@
 #include "cards/parallel/parallel_card.hpp"
 #include "cards/softcard/softcard_z80.hpp"
 #include "cards/ssc/ssc_card.hpp"
+#include "disk-image/disk_converter.hpp"
+#include "filesystem/fs_write_status.hpp"
 #include "mmu/mmu.hpp"
 #include "types.hpp"
 #include "video/video.hpp"
@@ -87,7 +89,57 @@ public:
   void ejectDisk(int drive);
   const uint8_t *getDiskData(int drive, size_t *size) const;
   const uint8_t *exportDiskData(int drive, size_t *size);
+
+  /**
+   * Serialise a drive's image in a chosen save format, converting sector order
+   * or encoding to a bit stream as needed. The returned pointer is owned by the
+   * emulator and stays valid until the next call.
+   *
+   * @param drive  Drive number (0 or 1)
+   * @param format Format to produce
+   * @param size   Output: byte count, 0 if the conversion is not possible
+   * @return Pointer to the converted image, or nullptr on failure
+   */
+  const uint8_t *exportDiskDataAs(int drive, DiskSaveFormat format, size_t *size);
+
+  /**
+   * A drive's sectors in DOS 3.3 order, whatever order the file holds them in.
+   *
+   * This is what a filesystem parser wants: the DOS 3.3 reader assumes DOS
+   * order outright, and the ProDOS reader works from either. The returned
+   * pointer is owned by the emulator and stays valid until the next call.
+   *
+   * @param size Output: byte count, 0 if the disk has no readable sectors
+   * @return Pointer to the sectors, or nullptr if they cannot be read
+   */
+  const uint8_t *getDiskSectorsDOSOrder(int drive, size_t *size);
+
+  /** Whether a drive's image can be saved in a format at all */
+  bool canExportDiskAs(int drive, DiskSaveFormat format);
+
+  /** The format a drive's image came from */
+  DiskSaveFormat getDiskNativeFormat(int drive);
+
   const char *getDiskFilename(int drive) const;
+
+  /**
+   * Write a binary file into the filesystem of the disk in a drive, replacing
+   * any file of the same name. DOS 3.3 and ProDOS volumes are both handled;
+   * the filesystem is chosen by what is actually on the disk.
+   *
+   * This is a host-side write — the emulated machine plays no part in it — so
+   * it works whether or not the machine is running, and takes effect the next
+   * time the guest reads the affected tracks.
+   *
+   * @param drive       Drive number (0 or 1)
+   * @param filename    Name to write; folded to the filesystem's conventions
+   * @param loadAddress Load address recorded for the binary
+   * @param data        File payload
+   * @param len         Payload length in bytes
+   */
+  FsWriteStatus writeBinaryFileToDisk(int drive, const char *filename,
+                                      uint16_t loadAddress, const uint8_t *data,
+                                      size_t len);
 
   // Debugger interface
   void addBreakpoint(uint16_t address);
@@ -465,6 +517,14 @@ private:
 
   // State serialization buffer
   mutable std::vector<uint8_t> stateBuffer_;
+
+  // Holds the most recent format-converted disk image handed out by
+  // exportDiskDataAs, which returns a pointer into it
+  std::vector<uint8_t> diskExportBuffer_;
+
+  // Separate buffer for getDiskSectorsDOSOrder, so a file browser holding a
+  // pointer into it is not disturbed by a save happening alongside
+  std::vector<uint8_t> diskSectorBuffer_;
 };
 
 } // namespace a2e

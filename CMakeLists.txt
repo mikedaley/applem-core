@@ -19,6 +19,7 @@ set(CORE_SOURCES
     src/core/audio/audio.cpp
     src/core/disk-image/dsk_disk_image.cpp
     src/core/disk-image/woz_disk_image.cpp
+    src/core/disk-image/disk_converter.cpp
     src/core/disk-image/gcr_encoding.cpp
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
@@ -120,6 +121,10 @@ if(EMSCRIPTEN)
                 \"_insertBlankDisk\", \
                 \"_ejectDisk\", \
                 \"_getDiskData\", \
+                \"_getDiskDataAs\", \
+                \"_getDiskSectorDataDOSOrder\", \
+                \"_canSaveDiskAs\", \
+                \"_getDiskNativeFormat\", \
                 \"_addBreakpoint\", \
                 \"_removeBreakpoint\", \
                 \"_enableBreakpoint\", \
@@ -308,6 +313,11 @@ if(EMSCRIPTEN)
                 \"_getAsmSymbolCount\", \
                 \"_getAsmSymbolName\", \
                 \"_getAsmSymbolValue\", \
+                \"_hasAsmObjectFile\", \
+                \"_getAsmObjectFilename\", \
+                \"_getAsmObjectDrive\", \
+                \"_writeAsmObjectToDisk\", \
+                \"_getAsmObjectStatusMessage\", \
                 \"_isBasicErrorHit\", \
                 \"_getBasicErrorLine\", \
                 \"_getBasicErrorTxtptr\", \
@@ -455,6 +465,7 @@ else()
         src/core/audio/audio.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/disk_converter.cpp
         src/core/disk-image/gcr_encoding.cpp
         src/core/input/keyboard.cpp
         src/core/disassembler/disassembler.cpp
@@ -669,6 +680,18 @@ else()
         tests/unit/test_woz_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # Disk image format conversion (DSK/DO/PO/WOZ)
+    add_catch2_test(test_disk_converter
+        tests/unit/test_disk_converter.cpp
+        src/core/disk-image/disk_converter.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+        src/core/filesystem/dos33.cpp
+        src/core/filesystem/prodos.cpp
+        ${TEST_COMMON_SOURCES}
     )
 
     # Mockingboard (mockingboard_card.cpp + via + ay)

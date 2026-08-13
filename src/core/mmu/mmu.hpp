@@ -173,6 +173,23 @@ public:
   const uint8_t* getAuxRAM() const { return auxRAM_.data(); }
   const uint8_t* getSystemROM() const { return systemROM_.data(); }
 
+  /**
+   * The address the video scanner is fetching at a given cycle.
+   *
+   * The scanner runs continuously and addresses memory during horizontal and
+   * vertical blanking as well as over the visible picture, which is what makes
+   * the floating bus a usable clock: a program can read an undriven soft
+   * switch and learn where the beam is.
+   *
+   * Implements the counter equations from Sather, Understanding the Apple IIe
+   * (5-8 T5.1, 5-9), so the addresses agree with hardware across the whole
+   * line rather than only over the 40 visible cycles.
+   *
+   * @param cycles Absolute CPU cycle count
+   * @return Address in main/aux RAM the scanner reads at that cycle
+   */
+  uint16_t getVideoScannerAddress(uint64_t cycles) const;
+
 private:
   // Soft switch handling
   uint8_t readSoftSwitch(uint16_t address);

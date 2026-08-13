@@ -92,6 +92,27 @@ public:
   void createBlank();
 
   /**
+   * One track's worth of GCR bit stream, as handed in by a converter
+   */
+  struct BitTrack {
+    std::vector<uint8_t> bits; // Packed, MSB first
+    uint32_t bit_count = 0;
+  };
+
+  /**
+   * Build a WOZ2 disk from already-encoded track bit streams.
+   *
+   * Used to save a sector image (DSK/DO/PO) as WOZ: the sector format is
+   * encoded to GCR by the image that holds it, and the result is wrapped in a
+   * WOZ container here. Tracks with a zero bit count are left unmapped, the
+   * way an unformatted track is stored.
+   *
+   * @param tracks One entry per track, from track 0 upward
+   * @return true if at least one track had data
+   */
+  bool createFromTrackBits(const std::vector<BitTrack> &tracks);
+
+  /**
    * Get the disk type from INFO chunk
    * @return 1 = 5.25", 2 = 3.5"
    */
@@ -320,25 +341,7 @@ private:
   int decodeSectorsFromNibbles(const std::vector<uint8_t> &nibbles, int track,
                                std::array<std::array<uint8_t, 256>, 16> &sectors) const;
 
-  /**
-   * Decode 4-and-4 encoded byte.
-   * Used for address field values (volume, track, sector, checksum).
-   *
-   * @param odd First nibble (odd bits)
-   * @param even Second nibble (even bits)
-   * @return Decoded byte value
-   */
-  static uint8_t decode4and4(uint8_t odd, uint8_t even);
 
-  /**
-   * Decode 6-and-2 encoded sector data.
-   * Converts 342 disk nibbles back into 256 data bytes.
-   *
-   * @param nibbles Pointer to 343 nibbles (342 data + 1 checksum)
-   * @param output Output buffer for 256 decoded bytes
-   * @return true if checksum valid, false otherwise
-   */
-  static bool decode6and2(const uint8_t *nibbles, uint8_t *output);
 };
 
 } // namespace a2e

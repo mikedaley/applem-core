@@ -7,6 +7,7 @@
 
 #include "dos33.hpp"
 #include <cstring>
+#include <vector>
 
 namespace a2e {
 
@@ -173,6 +174,291 @@ bool DOS33::getBinaryFileInfo(const uint8_t* fileData, size_t size,
   *address = fileData[0] | (fileData[1] << 8);
   *length = fileData[2] | (fileData[3] << 8);
   return true;
+}
+
+// ============================================================================
+// Writing
+// ============================================================================
+
+uint8_t* DOS33::writeableSector(uint8_t* data, size_t size, int track, int sector) {
+  if (track < 0 || sector < 0 || sector >= SECTORS_PER_TRACK) return nullptr;
+  int offset = getSectorOffset(track, sector);
+  if (offset < 0 || offset + BYTES_PER_SECTOR > static_cast<int>(size)) return nullptr;
+  return data + offset;
+}
+
+bool DOS33::isSectorFree(const uint8_t* vtoc, int track, int sector) {
+  int byteIndex = (sector < 8) ? 1 : 0;
+  int bit = sector & 7;
+  return (vtoc[0x38 + track * 4 + byteIndex] >> bit) & 1;
+}
+
+void DOS33::markSectorUsed(uint8_t* vtoc, int track, int sector) {
+  int byteIndex = (sector < 8) ? 1 : 0;
+  int bit = sector & 7;
+  vtoc[0x38 + track * 4 + byteIndex] &= static_cast<uint8_t>(~(1 << bit));
+}
+
+void DOS33::markSectorFree(uint8_t* vtoc, int track, int sector) {
+  int byteIndex = (sector < 8) ? 1 : 0;
+  int bit = sector & 7;
+  vtoc[0x38 + track * 4 + byteIndex] |= static_cast<uint8_t>(1 << bit);
+}
+
+bool DOS33::allocateSector(uint8_t* vtoc, int trackCount, int* track, int* sector) {
+  // DOS itself sweeps outward from the catalog track; the bitmap is the only
+  // thing that has to be right, so a plain low-to-high sweep is enough. Tracks
+  // holding DOS and the catalog are already marked in use on a formatted disk.
+  for (int t = 1; t < trackCount; t++) {
+    for (int s = SECTORS_PER_TRACK - 1; s >= 0; s--) {
+      if (isSectorFree(vtoc, t, s)) {
+        markSectorUsed(vtoc, t, s);
+        *track = t;
+        *sector = s;
+        vtoc[0x30] = static_cast<uint8_t>(t); // Last track allocated
+        vtoc[0x31] = 1;                       // Allocation direction
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool DOS33::normaliseFilename(const char* filename, uint8_t* out30) {
+  if (!filename) return false;
+
+  // DOS pads with high-bit spaces
+  for (int i = 0; i < MAX_FILENAME; i++) out30[i] = ' ' | 0x80;
+
+  int len = 0;
+  for (const char* p = filename; *p; p++) {
+    char c = *p;
+    if (len >= MAX_FILENAME) return false;
+    // A comma ends the filename as far as DOS's command parser is concerned,
+    // and control characters cannot be typed back in, so neither can be part
+    // of a name we create.
+    if (c == ',' || static_cast<unsigned char>(c) < 0x20 ||
+        static_cast<unsigned char>(c) > 0x7E) {
+      return false;
+    }
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    out30[len++] = static_cast<uint8_t>(c) | 0x80;
+  }
+
+  // A name that is empty or all spaces would be unreachable from DOS
+  if (len == 0) return false;
+  for (int i = 0; i < len; i++) {
+    if ((out30[i] & 0x7F) != ' ') return true;
+  }
+  return false;
+}
+
+void DOS33::freeFileChain(uint8_t* data, size_t size, uint8_t* vtoc,
+                          int track, int sector) {
+  bool visited[TRACKS * SECTORS_PER_TRACK] = {};
+
+  while (track != 0) {
+    int key = track * SECTORS_PER_TRACK + sector;
+    if (key < 0 || key >= TRACKS * SECTORS_PER_TRACK || visited[key]) break;
+    visited[key] = true;
+
+    const uint8_t* tsList = readSector(data, size, track, sector);
+    if (!tsList) break;
+
+    for (int i = 0x0C; i < BYTES_PER_SECTOR; i += 2) {
+      int t = tsList[i];
+      int s = tsList[i + 1];
+      if (t == 0 && s == 0) continue;
+      if (t < TRACKS && s < SECTORS_PER_TRACK) markSectorFree(vtoc, t, s);
+    }
+
+    int nextTrack = tsList[0x01];
+    int nextSector = tsList[0x02];
+    markSectorFree(vtoc, track, sector);
+    track = nextTrack;
+    sector = nextSector;
+  }
+}
+
+FsWriteStatus DOS33::writeFile(uint8_t* data, size_t size, const char* filename,
+                               uint8_t fileType, const uint8_t* fileData,
+                               size_t fileLen) {
+  if (size < static_cast<size_t>(DISK_SIZE)) return FsWriteStatus::ImageTooSmall;
+  if (!isDOS33(data, size)) return FsWriteStatus::NotFormatted;
+
+  uint8_t name[MAX_FILENAME];
+  if (!normaliseFilename(filename, name)) return FsWriteStatus::InvalidName;
+
+  uint8_t* vtoc = writeableSector(data, size, 17, 0);
+  if (!vtoc) return FsWriteStatus::NotFormatted;
+
+  int trackCount = vtoc[0x34];
+  if (trackCount <= 0 || trackCount > TRACKS) trackCount = TRACKS;
+
+  // Sectors needed: one per 256 bytes of data, plus a T/S list sector for each
+  // 122 data sectors. A file of zero length still occupies one T/S list sector.
+  size_t dataSectors = (fileLen + BYTES_PER_SECTOR - 1) / BYTES_PER_SECTOR;
+  size_t listSectors = (dataSectors + TS_PAIRS_PER_LIST - 1) / TS_PAIRS_PER_LIST;
+  if (listSectors == 0) listSectors = 1;
+  size_t totalSectors = dataSectors + listSectors;
+  if (totalSectors > 0xFFFF) return FsWriteStatus::FileTooLarge;
+
+  // ------------------------------------------------------------------
+  // Locate the catalog entry to use: an existing file of the same name is
+  // replaced in place, otherwise the first free or deleted slot is claimed.
+  // ------------------------------------------------------------------
+  uint8_t* entry = nullptr;
+  uint8_t* freeEntry = nullptr;
+  int existingTrack = 0, existingSector = 0;
+
+  {
+    int track = vtoc[0x01];
+    int sector = vtoc[0x02];
+    bool visited[TRACKS * SECTORS_PER_TRACK] = {};
+
+    while (track != 0) {
+      int key = track * SECTORS_PER_TRACK + sector;
+      if (key < 0 || key >= TRACKS * SECTORS_PER_TRACK || visited[key]) break;
+      visited[key] = true;
+
+      uint8_t* catSector = writeableSector(data, size, track, sector);
+      if (!catSector) break;
+
+      for (int i = 0; i < CATALOG_ENTRIES_PER_SECTOR; i++) {
+        uint8_t* e = catSector + 0x0B + i * CATALOG_ENTRY_SIZE;
+        uint8_t firstTrack = e[0x00];
+
+        if (firstTrack == 0x00 || firstTrack == 0xFF) {
+          if (!freeEntry) freeEntry = e;
+          continue;
+        }
+
+        if (memcmp(e + 0x03, name, MAX_FILENAME) == 0) {
+          if (e[0x02] & 0x80) return FsWriteStatus::FileLocked;
+          entry = e;
+          existingTrack = firstTrack;
+          existingSector = e[0x01];
+          break;
+        }
+      }
+      if (entry) break;
+
+      track = catSector[0x01];
+      sector = catSector[0x02];
+    }
+  }
+
+  if (!entry) entry = freeEntry;
+  if (!entry) return FsWriteStatus::DirectoryFull;
+
+  // Reclaim the replaced file's sectors before allocating, so a file that is
+  // rewritten at a similar size always fits.
+  if (existingTrack != 0) {
+    freeFileChain(data, size, vtoc, existingTrack, existingSector);
+  }
+
+  // ------------------------------------------------------------------
+  // Allocate every sector up front. Nothing is written to the catalog until
+  // the whole file has somewhere to live, so a full disk leaves the image
+  // exactly as it was apart from the freed sectors of the replaced file.
+  // ------------------------------------------------------------------
+  uint8_t vtocBackup[BYTES_PER_SECTOR];
+  memcpy(vtocBackup, vtoc, BYTES_PER_SECTOR);
+
+  struct SectorRef { int track; int sector; };
+  std::vector<SectorRef> listRefs;
+  std::vector<SectorRef> dataRefs;
+  listRefs.reserve(listSectors);
+  dataRefs.reserve(dataSectors);
+
+  bool full = false;
+  for (size_t i = 0; i < listSectors && !full; i++) {
+    SectorRef ref{};
+    if (allocateSector(vtoc, trackCount, &ref.track, &ref.sector)) {
+      listRefs.push_back(ref);
+    } else {
+      full = true;
+    }
+  }
+  for (size_t i = 0; i < dataSectors && !full; i++) {
+    SectorRef ref{};
+    if (allocateSector(vtoc, trackCount, &ref.track, &ref.sector)) {
+      dataRefs.push_back(ref);
+    } else {
+      full = true;
+    }
+  }
+
+  if (full) {
+    memcpy(vtoc, vtocBackup, BYTES_PER_SECTOR);
+    return FsWriteStatus::DiskFull;
+  }
+
+  // ------------------------------------------------------------------
+  // Emit data sectors, then the T/S lists that describe them
+  // ------------------------------------------------------------------
+  for (size_t i = 0; i < dataRefs.size(); i++) {
+    uint8_t* sec = writeableSector(data, size, dataRefs[i].track, dataRefs[i].sector);
+    if (!sec) return FsWriteStatus::DiskFull;
+    size_t offset = i * BYTES_PER_SECTOR;
+    size_t chunk = fileLen - offset;
+    if (chunk > BYTES_PER_SECTOR) chunk = BYTES_PER_SECTOR;
+    memcpy(sec, fileData + offset, chunk);
+    if (chunk < BYTES_PER_SECTOR) {
+      memset(sec + chunk, 0, BYTES_PER_SECTOR - chunk);
+    }
+  }
+
+  for (size_t i = 0; i < listRefs.size(); i++) {
+    uint8_t* list = writeableSector(data, size, listRefs[i].track, listRefs[i].sector);
+    if (!list) return FsWriteStatus::DiskFull;
+    memset(list, 0, BYTES_PER_SECTOR);
+
+    if (i + 1 < listRefs.size()) {
+      list[0x01] = static_cast<uint8_t>(listRefs[i + 1].track);
+      list[0x02] = static_cast<uint8_t>(listRefs[i + 1].sector);
+    }
+
+    // Sector offset in the file of the first sector this list describes
+    uint16_t sectorOffset = static_cast<uint16_t>(i * TS_PAIRS_PER_LIST);
+    list[0x05] = static_cast<uint8_t>(sectorOffset & 0xFF);
+    list[0x06] = static_cast<uint8_t>(sectorOffset >> 8);
+
+    for (int p = 0; p < TS_PAIRS_PER_LIST; p++) {
+      size_t index = i * TS_PAIRS_PER_LIST + p;
+      if (index >= dataRefs.size()) break;
+      list[0x0C + p * 2] = static_cast<uint8_t>(dataRefs[index].track);
+      list[0x0C + p * 2 + 1] = static_cast<uint8_t>(dataRefs[index].sector);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Catalog entry
+  // ------------------------------------------------------------------
+  entry[0x00] = static_cast<uint8_t>(listRefs[0].track);
+  entry[0x01] = static_cast<uint8_t>(listRefs[0].sector);
+  entry[0x02] = static_cast<uint8_t>(fileType & 0x7F);
+  memcpy(entry + 0x03, name, MAX_FILENAME);
+  entry[0x21] = static_cast<uint8_t>(totalSectors & 0xFF);
+  entry[0x22] = static_cast<uint8_t>((totalSectors >> 8) & 0xFF);
+
+  return FsWriteStatus::OK;
+}
+
+FsWriteStatus DOS33::writeBinaryFile(uint8_t* data, size_t size,
+                                     const char* filename, uint16_t loadAddress,
+                                     const uint8_t* payload, size_t payloadLen) {
+  if (payloadLen > 0xFFFF) return FsWriteStatus::FileTooLarge;
+
+  std::vector<uint8_t> file;
+  file.reserve(payloadLen + 4);
+  file.push_back(static_cast<uint8_t>(loadAddress & 0xFF));
+  file.push_back(static_cast<uint8_t>(loadAddress >> 8));
+  file.push_back(static_cast<uint8_t>(payloadLen & 0xFF));
+  file.push_back(static_cast<uint8_t>((payloadLen >> 8) & 0xFF));
+  file.insert(file.end(), payload, payload + payloadLen);
+
+  return writeFile(data, size, filename, 0x04, file.data(), file.size());
 }
 
 } // namespace a2e

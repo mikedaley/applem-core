@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "../disk-image/gcr_encoding.hpp"
+
 #include <cstdint>
 #include <cstddef>
 
@@ -78,10 +80,6 @@ private:
   static bool isValidVolumeHeader(const uint8_t* dirData);
   static const char* getFileTypeName(uint8_t fileType);
 
-  // ProDOS-to-DOS sector conversion table (same interleave as ProDOS)
-  static constexpr uint8_t PRODOS_TO_DOS_SECTOR[16] = {
-    0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15
-  };
 };
 
 } // namespace a2e

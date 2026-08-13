@@ -553,3 +553,82 @@ TEST_CASE("Assembler handles arithmetic in expressions", "[asm][expression]") {
     REQUIRE(result.success);
     CHECK(result.output[1] == 0x30);
 }
+
+// ---------------------------------------------------------------------------
+// DSK directive - names the object file the assembled code is written to
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Assembler DSK records the object filename", "[asm][directive][dsk]") {
+    Assembler asm_;
+    auto result = asm_.assemble(" DSK OBJ.FILE\n ORG $300\n NOP\n");
+
+    REQUIRE(result.success);
+    CHECK(result.hasObjectFile);
+    CHECK(std::string(result.objectFilename) == "OBJ.FILE");
+    CHECK(result.objectDrive == 1);
+    // DSK emits nothing and does not move the program counter
+    REQUIRE(result.output.size() == 1);
+    CHECK(result.output[0] == 0xEA);
+    CHECK(result.origin == 0x0300);
+}
+
+TEST_CASE("Assembler DSK accepts a drive qualifier", "[asm][directive][dsk]") {
+    Assembler asm_;
+
+    auto d2 = asm_.assemble(" ORG $300\n DSK OBJ,D2\n NOP\n");
+    REQUIRE(d2.success);
+    CHECK(d2.hasObjectFile);
+    CHECK(std::string(d2.objectFilename) == "OBJ");
+    CHECK(d2.objectDrive == 2);
+
+    auto s6d1 = asm_.assemble(" ORG $300\n DSK OBJ,S6,D1\n NOP\n");
+    REQUIRE(s6d1.success);
+    CHECK(s6d1.objectDrive == 1);
+}
+
+TEST_CASE("Assembler DSK reports bad operands", "[asm][directive][dsk]") {
+    Assembler asm_;
+
+    SECTION("Missing filename") {
+        auto result = asm_.assemble(" ORG $300\n DSK\n NOP\n");
+        CHECK_FALSE(result.success);
+        REQUIRE(result.errors.size() == 1);
+        CHECK(std::string(result.errors[0].message).find("filename required")
+              != std::string::npos);
+        CHECK_FALSE(result.hasObjectFile);
+    }
+
+    SECTION("Filename too long") {
+        auto result = asm_.assemble(
+            " ORG $300\n DSK THIS.NAME.IS.MUCH.LONGER.THAN.THIRTY.CHARACTERS\n NOP\n");
+        CHECK_FALSE(result.success);
+        REQUIRE(result.errors.size() == 1);
+        CHECK(std::string(result.errors[0].message).find("too long")
+              != std::string::npos);
+    }
+
+    SECTION("Unsupported qualifier") {
+        auto result = asm_.assemble(" ORG $300\n DSK OBJ,S5\n NOP\n");
+        CHECK_FALSE(result.success);
+        REQUIRE(result.errors.size() == 1);
+        CHECK(std::string(result.errors[0].message).find("qualifier")
+              != std::string::npos);
+    }
+
+    SECTION("Second DSK") {
+        auto result = asm_.assemble(" ORG $300\n DSK ONE\n DSK TWO\n NOP\n");
+        CHECK_FALSE(result.success);
+        REQUIRE(result.errors.size() == 1);
+        CHECK(result.errors[0].lineNumber == 3);
+        // The first name still stands
+        CHECK(std::string(result.objectFilename) == "ONE");
+    }
+}
+
+TEST_CASE("Assembler leaves hasObjectFile clear without DSK", "[asm][directive][dsk]") {
+    Assembler asm_;
+    auto result = asm_.assemble(" ORG $300\n NOP\n");
+    REQUIRE(result.success);
+    CHECK_FALSE(result.hasObjectFile);
+    CHECK(std::string(result.objectFilename).empty());
+}

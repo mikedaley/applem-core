@@ -18,6 +18,7 @@
 #include <array>
 #include <cstring>
 #include <vector>
+#include <string>
 
 using namespace a2e;
 
@@ -270,4 +271,198 @@ TEST_CASE("getBinaryFileInfo with various load addresses", "[dos33][binaryInfo]"
         CHECK(addr == 0xBF00);
         CHECK(len == 0x0100);
     }
+}
+
+// ---------------------------------------------------------------------------
+// writeFile / writeBinaryFile - Writing
+// ---------------------------------------------------------------------------
+
+// The builder allocates its own files from track 20 upward without touching the
+// VTOC bitmap, while the writer allocates from track 1 upward using the bitmap,
+// so builder-made and writer-made files never contend for the same sectors.
+
+TEST_CASE("writeBinaryFile round-trips through the catalog", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    std::vector<uint8_t> disk = builder.build();
+
+    std::vector<uint8_t> payload(600);
+    for (size_t i = 0; i < payload.size(); i++) payload[i] = static_cast<uint8_t>(i & 0xFF);
+
+    REQUIRE(DOS33::writeFile(disk.data(), disk.size(), "OBJ", 0x04, nullptr, 0)
+            == FsWriteStatus::OK);
+    REQUIRE(DOS33::writeBinaryFile(disk.data(), disk.size(), "OBJ.FILE", 0x0300,
+                                   payload.data(), payload.size())
+            == FsWriteStatus::OK);
+
+    DOS33CatalogEntry entries[32];
+    int count = DOS33::readCatalog(disk.data(), disk.size(), entries, 32);
+    REQUIRE(count == 2);
+
+    const DOS33CatalogEntry* written = nullptr;
+    for (int i = 0; i < count; i++) {
+        if (std::strcmp(entries[i].filename, "OBJ.FILE") == 0) written = &entries[i];
+    }
+    REQUIRE(written != nullptr);
+    CHECK(written->fileType == 0x04);
+    CHECK(std::strcmp(written->fileTypeName, "B") == 0);
+    CHECK_FALSE(written->isLocked);
+    // 604 bytes of file = 3 data sectors + 1 T/S list sector
+    CHECK(written->sectorCount == 4);
+
+    std::vector<uint8_t> readBack(4096);
+    int bytes = DOS33::readFile(disk.data(), disk.size(), written->firstTrack,
+                                written->firstSector, readBack.data(),
+                                static_cast<int>(readBack.size()));
+    REQUIRE(bytes >= static_cast<int>(payload.size()) + 4);
+
+    uint16_t addr = 0, len = 0;
+    REQUIRE(DOS33::getBinaryFileInfo(readBack.data(), bytes, &addr, &len));
+    CHECK(addr == 0x0300);
+    CHECK(len == payload.size());
+    CHECK(std::memcmp(readBack.data() + 4, payload.data(), payload.size()) == 0);
+}
+
+TEST_CASE("writeFile lowercases and pads the name as DOS stores it", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    std::vector<uint8_t> disk = builder.build();
+
+    const uint8_t body[] = {1, 2, 3};
+    REQUIRE(DOS33::writeFile(disk.data(), disk.size(), "lower.name", 0x00, body, sizeof(body))
+            == FsWriteStatus::OK);
+
+    DOS33CatalogEntry entries[32];
+    int count = DOS33::readCatalog(disk.data(), disk.size(), entries, 32);
+    REQUIRE(count == 1);
+    CHECK(std::strcmp(entries[0].filename, "LOWER.NAME") == 0);
+}
+
+TEST_CASE("writeFile replaces a file of the same name in place", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    std::vector<uint8_t> disk = builder.build();
+
+    std::vector<uint8_t> first(1000, 0xAA);
+    std::vector<uint8_t> second(200, 0x55);
+
+    REQUIRE(DOS33::writeFile(disk.data(), disk.size(), "OBJ", 0x04, first.data(), first.size())
+            == FsWriteStatus::OK);
+    REQUIRE(DOS33::writeFile(disk.data(), disk.size(), "OBJ", 0x04, second.data(), second.size())
+            == FsWriteStatus::OK);
+
+    DOS33CatalogEntry entries[32];
+    int count = DOS33::readCatalog(disk.data(), disk.size(), entries, 32);
+    REQUIRE(count == 1);
+    CHECK(entries[0].sectorCount == 2); // 1 data sector + 1 T/S list
+
+    std::vector<uint8_t> readBack(4096);
+    int bytes = DOS33::readFile(disk.data(), disk.size(), entries[0].firstTrack,
+                                entries[0].firstSector, readBack.data(),
+                                static_cast<int>(readBack.size()));
+    REQUIRE(bytes >= static_cast<int>(second.size()));
+    CHECK(std::memcmp(readBack.data(), second.data(), second.size()) == 0);
+}
+
+TEST_CASE("rewriting a file does not leak sectors", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    std::vector<uint8_t> disk = builder.build();
+
+    auto freeSectors = [&]() {
+        const uint8_t* vtoc = disk.data() + (17 * 16 + 0) * 256;
+        int free = 0;
+        for (int t = 0; t < 35; t++) {
+            for (int b = 0; b < 2; b++) {
+                uint8_t bits = vtoc[0x38 + t * 4 + b];
+                for (int i = 0; i < 8; i++) if (bits & (1 << i)) free++;
+            }
+        }
+        return free;
+    };
+
+    std::vector<uint8_t> body(1000, 0x11);
+    REQUIRE(DOS33::writeFile(disk.data(), disk.size(), "OBJ", 0x04, body.data(), body.size())
+            == FsWriteStatus::OK);
+    int afterFirst = freeSectors();
+
+    for (int i = 0; i < 5; i++) {
+        REQUIRE(DOS33::writeFile(disk.data(), disk.size(), "OBJ", 0x04, body.data(), body.size())
+                == FsWriteStatus::OK);
+    }
+    CHECK(freeSectors() == afterFirst);
+}
+
+TEST_CASE("writeFile refuses to replace a locked file", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    const uint8_t body[] = {1, 2, 3};
+    builder.addFile("LOCKED", 0x04, body, sizeof(body), true);
+    std::vector<uint8_t> disk = builder.build();
+
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "LOCKED", 0x04, body, sizeof(body))
+          == FsWriteStatus::FileLocked);
+}
+
+TEST_CASE("writeFile rejects unusable names", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    std::vector<uint8_t> disk = builder.build();
+    const uint8_t body[] = {1};
+
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "", 0x04, body, 1)
+          == FsWriteStatus::InvalidName);
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "   ", 0x04, body, 1)
+          == FsWriteStatus::InvalidName);
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "HAS,COMMA", 0x04, body, 1)
+          == FsWriteStatus::InvalidName);
+    CHECK(DOS33::writeFile(disk.data(), disk.size(),
+                           "THIS.NAME.IS.LONGER.THAN.THIRTY.CHARACTERS", 0x04, body, 1)
+          == FsWriteStatus::InvalidName);
+}
+
+TEST_CASE("writeFile reports a full disk without disturbing the image", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    std::vector<uint8_t> disk = builder.build();
+
+    // Leave four free sectors: enough for a small file, not for a large one
+    uint8_t* vtoc = disk.data() + (17 * 16 + 0) * 256;
+    for (int t = 0; t < 35; t++) {
+        vtoc[0x38 + t * 4 + 0] = 0x00;
+        vtoc[0x38 + t * 4 + 1] = 0x00;
+    }
+    vtoc[0x38 + 20 * 4 + 1] = 0x0F; // sectors 0-3 of track 20
+
+    std::vector<uint8_t> big(4000, 0x22);
+    std::vector<uint8_t> before = disk;
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "TOOBIG", 0x04, big.data(), big.size())
+          == FsWriteStatus::DiskFull);
+    CHECK(disk == before);
+
+    std::vector<uint8_t> small(700, 0x33);
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "FITS", 0x04, small.data(), small.size())
+          == FsWriteStatus::OK);
+}
+
+TEST_CASE("writeFile rejects an unformatted image", "[dos33][write]") {
+    std::vector<uint8_t> zeroed(143360, 0x00);
+    const uint8_t body[] = {1};
+    CHECK(DOS33::writeFile(zeroed.data(), zeroed.size(), "OBJ", 0x04, body, 1)
+          == FsWriteStatus::NotFormatted);
+
+    std::vector<uint8_t> small(1024, 0x00);
+    CHECK(DOS33::writeFile(small.data(), small.size(), "OBJ", 0x04, body, 1)
+          == FsWriteStatus::ImageTooSmall);
+}
+
+TEST_CASE("writeFile fills the catalog then reports it full", "[dos33][write]") {
+    test::DOS33DiskBuilder builder;
+    std::vector<uint8_t> disk = builder.build();
+
+    // The builder lays down a single catalog sector, so seven entries fill it
+    const uint8_t body[] = {1, 2, 3};
+    for (int i = 0; i < 7; i++) {
+        std::string name = "FILE" + std::to_string(i);
+        REQUIRE(DOS33::writeFile(disk.data(), disk.size(), name.c_str(), 0x04, body, sizeof(body))
+                == FsWriteStatus::OK);
+    }
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "ONEMORE", 0x04, body, sizeof(body))
+          == FsWriteStatus::DirectoryFull);
+    // An existing name still writes, since it needs no new slot
+    CHECK(DOS33::writeFile(disk.data(), disk.size(), "FILE3", 0x04, body, sizeof(body))
+          == FsWriteStatus::OK);
 }

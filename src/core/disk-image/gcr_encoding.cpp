@@ -12,6 +12,64 @@
 namespace a2e {
 namespace GCR {
 
+namespace {
+
+// Reverse of ENCODE_6_AND_2: disk nibble -> 6-bit value, -1 where the nibble
+// is not one the encoding can produce.
+constexpr std::array<int8_t, 256> DECODE_6_AND_2 = []() {
+  std::array<int8_t, 256> table{};
+  for (int i = 0; i < 256; i++) {
+    table[i] = -1;
+  }
+  for (int i = 0; i < 64; i++) {
+    table[ENCODE_6_AND_2[i]] = static_cast<int8_t>(i);
+  }
+  return table;
+}();
+
+} // namespace
+
+bool decode6and2(const uint8_t *nibbles, uint8_t *output,
+                 bool requireChecksum) {
+  // The encoder builds a 342-byte buffer — 86 bytes of packed low bits then
+  // 256 bytes of high bits — and XORs each byte with the one before it, so
+  // decoding runs the XOR chain back and unpacks the pairs.
+  uint8_t buffer[342];
+
+  uint8_t prev = 0;
+  for (int i = 0; i < 342; i++) {
+    int8_t decoded = DECODE_6_AND_2[nibbles[i]];
+    if (decoded < 0) {
+      return false; // Not a nibble the encoding can produce
+    }
+    buffer[i] = static_cast<uint8_t>(decoded) ^ prev;
+    prev = buffer[i];
+  }
+
+  // The checksum nibble carries the last pre-XOR value
+  int8_t checksum = DECODE_6_AND_2[nibbles[342]];
+  if (checksum < 0 || (prev & 0x3F) != (checksum & 0x3F)) {
+    if (requireChecksum) {
+      return false;
+    }
+  }
+
+  for (int i = 0; i < 256; i++) {
+    // High 6 bits from the primary buffer
+    uint8_t high = static_cast<uint8_t>(buffer[86 + i] << 2);
+
+    // Low 2 bits from the auxiliary buffer, where the encoder swapped them
+    uint8_t aux = buffer[i % 86];
+    int shift = (i / 86) * 2;
+    uint8_t low = (aux >> shift) & 0x03;
+    low = static_cast<uint8_t>(((low & 0x01) << 1) | ((low & 0x02) >> 1));
+
+    output[i] = static_cast<uint8_t>(high | low);
+  }
+
+  return true;
+}
+
 std::vector<uint8_t> encode6and2(const uint8_t *data)
 {
   // The 6-and-2 encoding converts 256 bytes into 342 6-bit values

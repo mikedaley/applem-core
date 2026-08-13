@@ -11,28 +11,6 @@
 
 namespace a2e {
 
-// 6-and-2 decoding table (reverse of GCR::ENCODE_6_AND_2)
-static constexpr std::array<int8_t, 256> DECODE_6_AND_2 = []() {
-  std::array<int8_t, 256> table{};
-  for (int i = 0; i < 256; i++) {
-    table[i] = -1; // Invalid nibble
-  }
-  // Build reverse lookup from encode table
-  for (int i = 0; i < 64; i++) {
-    table[GCR::ENCODE_6_AND_2[i]] = static_cast<int8_t>(i);
-  }
-  return table;
-}();
-
-// DOS 3.3 physical to logical sector mapping
-// Physical sector order on disk -> logical sector in file
-static constexpr std::array<int, 16> DOS_PHYSICAL_TO_LOGICAL = {
-    0, 7, 14, 6, 13, 5, 12, 4, 11, 3, 10, 2, 9, 1, 8, 15};
-
-// ProDOS physical to logical sector mapping
-static constexpr std::array<int, 16> PRODOS_PHYSICAL_TO_LOGICAL = {
-    0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15};
-
 WozDiskImage::WozDiskImage() { reset(); }
 
 void WozDiskImage::reset() {
@@ -323,6 +301,57 @@ void WozDiskImage::createBlank() {
   // a blank disk nobody has written to holds nothing worth saving, and marking
   // it here made every eject offer to save an empty image.
   modified_ = false;
+}
+
+bool WozDiskImage::createFromTrackBits(const std::vector<BitTrack> &tracks) {
+  // Start from a blank disk so the INFO chunk and quarter-track map are the
+  // ones createBlank() already settles on, then replace the track data.
+  createBlank();
+
+  int trackCount = static_cast<int>(tracks.size());
+  if (trackCount <= 0) {
+    return false;
+  }
+  if (trackCount > QUARTER_TRACK_COUNT / 4) {
+    trackCount = QUARTER_TRACK_COUNT / 4;
+  }
+
+  tracks_.clear();
+  tracks_.resize(trackCount);
+
+  bool anyData = false;
+  size_t largestBlocks = 0;
+
+  for (int t = 0; t < trackCount; t++) {
+    const BitTrack &src = tracks[t];
+    if (src.bit_count == 0 || src.bits.empty()) {
+      tracks_[t].valid = false;
+      tracks_[t].bit_count = 0;
+      tracks_[t].bits.clear();
+      continue;
+    }
+    tracks_[t].bits = src.bits;
+    tracks_[t].bit_count = src.bit_count;
+    tracks_[t].valid = true;
+    anyData = true;
+
+    size_t blocks = (src.bits.size() + 511) / 512;
+    if (blocks > largestBlocks) largestBlocks = blocks;
+  }
+
+  // TMAP: quarter-tracks either side of a whole track read that track, and
+  // anything past the last track is unmapped.
+  for (int qt = 0; qt < QUARTER_TRACK_COUNT; qt++) {
+    int track = qt / 4;
+    tmap_[qt] = (track < trackCount && tracks_[track].valid)
+                    ? static_cast<uint8_t>(track)
+                    : NO_TRACK;
+  }
+
+  info_.largest_track = static_cast<uint16_t>(largestBlocks);
+  loaded_ = anyData;
+  modified_ = false;
+  return anyData;
 }
 
 bool WozDiskImage::isLoaded() const { return loaded_; }
@@ -770,88 +799,6 @@ const uint8_t *WozDiskImage::exportData(size_t *size) {
 
 // ===== Sector Decoding Implementation =====
 
-uint8_t WozDiskImage::decode4and4(uint8_t odd, uint8_t even) {
-  // 4-and-4 encoding: odd bits in first nibble, even bits in second
-  // Decode by combining the low bits of each
-  return ((odd << 1) | 0x01) & even;
-}
-
-bool WozDiskImage::decode6and2(const uint8_t *nibbles, uint8_t *output) {
-  // 6-and-2 decoding: 343 nibbles -> 256 bytes
-  // This reverses the encoding done in gcr_encoding.cpp:
-  //
-  // Encoding creates a 342-byte buffer:
-  //   buffer[0..85]: auxiliary buffer - 2 bits from each of 3 data bytes
-  //   buffer[86..341]: primary buffer - 6 high bits from each of 256 data bytes
-  // Then XOR encodes: each byte XOR'd with previous byte's value
-  // Final nibble (343rd) is the checksum (last pre-XOR value)
-
-  std::array<uint8_t, 342> buffer;
-
-  // Step 1: Decode nibbles and reverse XOR encoding
-  // The encoder does: nibble[i] = encode(buffer[i] ^ prev), prev = buffer[i]
-  // To decode: buffer[i] = decode(nibble[i]) ^ prev_decoded
-  uint8_t prev = 0;
-  for (int i = 0; i < 342; i++) {
-    int8_t val = DECODE_6_AND_2[nibbles[i]];
-    if (val < 0) {
-      return false; // Invalid nibble
-    }
-    buffer[i] = static_cast<uint8_t>(val) ^ prev;
-    prev = buffer[i];
-  }
-
-  // Step 2: Verify checksum
-  // The checksum nibble encodes the last buffer value (before XOR was applied)
-  int8_t chk_val = DECODE_6_AND_2[nibbles[342]];
-  if (chk_val < 0 || prev != static_cast<uint8_t>(chk_val)) {
-    return false; // Checksum mismatch
-  }
-
-  // Step 3: Reassemble 256 bytes from the buffer
-  // Primary buffer (86-341) contains bits 2-7 of each byte
-  // Auxiliary buffer (0-85) contains bits 0-1 from groups of 3 bytes:
-  //   buffer[i] bits 0,1 -> data[i] bits 1,0 (swapped)
-  //   buffer[i] bits 2,3 -> data[i+86] bits 1,0 (swapped)
-  //   buffer[i] bits 4,5 -> data[i+172] bits 1,0 (swapped)
-
-  for (int i = 0; i < 256; i++) {
-    // Get the 6 high bits from primary buffer
-    uint8_t high = buffer[86 + i] << 2;
-
-    // Get the 2 low bits from auxiliary buffer
-    // The aux index for byte i depends on which group of 86 it's in
-    int aux_idx = i % 86;
-    int group = i / 86; // 0, 1, or 2
-
-    uint8_t aux = buffer[aux_idx];
-    uint8_t low_bits;
-
-    // Extract the 2 bits for this group and unswap them
-    // Encoding did: ((data[i] & 0x01) << 1) | ((data[i] & 0x02) >> 1)
-    // So bit 0 of aux = bit 1 of data, bit 1 of aux = bit 0 of data
-    switch (group) {
-      case 0:
-        // Bits 0,1 of aux -> bits 0,1 of data (with swap)
-        low_bits = ((aux & 0x02) >> 1) | ((aux & 0x01) << 1);
-        break;
-      case 1:
-        // Bits 2,3 of aux -> bits 0,1 of data (with swap)
-        low_bits = ((aux & 0x08) >> 3) | ((aux & 0x04) >> 1);
-        break;
-      case 2:
-      default:
-        // Bits 4,5 of aux -> bits 0,1 of data (with swap)
-        low_bits = ((aux & 0x20) >> 5) | ((aux & 0x10) >> 3);
-        break;
-    }
-
-    output[i] = high | low_bits;
-  }
-
-  return true;
-}
-
 std::vector<uint8_t> WozDiskImage::readTrackNibbles(size_t track_index) const {
   std::vector<uint8_t> nibbles;
 
@@ -937,10 +884,10 @@ int WozDiskImage::decodeSectorsFromNibbles(
     }
 
     // Decode address field (4-and-4 encoded)
-    uint8_t volume = decode4and4(nibbles[i + 3], nibbles[i + 4]);
-    uint8_t track = decode4and4(nibbles[i + 5], nibbles[i + 6]);
-    uint8_t sector = decode4and4(nibbles[i + 7], nibbles[i + 8]);
-    uint8_t checksum = decode4and4(nibbles[i + 9], nibbles[i + 10]);
+    uint8_t volume = GCR::decode4and4(nibbles[i + 3], nibbles[i + 4]);
+    uint8_t track = GCR::decode4and4(nibbles[i + 5], nibbles[i + 6]);
+    uint8_t sector = GCR::decode4and4(nibbles[i + 7], nibbles[i + 8]);
+    uint8_t checksum = GCR::decode4and4(nibbles[i + 9], nibbles[i + 10]);
 
     // Verify address checksum
     if ((volume ^ track ^ sector) != checksum) {
@@ -978,7 +925,7 @@ int WozDiskImage::decodeSectorsFromNibbles(
     }
 
     // Decode 6-and-2 data (343 nibbles: 342 data + 1 checksum)
-    if (decode6and2(&nibbles[data_start], sectors[sector].data())) {
+    if (GCR::decode6and2(&nibbles[data_start], sectors[sector].data(), true)) {
       sector_found[sector] = true;
       sectors_decoded++;
 
@@ -1031,7 +978,7 @@ bool WozDiskImage::decodeSectors() const {
     // Copy decoded sectors to output buffer
     // Use DOS 3.3 physical-to-logical mapping (most common for WOZ files)
     for (int phys_sector = 0; phys_sector < 16; phys_sector++) {
-      int logical_sector = DOS_PHYSICAL_TO_LOGICAL[phys_sector];
+      int logical_sector = GCR::DOS_PHYSICAL_TO_LOGICAL[phys_sector];
       size_t offset = (track * 16 + logical_sector) * 256;
       std::memcpy(&decoded_sectors_[offset], track_sectors[phys_sector].data(), 256);
     }
