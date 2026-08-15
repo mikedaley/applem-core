@@ -89,10 +89,17 @@ void decodeComposite(const uint8_t *dots, bool burst, uint32_t *out);
 // How a run of dots should be turned into colour when no signal is being
 // simulated. Each mode emitter tags the dots it writes, because "what colour is
 // this" is a question about the mode's own semantics, not about the waveform.
+//
+// These name mechanisms rather than modes, because the split does not fall
+// along mode lines: a text stroke and a HIRES pixel are both two dots wide and
+// both take their colour the same way.
 enum class IdealKind : uint8_t {
-  TEXT = 0, // Dot on or off, full contrast. No colour, ever.
-  CELL,     // Flat colour over the aligned four-dot group (LORES, DLORES, DHGR)
-  HIRES     // Dot-gated: unlit dots are black, lit ones take an artifact colour
+  // Unlit dots are black; lit ones take the artifact colour their run implies.
+  // Used by text and HIRES — anything whose dots are drawn rather than encoded.
+  DOT_GATED = 0,
+  // Flat colour across the aligned four-dot group, which is how LORES, DLORES
+  // and DHGR carry an actual colour value rather than a drawn shape.
+  CELL,
 };
 
 // Idealised decode — no composite effects at all.

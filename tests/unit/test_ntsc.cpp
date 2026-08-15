@@ -169,7 +169,7 @@ TEST_CASE("Digital decoders pass the dot stream through when burst is off",
     Line line;
     line.fill([](int n) { return (n / 2) & 1; });
 
-    line.tag(IdealKind::HIRES);
+    line.tag(IdealKind::DOT_GATED);
     for (const bool smooth : {false, true}) {
         decodeIdeal(line.dots, line.kind, false, smooth, line.out);
         for (int x = 0; x < VISIBLE_DOTS; x++) {
@@ -261,7 +261,7 @@ TEST_CASE("Pixel exact never colours an unlit dot", "[ntsc][pixel-exact]") {
     // and colour must stop dead at the last lit dot.
     Line line;
     line.fill([](int n) { return n >= 200 && n < 300; });
-    line.tag(IdealKind::HIRES);
+    line.tag(IdealKind::DOT_GATED);
     decodeIdeal(line.dots, line.kind, true, false, line.out);
 
     for (int x = 0; x < VISIBLE_DOTS; x++) {
@@ -286,7 +286,7 @@ TEST_CASE("Pixel exact gives an isolated HIRES pixel its artifact colour",
         line.fill([](int) { return 0; });
         line.set(start, 1);
         line.set(start + 1, 1);
-        line.tag(IdealKind::HIRES);
+        line.tag(IdealKind::DOT_GATED);
         decodeIdeal(line.dots, line.kind, true, false, line.out);
 
         const int expect = (1 << (start & 3)) | (1 << ((start + 1) & 3));
@@ -304,7 +304,7 @@ TEST_CASE("Pixel exact makes adjacent HIRES pixels white", "[ntsc][pixel-exact]"
     Line line;
     line.fill([](int) { return 0; });
     for (int x = 200; x < 204; x++) line.set(x, 1);
-    line.tag(IdealKind::HIRES);
+    line.tag(IdealKind::DOT_GATED);
     decodeIdeal(line.dots, line.kind, true, false, line.out);
 
     for (int x = 200; x < 204; x++) REQUIRE(line.out[x] == 0xFFFFFFFFu);
@@ -319,7 +319,7 @@ TEST_CASE("Pixel exact keeps hard edges where composite softens them",
     Line line;
     line.fill([](int n) { return n >= 200 && n < 300; });
 
-    line.tag(IdealKind::HIRES);
+    line.tag(IdealKind::DOT_GATED);
     decodeIdeal(line.dots, line.kind, true, false, line.out);
     REQUIRE(line.out[195] == 0xFF000000u);
     REQUIRE(line.out[250] == 0xFFFFFFFFu);

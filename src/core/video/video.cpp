@@ -193,7 +193,12 @@ void Video::emitCharacterDots(int dotX, int charLine, uint8_t ch, bool inverse,
     rowData ^= 0xFF;
   }
 
-  setKind(dotX, dotX + (is80col ? 7 : 14), ntsc::IdealKind::TEXT);
+  // Text is dot-gated like HIRES. Its strokes are drawn shapes rather than an
+  // encoded colour value, and on real hardware they pick up artifact colour
+  // from their dot pattern exactly as HIRES pixels do — so they do here too,
+  // whenever the colour burst is live. Full text mode kills the burst, which is
+  // what keeps an all-text screen crisp and white.
+  setKind(dotX, dotX + (is80col ? 7 : 14), ntsc::IdealKind::DOT_GATED);
 
   if (is80col) {
     // 80-col: one dot per character bit, 7 dots per cell.
@@ -330,7 +335,7 @@ void Video::emitHiResScanline(int scanline, int startCol, int endCol,
     }
 
     const int base = col * 14;
-    setKind(base, base + 14, ntsc::IdealKind::HIRES);
+    setKind(base, base + 14, ntsc::IdealKind::DOT_GATED);
 
     // The high bit is not data. It delays the whole byte through an extra flop,
     // pushing its seven pixels one 14 MHz dot to the right — half a HIRES pixel.
@@ -418,8 +423,8 @@ void Video::emitDoubleHiResScanline(int scanline, int startCol, int endCol,
 
 void Video::beginScanline() {
   dots_.fill(0);
-  // Anything no emitter covers reads as unlit text: black, and never coloured.
-  idealKind_.fill(ntsc::IdealKind::TEXT);
+  // Anything no emitter covers is unlit, and an unlit dot-gated dot is black.
+  idealKind_.fill(ntsc::IdealKind::DOT_GATED);
 }
 
 bool Video::burstForScanline(int scanline, const VideoSwitchState &vs) const {

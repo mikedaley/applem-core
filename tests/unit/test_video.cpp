@@ -665,3 +665,58 @@ TEST_CASE("Double hi-res sits one dot later than 40-column video",
         CHECK(db <= 4);
     }
 }
+
+TEST_CASE("Pixel exact colours mixed-mode text but keeps its background black",
+          "[video][options][pixel-exact]") {
+    // Text strokes are drawn shapes, not encoded colour values, so they take
+    // artifact colour from their dot pattern exactly as HIRES pixels do. The
+    // sharp mode keeps that colour — what it does not do is let it spread:
+    // every unlit dot must still be pure black, which is what separates this
+    // from a demodulator.
+    VideoTestFixture f;
+    selectHires(f.mmu);
+    f.mmu.read(0xC053); // mixed, so the field carries burst and chroma is live
+
+    for (int row = 20; row < 24; row++) {
+        const uint16_t base = 0x400 + ((row % 8) * 0x80) + ((row / 8) * 0x28);
+        for (int c = 0; c < 40; c++) {
+            f.mmu.write(base + c, static_cast<uint8_t>(0xC1 + (c % 26)));
+        }
+    }
+
+    f.video->setColorMode(VideoColorMode::PIXEL_EXACT);
+    f.video->forceRenderFrame();
+
+    bool colouredStroke = false;
+    for (int scanline = 161; scanline < 190; scanline++) {
+        for (int x = 0; x < 560; x++) {
+            const uint32_t c = pixelAt(*f.video, x, scanline);
+            if (!isNeutral(c)) colouredStroke = true;
+            // Every pixel is either a palette colour or pure black; nothing in
+            // between, because nothing here is filtered.
+            if (isNeutral(c)) {
+                INFO("x=" << x << " scanline=" << scanline);
+                REQUIRE((c == 0xFF000000u || c == 0xFFFFFFFFu ||
+                         c == ntsc::idealPalette()[5] ||
+                         c == ntsc::idealPalette()[10]));
+            }
+        }
+    }
+    CHECK(colouredStroke);
+
+    // Full text mode kills the burst, so an all-text screen stays white.
+    VideoTestFixture plain;
+    for (int i = 0; i < 0x400; i++) {
+        plain.mmu.write(0x0400 + i, static_cast<uint8_t>(0xC1 + (i % 26)));
+    }
+    plain.video->setColorMode(VideoColorMode::PIXEL_EXACT);
+    plain.video->forceRenderFrame();
+
+    for (int scanline = 0; scanline < 192; scanline += 5) {
+        for (int x = 0; x < 560; x += 3) {
+            const uint32_t c = pixelAt(*plain.video, x, scanline);
+            INFO("x=" << x << " scanline=" << scanline);
+            REQUIRE((c == 0xFF000000u || c == 0xFFFFFFFFu));
+        }
+    }
+}

@@ -274,11 +274,6 @@ void decodeIdeal(const uint8_t *dots, const IdealKind *kind, bool chroma,
 
   for (int x = 0; x < VISIBLE_DOTS; x++) {
     switch (kind[x]) {
-    case IdealKind::TEXT:
-      literal[x] = true;
-      idx[x] = v[x] ? 15 : 0;
-      break;
-
     case IdealKind::CELL: {
       // One flat colour across the aligned four-dot group. Each dot
       // contributes at its own subcarrier phase, so a steady LORES nibble
@@ -293,7 +288,7 @@ void decodeIdeal(const uint8_t *dots, const IdealKind *kind, bool chroma,
       break;
     }
 
-    case IdealKind::HIRES: {
+    case IdealKind::DOT_GATED: {
       if (!v[x]) {
         // An unlit dot is black. This is the whole difference from a
         // demodulator, which would happily paint colour here.
@@ -301,11 +296,12 @@ void decodeIdeal(const uint8_t *dots, const IdealKind *kind, bool chroma,
         idx[x] = 0;
         break;
       }
-      // Measure the run of lit dots this dot belongs to. A HIRES pixel is two
-      // dots wide, so a run of two is one isolated pixel and carries an
-      // artifact colour, while three or more means adjacent pixels are lit and
-      // the result is white. Using run length rather than byte position keeps
-      // this correct across the high bit's half-dot shift.
+      // Measure the run of lit dots this dot belongs to. A HIRES pixel — and a
+      // 40-column text stroke — is two dots wide, so a run of two carries an
+      // artifact colour, while three or more means the lit area is wide enough
+      // to read as white. Using run length rather than byte position keeps this
+      // correct across the high bit's half-dot shift, and means text picks up
+      // the same NTSC colouring its dot pattern would produce on real hardware.
       int lo = x, hi = x;
       while (lo > 0 && v[lo - 1]) lo--;
       while (hi < VISIBLE_DOTS - 1 && v[hi + 1]) hi++;
