@@ -388,6 +388,9 @@ private:
 
   // Speed control
   int speedMultiplier_ = 1;
+  // Push the current speed to the speaker and Mockingboard, both of which
+  // measure their sample rate in CPU cycles.
+  void applySpeedToAudio();
 
   // Frame timing
   uint64_t lastFrameCycle_ = 0;

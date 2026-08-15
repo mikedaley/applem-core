@@ -82,6 +82,7 @@ Emulator::Emulator() {
 
   // Audio gets raw pointer
   audio_->setMockingboard(mockingboard_);
+  applySpeedToAudio();
 }
 
 Emulator::~Emulator() = default;
@@ -112,7 +113,9 @@ void Emulator::reset() {
 
   keyboardLatch_ = 0;
   keyDown_ = false;
-  speedMultiplier_ = 1;
+  // speedMultiplier_ is deliberately left alone: it is a host preference (the
+  // user's chosen clock speed, or a paste boost in flight), not machine state,
+  // so a reset must not drop the machine back to 1 MHz behind their back.
   lastFrameCycle_ = 0;
   samplesGenerated_ = 0;
   frameReady_ = false;
@@ -545,6 +548,15 @@ void Emulator::setSpeedMultiplier(int multiplier) {
   if (multiplier < 1) multiplier = 1;
   if (multiplier > 8) multiplier = 8;
   speedMultiplier_ = multiplier;
+  // Both sound sources measure their output rate in CPU cycles, so both have
+  // to know the machine is running fast — otherwise the speaker discards most
+  // of its window as implausible and the Mockingboard builds a backlog.
+  applySpeedToAudio();
+}
+
+void Emulator::applySpeedToAudio() {
+  if (audio_) audio_->setSpeedMultiplier(speedMultiplier_);
+  if (mockingboard_) mockingboard_->setSpeedMultiplier(speedMultiplier_);
 }
 
 int Emulator::generateStereoAudioSamples(float *buffer, int sampleCount) {
@@ -1069,6 +1081,9 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
       mockingboard_ = static_cast<MockingboardCard*>(mbStorage_.get());
       mmu_->insertCard(4, std::move(mbStorage_));
       audio_->setMockingboard(mockingboard_);
+      // A card inserted while the machine is accelerated has to start at the
+      // current speed, not 1x.
+      applySpeedToAudio();
     }
     return true;
   }

@@ -103,6 +103,30 @@ public:
     int consumeStereoSamples(float* buffer, int frameCount);
 
     /**
+     * Set the emulation speed multiplier.
+     *
+     * Incremental generation emits one output sample per CYCLES_PER_SAMPLE of
+     * emulated time. Accelerated, the machine covers that much emulated time
+     * `multiplier` times faster, so at 1x-per-cycle rates the card would
+     * produce eight samples for every one the mixer consumes at 8x — an
+     * ever-growing backlog heard as normal-pitch music falling further and
+     * further behind. Stretching the interval keeps production matched to
+     * consumption and speeds the music up with the machine, as an accelerated
+     * //e does.
+     */
+    void setSpeedMultiplier(int multiplier);
+
+    /**
+     * Stereo frames currently queued by incremental generation and not yet
+     * consumed by the mixer. Steady state is a fraction of one audio buffer;
+     * a number that keeps climbing means production and consumption rates
+     * have come apart.
+     */
+    size_t getQueuedSampleFrames() const {
+        return (sampleAccum_.size() - sampleReadPos_) / 2;
+    }
+
+    /**
      * Enable/disable debug logging
      * @param enabled true to enable
      */
@@ -151,6 +175,8 @@ private:
     // Incremental audio generation state
     // CPU cycles per audio sample at 48kHz: 1,023,000 / 48,000 ≈ 21.3125
     static constexpr double CYCLES_PER_SAMPLE = 1023000.0 / 48000.0;
+    // CYCLES_PER_SAMPLE scaled by the emulation speed (see setSpeedMultiplier)
+    double cyclesPerOutputSample_ = CYCLES_PER_SAMPLE;
     double cycleAccum_ = 0.0;                   // Fractional CPU cycle accumulator
     std::vector<float> sampleAccum_;             // Accumulated stereo samples (interleaved L/R)
     size_t sampleReadPos_ = 0;                   // Read position in accumulated buffer

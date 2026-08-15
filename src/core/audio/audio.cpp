@@ -45,8 +45,13 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
   uint64_t endCycle = currentCycle;
   uint64_t totalCycles = endCycle - startCycle;
 
-  // Sanity check: if cycle range is too large (more than 2x expected), clamp it
-  uint64_t expectedCycles = static_cast<uint64_t>(sampleCount * CYCLES_PER_SAMPLE);
+  // Sanity check: if cycle range is too large (more than 2x expected), clamp it.
+  // "Expected" scales with the emulation speed — an 8x buffer legitimately
+  // spans eight times as many cycles, and clamping it to the 1x window would
+  // discard seven eighths of the speaker toggles and replay the remainder at
+  // real-time pitch.
+  uint64_t expectedCycles =
+      static_cast<uint64_t>(sampleCount * CYCLES_PER_SAMPLE * speedMultiplier_);
   if (totalCycles == 0 || totalCycles > expectedCycles * 2) {
     totalCycles = expectedCycles;
     startCycle = endCycle - totalCycles;

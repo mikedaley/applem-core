@@ -194,3 +194,50 @@ TEST_CASE("reset preserves volume and mute settings", "[audio][reset]") {
     // The speaker state itself should be reset
     CHECK(audio.getSpeakerState() == false);
 }
+
+// ============================================================================
+// Emulation speed
+// ============================================================================
+
+TEST_CASE("Accelerated buffers cover the whole accelerated window",
+          "[audio][speed]") {
+    // At 8x a buffer of samples legitimately spans eight times as many CPU
+    // cycles. The plausibility clamp in generateStereoSamples() measured that
+    // window at 1x, so it rendered only the last eighth of it, stretched over
+    // the whole buffer: most of the speaker activity was dropped and what
+    // survived came out at roughly real-time pitch instead of eight times up.
+    const int count = 512;
+    const int multiplier = 8;
+    const uint64_t period = 4000; // cycles between speaker toggles
+    const uint64_t window =
+        static_cast<uint64_t>(count * CYCLES_PER_SAMPLE * multiplier);
+
+    auto renderSquareWave = [&](Audio &audio) {
+        for (uint64_t c = period; c < window; c += period) {
+            audio.toggleSpeaker(c);
+        }
+        std::vector<float> buffer(count * 2, 0.0f);
+        audio.generateStereoSamples(buffer.data(), count, window);
+        // Count sign changes on the left channel: proportional to the pitch
+        // that actually came out.
+        int crossings = 0;
+        for (int i = 2; i < count * 2; i += 2) {
+            if ((buffer[i] > 0.0f) != (buffer[i - 2] > 0.0f)) crossings++;
+        }
+        return crossings;
+    };
+
+    // The wave toggles every `period` cycles, so the whole window holds
+    // window/period half-cycles and every one of them should be in the buffer.
+    const int expected = static_cast<int>(window / period);
+
+    Audio accelerated;
+    accelerated.setSpeedMultiplier(multiplier);
+    const int fast = renderSquareWave(accelerated);
+    CHECK(fast > expected * 3 / 4);
+
+    // Left at 1x, the same input renders a fraction of the pitch — the bug.
+    Audio unaware;
+    const int slow = renderSquareWave(unaware);
+    CHECK(slow < fast / 4);
+}

@@ -111,8 +111,8 @@ void MockingboardCard::update(int cycles) {
     // audio samples at 48kHz rate. This ensures PSG register changes
     // from VIA timer IRQ handlers are immediately reflected in output.
     cycleAccum_ += cycles;
-    while (cycleAccum_ >= CYCLES_PER_SAMPLE) {
-        cycleAccum_ -= CYCLES_PER_SAMPLE;
+    while (cycleAccum_ >= cyclesPerOutputSample_) {
+        cycleAccum_ -= cyclesPerOutputSample_;
 
         float left = psg1_.generateSingleSample();
         float right = psg2_.generateSingleSample();
@@ -127,6 +127,20 @@ void MockingboardCard::update(int cycles) {
         sampleAccum_.push_back(left);
         sampleAccum_.push_back(right);
     }
+}
+
+void MockingboardCard::setSpeedMultiplier(int multiplier) {
+    if (multiplier < 1) multiplier = 1;
+    double next = CYCLES_PER_SAMPLE * multiplier;
+    if (next == cyclesPerOutputSample_) return;
+    cyclesPerOutputSample_ = next;
+
+    // Drop whatever is queued. A speed change means the backlog was measured
+    // against the old rate, and playing it out first would be heard as a lag
+    // spike at the moment of the change.
+    sampleAccum_.clear();
+    sampleReadPos_ = 0;
+    cycleAccum_ = 0.0;
 }
 
 void MockingboardCard::setIRQCallback(IRQCallback callback) {

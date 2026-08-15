@@ -350,3 +350,28 @@ TEST_CASE("MockingboardCard debug accessors return VIA/PSG references", "[mockin
     (void)psg2.getRegister(0);
     REQUIRE(true);
 }
+
+TEST_CASE("MockingboardCard sample production tracks emulation speed",
+          "[mockingboard][speed]") {
+    // Incremental generation emits one frame per CYCLES_PER_SAMPLE of emulated
+    // time. Accelerated, the machine covers that time faster, so unless the
+    // interval is stretched the card produces `multiplier` frames for every
+    // one the mixer takes — an unbounded backlog, heard as music at normal
+    // pitch drifting ever further behind the machine.
+    constexpr double CYCLES_PER_SAMPLE = 1023000.0 / 48000.0;
+    const int frames = 800; // one 60Hz buffer at 48kHz
+
+    auto queuedAfterOneBuffer = [&](int multiplier) {
+        MockingboardCard card;
+        card.setEnabled(true);
+        card.setSpeedMultiplier(multiplier);
+        // Cycles the emulator runs to fill one buffer at this speed.
+        card.update(static_cast<int>(frames * CYCLES_PER_SAMPLE * multiplier));
+        return static_cast<int>(card.getQueuedSampleFrames());
+    };
+
+    for (int multiplier : {1, 2, 4, 8}) {
+        INFO("multiplier " << multiplier);
+        CHECK(queuedAfterOneBuffer(multiplier) == Approx(frames).margin(2));
+    }
+}

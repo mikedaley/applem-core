@@ -50,6 +50,15 @@ public:
   // Mockingboard connection
   void setMockingboard(MockingboardCard* mb) { mockingboard_ = mb; }
 
+  // Emulation speed. A buffer of samples covers `multiplier` times as many CPU
+  // cycles when the machine is accelerated, which is what makes the speaker
+  // rise in pitch; the plausibility check in generateStereoSamples() has to
+  // scale with it or it throws away everything but the last 1/multiplier of
+  // the window.
+  void setSpeedMultiplier(int multiplier) {
+    speedMultiplier_ = multiplier < 1 ? 1 : multiplier;
+  }
+
 private:
   // Speaker state
   bool speakerState_ = false;
@@ -60,6 +69,7 @@ private:
 
   // Audio generation state
   uint64_t lastSampleCycle_ = 0;
+  int speedMultiplier_ = 1;
 
   // Simple low-pass filter state
   // Alpha ~0.15 gives cutoff ~7.8kHz at 48kHz, preserving speaker harmonics

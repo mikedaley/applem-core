@@ -280,6 +280,18 @@ TEST_CASE("Emulator speed multiplier set and get", "[emulator][speed]") {
     REQUIRE(emu.getSpeedMultiplier() == 8);
 }
 
+TEST_CASE("Emulator speed multiplier survives reset", "[emulator][speed]") {
+    // The multiplier is a host preference (the user's chosen clock speed, or a
+    // paste boost in flight), not machine state, so a reboot must not silently
+    // put the machine back to 1 MHz.
+    Emulator emu;
+    emu.init();
+
+    emu.setSpeedMultiplier(4);
+    emu.reset();
+    REQUIRE(emu.getSpeedMultiplier() == 4);
+}
+
 // ---------------------------------------------------------------------------
 // screenCodeToAscii
 // ---------------------------------------------------------------------------
