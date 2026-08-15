@@ -47,6 +47,17 @@ enum class VideoMode : uint8_t {
   DOUBLE_HIRES
 };
 
+// How the 14.31818 MHz dot stream is turned into pixels.
+//
+// The Apple IIe emits a 1-bit serial video signal; every colour you see is made
+// by the *receiver*, not by the machine. These are four receivers.
+enum class VideoColorMode : uint8_t {
+  MONOCHROME = 0, // One phosphor: dot on/off, no decode at all
+  PIXEL_EXACT,    // Idealised 4-dot decode, hard edges, no filtering
+  RGB_MONITOR,    // Idealised decode plus the mild chroma smoothing of an RGB set
+  COMPOSITE       // Full NTSC demodulation — what a composite monitor really shows
+};
+
 // Soft switch state - comprehensive Apple IIe soft switches
 struct SoftSwitches {
   // Display switches ($C050-$C057)

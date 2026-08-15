@@ -87,6 +87,14 @@ void Video::beginNewFrame(uint64_t cycleStart) {
   frameStartState_ = captureVideoState();
   switchChangeCount_ = 0;
 
+  // Carry the killer's decision over from the field just finished. A real one
+  // is an integrator, so it necessarily lags by more than a line; a field of
+  // lag is both the simplest faithful model and roughly what the hardware did.
+  // The visible consequence is that switching to full text takes a frame for
+  // the colour to die away, which is also what a monitor does.
+  chromaEnabled_ = burstSeenThisFrame_;
+  burstSeenThisFrame_ = false;
+
   // Reset progressive rendering state
   lastRenderedScanline_ = -1;
   changeIdx_ = 0;
@@ -169,67 +177,64 @@ Video::CharROMInfo Video::getCharROMInfo(uint8_t ch, bool inverse, bool flash,
 }
 
 // ============================================================================
-// Per-character-line rendering
+// Per-character-line signal emission
 // ============================================================================
 
-void Video::renderCharacterLine(int col, int textRow, int charLine,
-                                 uint8_t ch, bool inverse, bool flash,
-                                 const VideoSwitchState &vs, bool is80col) {
+void Video::emitCharacterDots(int dotX, int charLine, uint8_t ch, bool inverse,
+                              bool flash, const VideoSwitchState &vs,
+                              bool is80col) {
   CharROMInfo info = getCharROMInfo(ch, inverse, flash, vs);
-
-  uint32_t fgColor, bgColor;
-  if (monochrome_) {
-    fgColor = getMonochromeColor(true);
-    bgColor = getMonochromeColor(false);
-  } else {
-    fgColor = 0xFFFFFFFF;
-    bgColor = 0xFF000000;
-  }
-
-  if (info.inverse) {
-    std::swap(fgColor, bgColor);
-  }
 
   uint8_t rowData = mmu_.readCharROM(info.romOffset + charLine);
   if (info.needsXor) {
     rowData ^= 0xFF;
   }
+  if (info.inverse) {
+    rowData ^= 0xFF;
+  }
 
-  int screenY = textRow * 16 + charLine * 2;
+  setKind(dotX, dotX + (is80col ? 7 : 14), ntsc::IdealKind::TEXT);
 
   if (is80col) {
-    // 80-col: col is 0-79, each character is 7 pixels wide (560 total)
-    int screenX = col * 7;
+    // 80-col: one dot per character bit, 7 dots per cell.
     for (int charCol = 0; charCol < 7; charCol++) {
-      bool pixelOn = (rowData & (1 << charCol)) != 0;
-      uint32_t color = pixelOn ? fgColor : bgColor;
-      int px = screenX + charCol;
-      setPixel(px, screenY, color);
-      setPixel(px, screenY + 1, color);
+      setDot(dotX + charCol, (rowData >> charCol) & 1);
     }
   } else {
-    // 40-col: col is 0-39, each character is 14 pixels wide (560 total)
-    int screenX = col * 14;
+    // 40-col: the shift register runs at half rate, so each bit is two dots.
     for (int charCol = 0; charCol < 7; charCol++) {
-      bool pixelOn = (rowData & (1 << charCol)) != 0;
-      uint32_t color = pixelOn ? fgColor : bgColor;
-      int px = screenX + charCol * 2;
-      setPixel(px, screenY, color);
-      setPixel(px + 1, screenY, color);
-      setPixel(px, screenY + 1, color);
-      setPixel(px + 1, screenY + 1, color);
+      const uint8_t on = (rowData >> charCol) & 1;
+      setDot(dotX + charCol * 2, on);
+      setDot(dotX + charCol * 2 + 1, on);
     }
   }
 }
 
 // ============================================================================
-// Per-scanline segment renderers
-// Each renders a column range [startCol, endCol) on a single scanline.
-// Columns are byte positions 0-40 matching the hardware's per-cycle reads.
+// Per-scanline segment emitters
+//
+// Each emits the dot stream for a column range [startCol, endCol) of one
+// scanline. Columns are byte positions 0-40, matching the hardware's per-cycle
+// memory reads. Dot positions are absolute across the line, which matters: the
+// colour subcarrier is a free-running reference, so what a pattern decodes to
+// depends on where it sits relative to that reference, not on where its byte
+// cell begins.
+//
+// One extra dot of delay applies to the double-resolution modes. The 80-column
+// shift path is clocked a dot later than the 40-column one, so a given bit
+// pattern lands on the next subcarrier phase along and comes out a quarter turn
+// round the colour wheel. This is the same fact the old DLGR_COLORS table in
+// types.hpp encoded, as a copy of LORES_COLORS with the nibble rotated left by
+// one; expressing it as a delay in the signal puts it where it belongs and lets
+// one palette serve every mode.
 // ============================================================================
 
-void Video::renderText40Scanline(int scanline, int startCol, int endCol,
-                                  const VideoSwitchState &vs) {
+namespace {
+constexpr int DOUBLE_RES_DELAY = 1;
+} // namespace
+
+void Video::emitText40Scanline(int scanline, int startCol, int endCol,
+                               const VideoSwitchState &vs) {
   int textRow = scanline / 8;
   int charLine = scanline % 8;
   if (textRow >= 24) return;
@@ -247,12 +252,12 @@ void Video::renderText40Scanline(int scanline, int startCol, int endCol,
     bool inverse = (ch & 0xC0) == 0x00;
     bool flash = (ch & 0xC0) == 0x40;
 
-    renderCharacterLine(col, textRow, charLine, ch, inverse, flash, vs, false);
+    emitCharacterDots(col * 14, charLine, ch, inverse, flash, vs, false);
   }
 }
 
-void Video::renderText80Scanline(int scanline, int startCol, int endCol,
-                                  const VideoSwitchState &vs) {
+void Video::emitText80Scanline(int scanline, int startCol, int endCol,
+                               const VideoSwitchState &vs) {
   int textRow = scanline / 8;
   int charLine = scanline % 8;
   if (textRow >= 24) return;
@@ -266,23 +271,22 @@ void Video::renderText80Scanline(int scanline, int startCol, int endCol,
     uint8_t auxCh = mmu_.readRAM(addr + pageOffset, true);
     bool auxInverse = (auxCh & 0xC0) == 0x00;
     bool auxFlash = (auxCh & 0xC0) == 0x40;
-    renderCharacterLine(col * 2, textRow, charLine, auxCh, auxInverse, auxFlash, vs, true);
+    emitCharacterDots(col * 14, charLine, auxCh, auxInverse, auxFlash, vs, true);
 
     // Main memory character (odd columns in display)
     uint8_t mainCh = mmu_.readRAM(addr + pageOffset, false);
     bool mainInverse = (mainCh & 0xC0) == 0x00;
     bool mainFlash = (mainCh & 0xC0) == 0x40;
-    renderCharacterLine(col * 2 + 1, textRow, charLine, mainCh, mainInverse, mainFlash, vs, true);
+    emitCharacterDots(col * 14 + 7, charLine, mainCh, mainInverse, mainFlash, vs,
+                      true);
   }
 }
 
-void Video::renderLoResScanline(int scanline, int startCol, int endCol,
-                                 const VideoSwitchState &vs) {
+void Video::emitLoResScanline(int scanline, int startCol, int endCol,
+                              const VideoSwitchState &vs) {
   int textRow = scanline / 8;
   int lineInRow = scanline % 8;
   if (textRow >= 24) return;
-
-  int screenY = scanline * 2;
 
   for (int col = startCol; col < endCol; col++) {
     uint16_t addr = getTextAddress(textRow, col);
@@ -294,28 +298,26 @@ void Video::renderLoResScanline(int scanline, int startCol, int endCol,
       colorByte = mmu_.readRAM(addr, false);
     }
 
-    uint8_t colorIndex = (lineInRow < 4) ? (colorByte & 0x0F)
-                                          : ((colorByte >> 4) & 0x0F);
+    uint8_t nibble = (lineInRow < 4) ? (colorByte & 0x0F)
+                                     : ((colorByte >> 4) & 0x0F);
 
-    uint32_t color = getLoResColor(colorIndex);
-    int screenX = col * 14;
-
+    // LORES is the one mode that does not shift bits out serially: the hardware
+    // gates the nibble with the four-phase colour clock directly, so dot x
+    // carries nibble bit (x mod 4). Indexing by absolute dot position is what
+    // makes a colour look the same in every column even though a 14-dot cell is
+    // three and a half subcarrier cycles long.
+    int base = col * 14;
+    setKind(base, base + 14, ntsc::IdealKind::CELL);
     for (int px = 0; px < 14; px++) {
-      setPixel(screenX + px, screenY, color);
-      setPixel(screenX + px, screenY + 1, color);
+      int x = base + px;
+      setDot(x, (nibble >> (x & 3)) & 1);
     }
   }
 }
 
-void Video::renderHiResScanline(int scanline, int startCol, int endCol,
-                                 const VideoSwitchState &vs) {
+void Video::emitHiResScanline(int scanline, int startCol, int endCol,
+                              const VideoSwitchState &vs) {
   if (scanline >= 192) return;
-
-  // Build dot/highBit arrays for the columns in our range.
-  // Full 280-element arrays are zero-initialized so dots outside
-  // our segment read as off — correct behavior at mode boundaries.
-  uint8_t dots[280] = {0};
-  uint8_t highBits[280] = {0};
 
   for (int col = startCol; col < endCol; col++) {
     uint16_t addr = getHiResAddress(scanline, col);
@@ -327,83 +329,33 @@ void Video::renderHiResScanline(int scanline, int startCol, int endCol,
       dataByte = mmu_.readRAM(addr, false);
     }
 
-    bool highBit = (dataByte & 0x80) != 0;
+    const int base = col * 14;
+    setKind(base, base + 14, ntsc::IdealKind::HIRES);
+
+    // The high bit is not data. It delays the whole byte through an extra flop,
+    // pushing its seven pixels one 14 MHz dot to the right — half a HIRES pixel.
+    // That shift is the entire mechanism behind orange and blue: the same dot
+    // pattern lands on the opposite subcarrier phase. The vacated dot is not
+    // blank, it holds whatever the shift register was already outputting.
+    const int delay = (dataByte & 0x80) ? 1 : 0;
+    if (delay) {
+      setDot(base, getDot(base - 1));
+    }
 
     for (int bit = 0; bit < 7; bit++) {
-      int dotX = col * 7 + bit;
-      dots[dotX] = (dataByte & (1 << bit)) ? 1 : 0;
-      highBits[dotX] = highBit ? 1 : 0;
-    }
-  }
-
-  int screenY = scanline * 2;
-  int dotStart = startCol * 7;
-  int dotEnd = endCol * 7;
-
-  if (monochrome_) {
-    for (int x = dotStart; x < dotEnd; x++) {
-      uint32_t color = getMonochromeColor(dots[x] != 0);
-      int screenX = x * 2;
-      setPixel(screenX, screenY, color);
-      setPixel(screenX + 1, screenY, color);
-      setPixel(screenX, screenY + 1, color);
-      setPixel(screenX + 1, screenY + 1, color);
-    }
-  } else {
-    for (int x = dotStart; x < dotEnd; x++) {
-      uint32_t color;
-      bool highBit = highBits[x] != 0;
-      bool dotOn = dots[x] != 0;
-
-      bool prevOn = (x > 0) && dots[x - 1];
-      bool nextOn = (x < 279) && dots[x + 1];
-
-      if (!dotOn) {
-        bool prev2On = (x > 1) && dots[x - 2];
-        bool next2On = (x < 278) && dots[x + 2];
-
-        if (prevOn && nextOn && !prev2On && !next2On) {
-          if (highBits[x - 1] == highBits[x + 1]) {
-            bool neighborEven = ((x - 1) & 1) == 0;
-            bool neighborHighBit = highBits[x - 1];
-            if (neighborEven) {
-              color = neighborHighBit ? HIRES_COLORS[4] : HIRES_COLORS[2];
-            } else {
-              color = neighborHighBit ? HIRES_COLORS[5] : HIRES_COLORS[1];
-            }
-          } else {
-            color = HIRES_COLORS[0];
-          }
-        } else {
-          color = HIRES_COLORS[0];
-        }
-      } else if (prevOn || nextOn) {
-        color = HIRES_COLORS[3]; // White
-      } else {
-        bool evenColumn = (x & 1) == 0;
-        if (evenColumn) {
-          color = highBit ? HIRES_COLORS[4] : HIRES_COLORS[2];
-        } else {
-          color = highBit ? HIRES_COLORS[5] : HIRES_COLORS[1];
-        }
-      }
-
-      int screenX = x * 2;
-      setPixel(screenX, screenY, color);
-      setPixel(screenX + 1, screenY, color);
-      setPixel(screenX, screenY + 1, color);
-      setPixel(screenX + 1, screenY + 1, color);
+      const uint8_t on = (dataByte >> bit) & 1;
+      const int x = base + delay + bit * 2;
+      setDot(x, on);
+      setDot(x + 1, on);
     }
   }
 }
 
-void Video::renderDoubleLoResScanline(int scanline, int startCol, int endCol,
-                                       const VideoSwitchState &vs) {
+void Video::emitDoubleLoResScanline(int scanline, int startCol, int endCol,
+                                    const VideoSwitchState &vs) {
   int textRow = scanline / 8;
   int lineInRow = scanline % 8;
   if (textRow >= 24) return;
-
-  int screenY = scanline * 2;
 
   for (int col = startCol; col < endCol; col++) {
     uint16_t addr = getTextAddress(textRow, col);
@@ -413,85 +365,106 @@ void Video::renderDoubleLoResScanline(int scanline, int startCol, int endCol,
 
     uint8_t auxNibble = (lineInRow < 4) ? (auxByte & 0x0F)
                                         : ((auxByte >> 4) & 0x0F);
-    uint8_t mainColor = (lineInRow < 4) ? (mainByte & 0x0F)
+    uint8_t mainNibble = (lineInRow < 4) ? (mainByte & 0x0F)
                                          : ((mainByte >> 4) & 0x0F);
 
-    // Aux nibbles need 4-bit left rotation by 1 to compensate for
-    // half-color-clock phase shift in auxiliary video memory
-    uint8_t auxColor = ((auxNibble << 1) & 0x0F) | (auxNibble >> 3);
-
-    uint32_t auxRGB = monochrome_ ? getMonochromeColor(auxColor != 0) : LORES_COLORS[auxColor];
-    uint32_t mainRGB = monochrome_ ? getMonochromeColor(mainColor != 0) : LORES_COLORS[mainColor];
-
-    int screenX = col * 14;
-
-    // Aux pixels (left half, 7 pixels wide)
+    // Same absolute-phase rule as LORES, plus the double-resolution path's one
+    // dot of extra delay (see DOUBLE_RES_DELAY). The aux half occupies the
+    // first seven dots of the cell, the main half the second seven.
+    int base = col * 14 + DOUBLE_RES_DELAY;
+    setKind(col * 14, col * 14 + 14, ntsc::IdealKind::CELL);
     for (int px = 0; px < 7; px++) {
-      setPixel(screenX + px, screenY, auxRGB);
-      setPixel(screenX + px, screenY + 1, auxRGB);
+      int x = base + px;
+      setDot(x, (auxNibble >> ((x - DOUBLE_RES_DELAY) & 3)) & 1);
     }
-
-    // Main pixels (right half, 7 pixels wide)
     for (int px = 7; px < 14; px++) {
-      setPixel(screenX + px, screenY, mainRGB);
-      setPixel(screenX + px, screenY + 1, mainRGB);
+      int x = base + px;
+      setDot(x, (mainNibble >> ((x - DOUBLE_RES_DELAY) & 3)) & 1);
     }
   }
 }
 
-void Video::renderDoubleHiResScanline(int scanline, int startCol, int endCol,
-                                       const VideoSwitchState &vs) {
-  static const uint32_t DHGR_COLORS[16] = {
-    0xFF000000, 0xFFE31E60, 0xFF607203, 0xFFFF6A3C,
-    0xFF00A360, 0xFF9C9C9C, 0xFF14F53C, 0xFFD0DD8D,
-    0xFF604EBD, 0xFFFF44FD, 0xFF9C9C9C, 0xFFFFA0D0,
-    0xFF14CFFD, 0xFFD0C3FF, 0xFF72FFD0, 0xFFFFFFFF
-  };
-
+void Video::emitDoubleHiResScanline(int scanline, int startCol, int endCol,
+                                    const VideoSwitchState &vs) {
   if (scanline >= 192) return;
 
   uint16_t pageOffset = (vs.page2 && !vs.store80) ? 0x2000 : 0;
 
-  // Read bytes for columns in our range (zero-init for edge handling)
-  uint8_t line[80] = {0};
   for (int col = startCol; col < endCol; col++) {
     uint16_t addr = getHiResAddress(scanline, col) + pageOffset;
-    line[col * 2] = mmu_.readRAM(addr, true);
-    line[col * 2 + 1] = mmu_.readRAM(addr, false);
-  }
+    uint8_t auxByte = mmu_.readRAM(addr, true);
+    uint8_t mainByte = mmu_.readRAM(addr, false);
 
-  // Extract dots for our column range
-  uint8_t dots[564] = {0};
-  int dotStart = startCol * 14;
-  int dotEnd = std::min(endCol * 14, 560);
-
-  for (int i = dotStart; i < dotEnd; i++) {
-    int byteIdx = i / 7;
-    int bitIdx = i % 7;
-    dots[i] = (line[byteIdx] >> bitIdx) & 1;
-  }
-
-  int screenY = scanline * 2;
-
-  if (monochrome_) {
-    for (int i = dotStart; i < dotEnd; i++) {
-      uint32_t color = getMonochromeColor(dots[i] != 0);
-      setPixel(i, screenY, color);
-      setPixel(i, screenY + 1, color);
-    }
-  } else {
-    for (int i = dotStart; i < dotEnd; i++) {
-      int alignedBase = (i / 4) * 4;
-      uint8_t colorIdx = (dots[alignedBase] << 3) |
-                          (dots[alignedBase + 1] << 2) |
-                          (dots[alignedBase + 2] << 1) |
-                          dots[alignedBase + 3];
-
-      uint32_t color = DHGR_COLORS[colorIdx];
-      setPixel(i, screenY, color);
-      setPixel(i, screenY + 1, color);
+    // In double hi-res the shift register runs at the full dot rate and all
+    // seven data bits of each byte get one dot. The high bit carries no byte
+    // delay here — that mechanism belongs to single hi-res only — but the
+    // whole 80-column path is a dot late, which is what DOUBLE_RES_DELAY is.
+    int base = col * 14 + DOUBLE_RES_DELAY;
+    setKind(col * 14, col * 14 + 14, ntsc::IdealKind::CELL);
+    for (int bit = 0; bit < 7; bit++) {
+      setDot(base + bit, (auxByte >> bit) & 1);
+      setDot(base + 7 + bit, (mainByte >> bit) & 1);
     }
   }
+}
+
+// ============================================================================
+// Decode stage
+//
+// The signal is complete once every segment of a scanline has emitted its dots.
+// Only then is there something to decode — a decoder needs the dots either side
+// of a pixel, so this cannot run per segment.
+// ============================================================================
+
+void Video::beginScanline() {
+  dots_.fill(0);
+  // Anything no emitter covers reads as unlit text: black, and never coloured.
+  idealKind_.fill(ntsc::IdealKind::TEXT);
+}
+
+bool Video::burstForScanline(int scanline, const VideoSwitchState &vs) const {
+  const bool textLine = vs.text || (vs.mixed && scanline >= 160);
+  return !textLine;
+}
+
+void Video::endScanline(int scanline) {
+  if (scanline < 0 || scanline >= 192) return;
+
+  uint32_t line[ntsc::VISIBLE_DOTS];
+
+  // Note this passes chromaEnabled_, not burst_. The burst decides whether the
+  // machine sends a reference on this line; the killer decides whether the
+  // receiver is decoding colour at all, and it works a field at a time.
+  switch (colorMode_) {
+  case VideoColorMode::MONOCHROME:
+    ntsc::decodeMonochrome(dots_.data(), getMonochromeColor(true),
+                           getMonochromeColor(false), line);
+    break;
+  case VideoColorMode::PIXEL_EXACT:
+    ntsc::decodeIdeal(dots_.data(), idealKind_.data(), chromaEnabled_, false,
+                      line);
+    break;
+  case VideoColorMode::RGB_MONITOR:
+    ntsc::decodeIdeal(dots_.data(), idealKind_.data(), chromaEnabled_, true,
+                      line);
+    break;
+  case VideoColorMode::COMPOSITE:
+    ntsc::decodeComposite(dots_.data(), chromaEnabled_, line);
+    break;
+  }
+
+  // A scanline occupies two framebuffer rows (192 lines doubled to 384).
+  const size_t row = static_cast<size_t>(scanline) * 2 * SCREEN_WIDTH * 4;
+  uint8_t *dst = framebuffer_.data() + row;
+  for (int x = 0; x < ntsc::VISIBLE_DOTS; x++) {
+    const uint32_t c = line[x];
+    const size_t o = static_cast<size_t>(x) * 4;
+    dst[o + 0] = (c >> 16) & 0xFF;
+    dst[o + 1] = (c >> 8) & 0xFF;
+    dst[o + 2] = c & 0xFF;
+    dst[o + 3] = (c >> 24) & 0xFF;
+  }
+  std::memcpy(dst + SCREEN_WIDTH * 4, dst, SCREEN_WIDTH * 4);
 }
 
 // ============================================================================
@@ -505,30 +478,30 @@ void Video::renderScanlineSegment(int scanline, int startCol, int endCol,
   // Mixed mode: scanlines 160-191 always render as text
   if (vs.mixed && scanline >= 160 && !vs.text) {
     if (vs.col80) {
-      renderText80Scanline(scanline, startCol, endCol, vs);
+      emitText80Scanline(scanline, startCol, endCol, vs);
     } else {
-      renderText40Scanline(scanline, startCol, endCol, vs);
+      emitText40Scanline(scanline, startCol, endCol, vs);
     }
     return;
   }
 
   if (vs.text) {
     if (vs.col80) {
-      renderText80Scanline(scanline, startCol, endCol, vs);
+      emitText80Scanline(scanline, startCol, endCol, vs);
     } else {
-      renderText40Scanline(scanline, startCol, endCol, vs);
+      emitText40Scanline(scanline, startCol, endCol, vs);
     }
   } else if (vs.hires) {
     if (vs.col80 && !vs.an3) {
-      renderDoubleHiResScanline(scanline, startCol, endCol, vs);
+      emitDoubleHiResScanline(scanline, startCol, endCol, vs);
     } else {
-      renderHiResScanline(scanline, startCol, endCol, vs);
+      emitHiResScanline(scanline, startCol, endCol, vs);
     }
   } else {
     if (vs.col80 && !vs.an3) {
-      renderDoubleLoResScanline(scanline, startCol, endCol, vs);
+      emitDoubleLoResScanline(scanline, startCol, endCol, vs);
     } else {
-      renderLoResScanline(scanline, startCol, endCol, vs);
+      emitLoResScanline(scanline, startCol, endCol, vs);
     }
   }
 }
@@ -546,6 +519,8 @@ void Video::renderScanlineWithChanges(int scanline) {
   uint32_t visibleStartCycle = scanlineStartCycle + HBLANK_CYCLES;
   uint32_t scanlineEndCycle = scanlineStartCycle + CYCLES_PER_SCANLINE;
 
+  beginScanline();
+
   // Phase 1: Consume hblank changes (cycles 0-24) and any earlier changes
   while (changeIdx_ < switchChangeCount_) {
     uint32_t changeCycle = switchChanges_[changeIdx_].cycleOffset;
@@ -554,6 +529,14 @@ void Video::renderScanlineWithChanges(int scanline) {
     }
     currentRenderState_ = switchChanges_[changeIdx_].state;
     changeIdx_++;
+  }
+
+  // The colour burst is generated during horizontal blanking, so whether this
+  // line carries one is settled by the state at the end of hblank — before any
+  // mid-line switch change can take effect.
+  burst_ = burstForScanline(scanline, currentRenderState_);
+  if (burst_) {
+    burstSeenThisFrame_ = true;
   }
 
   // Phase 2: Process visible-area changes (cycles 25-64 → columns 0-39)
@@ -580,6 +563,8 @@ void Video::renderScanlineWithChanges(int scanline) {
   if (col < 40) {
     renderScanlineSegment(scanline, col, 40, currentRenderState_);
   }
+
+  endScanline(scanline);
 }
 
 void Video::renderUpToCycle(uint64_t currentCycle) {
@@ -626,34 +611,41 @@ void Video::renderFrame() {
 
 void Video::forceRenderFrame() {
   VideoSwitchState vs = captureVideoState();
+
+  // This renders a whole field from one state, so the killer can be settled up
+  // front instead of lagging a frame behind as it does during live rendering.
+  chromaEnabled_ = false;
   for (int scanline = 0; scanline < 192; scanline++) {
+    if (burstForScanline(scanline, vs)) {
+      chromaEnabled_ = true;
+      break;
+    }
+  }
+  burstSeenThisFrame_ = chromaEnabled_;
+
+  for (int scanline = 0; scanline < 192; scanline++) {
+    beginScanline();
+    burst_ = burstForScanline(scanline, vs);
     renderScanlineSegment(scanline, 0, 40, vs);
+    endScanline(scanline);
   }
   frameDirty_ = true;
 }
 
 // ============================================================================
-// Pixel and color helpers
+// Color settings
 // ============================================================================
 
-void Video::setPixel(int x, int y, uint32_t color) {
-  if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) {
-    return;
+void Video::setColorMode(VideoColorMode mode) {
+  if (mode != VideoColorMode::MONOCHROME) {
+    preMonochromeMode_ = mode;
   }
-
-  size_t offset = (y * SCREEN_WIDTH + x) * 4;
-  framebuffer_[offset + 0] = (color >> 16) & 0xFF; // R
-  framebuffer_[offset + 1] = (color >> 8) & 0xFF;  // G
-  framebuffer_[offset + 2] = color & 0xFF;         // B
-  framebuffer_[offset + 3] = (color >> 24) & 0xFF; // A
+  colorMode_ = mode;
+  frameDirty_ = true;
 }
 
-uint32_t Video::getLoResColor(uint8_t colorIndex) const {
-  if (monochrome_) {
-    return (colorIndex > 0) ? getMonochromeColor(true)
-                            : getMonochromeColor(false);
-  }
-  return LORES_COLORS[colorIndex & 0x0F];
+void Video::setMonochrome(bool mono) {
+  setColorMode(mono ? VideoColorMode::MONOCHROME : preMonochromeMode_);
 }
 
 uint32_t Video::getMonochromeColor(bool on) const {

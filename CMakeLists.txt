@@ -16,6 +16,7 @@ set(CORE_SOURCES
     src/core/cpu/6502/cpu6502.cpp
     src/core/mmu/mmu.cpp
     src/core/video/video.cpp
+    src/core/video/ntsc.cpp
     src/core/audio/audio.cpp
     src/core/disk-image/dsk_disk_image.cpp
     src/core/disk-image/woz_disk_image.cpp
@@ -184,6 +185,8 @@ if(EMSCRIPTEN)
                 \"_importState\", \
                 \"_setMonochrome\", \
                 \"_isMonochrome\", \
+                \"_setVideoColorMode\", \
+                \"_getVideoColorMode\", \
                 \"_disassembleRawData\", \
                 \"_getDisasmInstructions\", \
                 \"_getDisasmInstructionLength\", \
@@ -462,6 +465,7 @@ else()
         src/core/cpu/6502/cpu6502.cpp
         src/core/mmu/mmu.cpp
         src/core/video/video.cpp
+        src/core/video/ntsc.cpp
         src/core/audio/audio.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
@@ -651,10 +655,17 @@ else()
         src/core/cards/thunderclock/thunderclock_card.cpp
     )
 
+    # NTSC composite decoding (standalone — no MMU needed)
+    add_catch2_test(test_ntsc
+        tests/unit/test_ntsc.cpp
+        src/core/video/ntsc.cpp
+    )
+
     # Video (video.cpp + mmu.cpp)
     add_catch2_test(test_video
         tests/unit/test_video.cpp
         src/core/video/video.cpp
+        src/core/video/ntsc.cpp
         src/core/mmu/mmu.cpp
         src/core/noslot_clock.cpp
     )

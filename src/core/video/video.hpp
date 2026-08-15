@@ -9,6 +9,7 @@
 
 #include "../mmu/mmu.hpp"
 #include "../types.hpp"
+#include "ntsc.hpp"
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -48,8 +49,15 @@ public:
   VideoMode getCurrentMode() const;
 
   // Color settings
-  void setMonochrome(bool mono) { monochrome_ = mono; }
-  bool isMonochrome() const { return monochrome_; }
+  //
+  // The machine emits a 1-bit dot stream; the colour mode chooses which kind of
+  // receiver decodes it. setMonochrome() is the older two-state API and is kept
+  // working: it switches to MONOCHROME and back to whatever was selected before.
+  void setColorMode(VideoColorMode mode);
+  VideoColorMode getColorMode() const { return colorMode_; }
+
+  void setMonochrome(bool mono);
+  bool isMonochrome() const { return colorMode_ == VideoColorMode::MONOCHROME; }
 
   void setGreenPhosphor(bool green) { greenPhosphor_ = green; }
   bool isGreenPhosphor() const { return greenPhosphor_; }
@@ -68,25 +76,67 @@ public:
   void beginNewFrame(uint64_t cycleStart);
 
 private:
-  // Per-scanline segment rendering (column range within a single scanline)
+  // ==========================================================================
+  // Signal stage
+  //
+  // These emit the 14.31818 MHz dot stream for a column range of one scanline
+  // rather than writing pixels. Nothing here knows what colour is: colour is
+  // made later, by whichever decoder the colour mode selects.
+  //
   // startCol/endCol are byte positions 0-40 (one per CPU cycle in visible area)
-  void renderText40Scanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
-  void renderText80Scanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
-  void renderLoResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
-  void renderHiResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
-  void renderDoubleLoResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
-  void renderDoubleHiResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  // ==========================================================================
+  void emitText40Scanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void emitText80Scanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void emitLoResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void emitHiResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void emitDoubleLoResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
+  void emitDoubleHiResScanline(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
 
-  // Dispatch a scanline segment to the correct mode renderer, handling mixed mode
+  // Dispatch a scanline segment to the correct mode emitter, handling mixed mode
   void renderScanlineSegment(int scanline, int startCol, int endCol, const VideoSwitchState& vs);
 
   // Render a single scanline using the switch change log (progressive rendering)
   void renderScanlineWithChanges(int scanline);
 
-  // Character rendering — single character row (1 ROM line → 2 framebuffer rows)
-  void renderCharacterLine(int col, int textRow, int charLine,
-                           uint8_t ch, bool inverse, bool flash,
-                           const VideoSwitchState& vs, bool is80col);
+  // Clear the dot buffer before a scanline's segments run.
+  void beginScanline();
+
+  // Decode the finished dot stream and write the scanline's two framebuffer rows.
+  void endScanline(int scanline);
+
+  // Whether the machine transmits a colour burst on this scanline. A IIe
+  // inhibits burst in text mode, including the bottom four rows of a mixed
+  // screen.
+  //
+  // Note this is not the same question as whether that scanline is *displayed*
+  // in colour — see chromaEnabled_.
+  bool burstForScanline(int scanline, const VideoSwitchState& vs) const;
+
+  // Character rendering — emit one ROM line's dots for a single character
+  void emitCharacterDots(int dotX, int charLine, uint8_t ch, bool inverse,
+                         bool flash, const VideoSwitchState& vs, bool is80col);
+
+  // Tag a dot range with how the sharp decoders should colour it. The signal
+  // alone cannot answer that: a flat LORES cell and a lit HIRES pixel can carry
+  // identical dots and still mean different things.
+  void setKind(int from, int to, ntsc::IdealKind k) {
+    if (from < 0) from = 0;
+    if (to > ntsc::VISIBLE_DOTS) to = ntsc::VISIBLE_DOTS;
+    for (int x = from; x < to; x++) {
+      idealKind_[static_cast<size_t>(x)] = k;
+    }
+  }
+
+  // Write a single dot of the scanline's signal
+  void setDot(int x, uint8_t on) {
+    if (x >= 0 && x < ntsc::VISIBLE_DOTS + ntsc::SPILL) {
+      dots_[static_cast<size_t>(ntsc::DOT_ORIGIN + x)] = on;
+    }
+  }
+  uint8_t getDot(int x) const {
+    if (x < 0 || x >= ntsc::VISIBLE_DOTS + ntsc::SPILL) return 0;
+    return dots_[static_cast<size_t>(ntsc::DOT_ORIGIN + x)];
+  }
 
   // Character ROM offset helper (shared between 40-col and 80-col paths)
   struct CharROMInfo {
@@ -100,11 +150,7 @@ private:
   // Capture current video switch state from MMU
   VideoSwitchState captureVideoState() const;
 
-  // Pixel helpers
-  void setPixel(int x, int y, uint32_t color);
-
   // Color helpers
-  uint32_t getLoResColor(uint8_t colorIndex) const;
   uint32_t getMonochromeColor(bool on) const;
 
   // Text screen address calculation
@@ -125,8 +171,31 @@ private:
   bool flashState_ = false;
   static constexpr int FLASH_RATE = 16;
 
+  // Per-scanline video signal: one bit per 14.31818 MHz dot, with margin either
+  // side so the demodulation window never runs off the ends.
+  std::array<uint8_t, ntsc::DOT_BUFFER> dots_{};
+  std::array<ntsc::IdealKind, ntsc::VISIBLE_DOTS> idealKind_{};
+  bool burst_ = false;
+
+  // Colour killer.
+  //
+  // Whether a line is *displayed* in colour is not decided per line. A monitor
+  // integrates burst presence over a time constant far longer than one
+  // scanline, and its 3.58 MHz reference flywheels through gaps, so the chroma
+  // channel is switched on or off for a whole field at a time.
+  //
+  // This is what makes mixed mode fringe. 160 of its 192 lines carry burst, so
+  // the killer never engages and the four text rows at the bottom are decoded
+  // in colour along with everything else — exactly as on real hardware. Full
+  // text mode transmits no burst at all, the killer engages, and text goes
+  // crisp white. It is also why a II+, which never inhibits burst, fringes its
+  // text in every mode.
+  bool chromaEnabled_ = false;
+  bool burstSeenThisFrame_ = false;
+
   // Display options
-  bool monochrome_ = false;
+  VideoColorMode colorMode_ = VideoColorMode::COMPOSITE;
+  VideoColorMode preMonochromeMode_ = VideoColorMode::COMPOSITE;
   bool greenPhosphor_ = false;
   bool ukCharSet_ = false;  // UK character set switch
 
