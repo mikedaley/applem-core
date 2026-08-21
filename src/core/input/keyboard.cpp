@@ -44,6 +44,10 @@ int Keyboard::handleKeyDown(int browserKeycode, bool shift, bool ctrl,
     return -1; // Not a mapped key
   }
 
+  // From here the key is one the Apple keyboard has, so it asserts AKD until
+  // its key-up arrives.
+  setKeyHeld(browserKeycode, true);
+
   // Handle letters (a-z)
   if (appleKey >= 0x61 && appleKey <= 0x7A) {
     // Apply caps lock and shift
@@ -112,6 +116,8 @@ void Keyboard::handleKeyUp(int browserKeycode, bool shift, bool ctrl,
     syncAppleButtons();
     return;
   }
+
+  setKeyHeld(browserKeycode, false);
 }
 
 int Keyboard::translateKeycode(int browserKeycode) const {

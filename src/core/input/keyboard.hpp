@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 
@@ -65,6 +66,16 @@ public:
                    bool meta, int keyLocation = LOCATION_STANDARD);
 
   /**
+   * Is any Apple II key physically held down?
+   *
+   * This is AKD — the any-key-down line the //e reports in bit 7 of $C010.
+   * It is deliberately not affected by Shift, Control, Caps Lock or the Apple
+   * buttons: those are separate lines on real hardware, not keys in the
+   * matrix. Only keys that translate to an Apple II code count.
+   */
+  bool isAnyKeyDown() const { return keysHeldCount_ > 0; }
+
+  /**
    * Get the current Open Apple (Alt) button state
    */
   bool isOpenApplePressed() const { return openApplePressed_; }
@@ -85,6 +96,11 @@ public:
     altRightDown_ = false;
     metaDown_ = false;
     syncAppleButtons();
+    // Ordinary keys go the same way, and for the same reason: a key held while
+    // the host loses focus never delivers its key-up, which would otherwise
+    // leave AKD asserted for the rest of the session.
+    keyHeld_.fill(false);
+    keysHeldCount_ = 0;
   }
 
   /**
@@ -121,7 +137,22 @@ private:
     closedApplePressed_ = altRightDown_ || metaDown_;
   }
 
+  /** Record a key as held / released, keeping the count in step. */
+  void setKeyHeld(int browserKeycode, bool held) {
+    if (browserKeycode < 0 || browserKeycode > 255) return;
+    if (keyHeld_[browserKeycode] == held) return;  // auto-repeat, or a stray up
+    keyHeld_[browserKeycode] = held;
+    keysHeldCount_ += held ? 1 : -1;
+  }
+
   KeyCallback keyCallback_;
+
+  // Which ordinary keys are physically down, indexed by browser keycode, with
+  // a running count so AKD is a comparison rather than a scan. Tracking is by
+  // keycode so a key-up always clears the key it names, whatever the modifier
+  // state was when it was pressed.
+  std::array<bool, 256> keyHeld_{};
+  int keysHeldCount_ = 0;
 
   // Which modifiers are physically down. The Apple button states are derived
   // from these rather than being toggled directly, so a key-up that names the

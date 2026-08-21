@@ -301,3 +301,261 @@ TEST_CASE("Emulator screenCodeToAscii converts known codes", "[emulator][screen]
     int result = Emulator::screenCodeToAscii(0xC1);
     REQUIRE(result == 'A');
 }
+
+// ---------------------------------------------------------------------------
+// Paste / keyboard type-ahead buffer
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Read a character the way a program does: $C000 for the code, $C010 to clear
+// the strobe. Returns the key code without the strobe bit.
+uint8_t readKeyLikeSoftware(Emulator &emu) {
+    uint8_t key = emu.readMemory(0xC000);
+    emu.readMemory(0xC010);
+    return key & 0x7F;
+}
+
+// Let the machine run until the next pasted character reaches the keyboard.
+// Pasted keys arrive spaced out in emulated time, so a test that reads them
+// back to back has to let time pass in between, exactly as software does.
+bool runUntilKeyWaiting(Emulator &emu, int maxCycles = 500000) {
+    int spent = 0;
+    while (spent < maxCycles) {
+        if (!emu.isKeyboardReady()) return true;  // strobe set: a key is waiting
+        emu.runCycles(1000);
+        spent += 1000;
+    }
+    return !emu.isKeyboardReady();
+}
+
+// Read the next pasted character, waiting for it to arrive.
+uint8_t nextPastedKey(Emulator &emu) {
+    REQUIRE(runUntilKeyWaiting(emu));
+    return readKeyLikeSoftware(emu);
+}
+
+} // namespace
+
+TEST_CASE("Emulator paste buffer feeds the keyboard latch one key at a time",
+          "[emulator][keyboard][paste]") {
+    Emulator emu;
+    emu.init();
+
+    REQUIRE(emu.pasteText("HI") == 2);
+
+    // The first character is in the latch immediately; the rest wait.
+    REQUIRE(emu.pastePending() == 1);
+    REQUIRE((emu.readMemory(0xC000) & 0x80) != 0);
+    REQUIRE(readKeyLikeSoftware(emu) == 'H');
+
+    // The next one follows once the machine has run for a moment.
+    REQUIRE(emu.pastePending() == 1);
+    REQUIRE(nextPastedKey(emu) == 'I');
+
+    // Drained: the strobe stays clear. Bits 0-6 keep the last code, as real
+    // hardware does, so it is bit 7 that says whether a key is waiting.
+    REQUIRE(emu.isKeyboardReady());
+    REQUIRE((emu.readMemory(0xC000) & 0x80) == 0);
+}
+
+TEST_CASE("Emulator paste buffer never overwrites an unread key",
+          "[emulator][keyboard][paste]") {
+    // The buffer exists so a fast producer cannot lose characters: nothing may
+    // enter the latch while the strobe is still set.
+    Emulator emu;
+    emu.init();
+
+    emu.pasteText("AB");
+    REQUIRE((emu.readMemory(0xC000) & 0x7F) == 'A');
+
+    emu.pasteText("CD"); // more text arriving mid-paste
+    REQUIRE((emu.readMemory(0xC000) & 0x7F) == 'A');
+    REQUIRE(emu.pastePending() == 3);
+
+    REQUIRE(readKeyLikeSoftware(emu) == 'A');
+    REQUIRE(nextPastedKey(emu) == 'B');
+    REQUIRE(nextPastedKey(emu) == 'C');
+    REQUIRE(nextPastedKey(emu) == 'D');
+    REQUIRE(emu.pastePending() == 0);
+}
+
+TEST_CASE("Emulator paste releases any-key-down when it drains",
+          "[emulator][keyboard][paste]") {
+    // AKD ($C010 bit 7) must not stay latched after the last pasted character
+    // is read, or every read of $C010 reports a key held for the rest of the
+    // session.
+    Emulator emu;
+    emu.init();
+
+    emu.pasteText("A");
+    emu.readMemory(0xC000);
+    REQUIRE((emu.readMemory(0xC010) & 0x80) == 0); // released with the buffer
+
+    // A cancelled paste releases it too.
+    emu.pasteText("XY");
+    emu.readMemory(0xC000);
+    emu.clearPasteBuffer();
+    REQUIRE(emu.pastePending() == 0);
+    REQUIRE((emu.readMemory(0xC010) & 0x80) == 0);
+}
+
+TEST_CASE("Emulator paste accepts resolved key codes and skips unmappable text",
+          "[emulator][keyboard][paste]") {
+    Emulator emu;
+    emu.init();
+
+    // Ctrl-C as a raw code, the way a {ctrl-c} token arrives.
+    emu.pasteKey(0x03);
+    REQUIRE(readKeyLikeSoftware(emu) == 0x03);
+
+    // Characters with no Apple II equivalent are dropped, not queued as junk.
+    // The pound sign is multi-byte UTF-8, so a byte-wise reader would also
+    // queue two stray continuation bytes here.
+    REQUIRE(emu.pasteText("A\xC2\xA3" "B") == 2);
+    REQUIRE(nextPastedKey(emu) == 'A');
+    REQUIRE(nextPastedKey(emu) == 'B');
+    REQUIRE(emu.pastePending() == 0);
+}
+
+TEST_CASE("Emulator reset discards a paste in flight",
+          "[emulator][keyboard][paste]") {
+    Emulator emu;
+    emu.init();
+
+    emu.pasteText("LONG TEXT");
+    emu.reset();
+    REQUIRE(emu.pastePending() == 0);
+    REQUIRE(emu.isKeyboardReady());
+}
+
+TEST_CASE("Emulator reports any-key-down for real typing and clears it",
+          "[emulator][keyboard][akd]") {
+    // AKD is $C010 bit 7. It used to be set by the first keystroke of the
+    // session and never cleared, because handleRawKeyUp only ever touched the
+    // Apple buttons.
+    Emulator emu;
+    emu.init();
+    REQUIRE((emu.readMemory(0xC010) & 0x80) == 0);
+
+    emu.handleRawKeyDown(65, false, false, false, false, false, 0); // 'A' down
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) != 0);
+
+    // The key code is still waiting to be read; only AKD follows the release.
+    REQUIRE((emu.readMemory(0xC000) & 0x7F) == 'a');
+
+    emu.handleRawKeyUp(65, false, false, false, false, 0);
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) == 0);
+}
+
+TEST_CASE("Emulator holds any-key-down while a second key is still pressed",
+          "[emulator][keyboard][akd]") {
+    Emulator emu;
+    emu.init();
+
+    emu.handleRawKeyDown(65, false, false, false, false, false, 0);
+    emu.handleRawKeyDown(66, false, false, false, false, false, 0);
+    emu.handleRawKeyUp(65, false, false, false, false, 0);
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) != 0);
+
+    emu.handleRawKeyUp(66, false, false, false, false, 0);
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) == 0);
+}
+
+TEST_CASE("Emulator releases any-key-down when the host loses focus",
+          "[emulator][keyboard][akd]") {
+    Emulator emu;
+    emu.init();
+
+    emu.handleRawKeyDown(65, false, false, false, false, false, 0);
+    emu.releaseModifiers(); // window blur
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) == 0);
+}
+
+TEST_CASE("Emulator any-key-down covers a held key and a paste at once",
+          "[emulator][keyboard][akd][paste]") {
+    // The two sources are independent: a paste character waiting in the latch
+    // holds AKD, and so does a physically held key. Neither may clear it while
+    // the other is still asserting it.
+    Emulator emu;
+    emu.init();
+
+    emu.handleRawKeyDown(65, false, false, false, false, false, 0); // 'A' held
+    emu.pasteText("Z");
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) != 0);
+
+    // The typed key is in the latch, so the pasted one waits its turn rather
+    // than overwriting it.
+    REQUIRE((emu.readMemory(0xC000) & 0x7F) == 'a');
+    emu.readMemory(0xC010);
+    REQUIRE(runUntilKeyWaiting(emu));
+    REQUIRE((emu.readMemory(0xC000) & 0x7F) == 'Z');
+
+    // Releasing the held key does not clear AKD while the pasted character is
+    // still sitting unread.
+    emu.handleRawKeyUp(65, false, false, false, false, 0);
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) != 0);
+
+    // ...and reading it clears AKD, because nothing is holding it any more.
+    emu.readMemory(0xC010);
+    REQUIRE((emu.peekMemory(0xC010) & 0x80) == 0);
+}
+
+TEST_CASE("Emulator paste survives a keyboard flush after each character",
+          "[emulator][keyboard][paste]") {
+    // `POKE -16368,0` / `STA $C010` — flushing the keyboard before waiting for
+    // the next key — is everywhere in Apple II software. When a pasted key
+    // appeared the instant the strobe cleared, the flush that followed the read
+    // found a fresh character and threw it away, so a paste into any program
+    // that flushes lost every second character. A person typing leaves nothing
+    // for that flush to eat, and now neither does a paste.
+    Emulator emu;
+    emu.init();
+
+    const std::string sent = "ABCDEFGH";
+    REQUIRE(emu.pasteText(sent.c_str()) == sent.size());
+
+    std::string got;
+    for (size_t i = 0; i < sent.size(); ++i) {
+        REQUIRE(runUntilKeyWaiting(emu));
+        got.push_back(static_cast<char>(emu.readMemory(0xC000) & 0x7F));
+        emu.readMemory(0xC010); // read: clear the strobe
+        emu.writeMemory(0xC010, 0); // ...and flush, the way the program would
+    }
+
+    REQUIRE(got == sent);
+    REQUIRE(emu.pastePending() == 0);
+}
+
+TEST_CASE("Emulator paste gives the machine longer after a carriage return",
+          "[emulator][keyboard][paste]") {
+    // A line takes work to digest — Applesoft tokenises it, DOS and
+    // BASIC.SYSTEM run their command parsers — and those paths flush the
+    // keyboard too, so the gap after a return is deliberately much longer than
+    // the gap between two ordinary characters.
+    Emulator emu;
+    emu.init();
+
+    auto cyclesUntilNextKey = [&](char first) {
+        emu.clearPasteBuffer();
+        emu.readMemory(0xC010); // drain anything left in the latch
+        std::string text;
+        text.push_back(first);
+        text.push_back('Z');
+        emu.pasteText(text.c_str());
+        REQUIRE(runUntilKeyWaiting(emu));
+        emu.readMemory(0xC000);
+        emu.readMemory(0xC010);
+        uint64_t start = emu.getTotalCycles();
+        REQUIRE(runUntilKeyWaiting(emu));
+        return emu.getTotalCycles() - start;
+    };
+
+    const uint64_t afterChar = cyclesUntilNextKey('A');
+    const uint64_t afterReturn = cyclesUntilNextKey('\r');
+
+    REQUIRE(afterChar >= Emulator::PASTE_KEY_GAP_CYCLES);
+    REQUIRE(afterReturn >= Emulator::PASTE_LINE_GAP_CYCLES);
+    REQUIRE(afterReturn > afterChar * 2);
+}
+

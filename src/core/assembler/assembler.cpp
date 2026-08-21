@@ -1,8 +1,26 @@
 /*
- * assembler.cpp - 65C02 multi-pass assembler
+ * assembler.cpp - Merlin-compatible 65C02 assembler
  *
  * Written by
  *  Mike Daley <michael_daley@icloud.com>
+ *
+ * The assembler models Merlin rather than a generic 65C02 assembler, and three
+ * of its habits are load-bearing:
+ *
+ * Expressions evaluate strictly left to right with no operator precedence, so
+ * 1+2*3 is 9. That is what Merlin does, and real Merlin sources are written
+ * assuming it; adding precedence would silently change the bytes they produce.
+ *
+ * A line is four whitespace-separated fields — label, opcode, operand, comment
+ * — and the comment needs no semicolon. An operand therefore ends at the first
+ * space outside a string, which is also why Merlin operands never contain
+ * spaces.
+ *
+ * There is no "pass 1 sizes, pass 2 emits" split. The whole source is run to
+ * completion repeatedly until the symbol table and the object size stop moving,
+ * then once more with diagnostics on. Macros, conditionals and loops make the
+ * line stream depend on symbol values, so a sizing pass that did not emit could
+ * not have followed the same path as the pass that did.
  */
 
 #include "assembler.hpp"
@@ -13,21 +31,41 @@
 
 namespace a2e {
 
-// Directive names (uppercase)
+// ============================================================================
+// Tables
+// ============================================================================
+
+// Directives that produce or reserve object bytes, control assembly, or are
+// accepted and ignored. Anything not here is a mnemonic or a macro call.
 static const char* DIRECTIVES[] = {
-  "ORG", "EQU", "DS", "DFB", "DB", "DW", "DA", "DDB",
-  "HEX", "ASC", "DCI", nullptr
+  // Object layout
+  "ORG", "OBJ", "EQU", "=", "VAR", "DS", "DUM", "DEND",
+  // Data
+  "DFB", "DB", "DW", "DA", "DDB", "ADR", "ADRL", "HEX", "CHK",
+  // Strings
+  "ASC", "DCI", "INV", "FLS", "REV", "STR", "STRL",
+  // Control flow
+  "DO", "IF", "ELSE", "FIN", "LUP", "--^", "ELUP", "END", "ERR",
+  // Macros
+  "MAC", "EOM", "<<<", ">>>", "PMC",
+  // Source files
+  "PUT", "USE", "CHN",
+  // Object file
+  "DSK", "SAV", "TYP",
+  // Listing and assembler options
+  "LST", "EXP", "PAG", "TTL", "SKP", "PAU", "DAT", "CYC", "TR", "KBD",
+  "USR", "SW", "XC", "MX",
+  // Recognised, not supported
+  "REL", "ENT", "EXT", "LNK",
+  nullptr
 };
 
-// Merlin-specific directives we recognise but don't support
-static const char* UNSUPPORTED_DIRECTIVES[] = {
-  "PUT", "USE", "MAC", "EOM", "<<<", "DO", "ELSE", "FIN",
-  "LUP", "ELUP", "--^", "OBJ", "LST", "REL", "TYP", "SAV",
-  "CHN", "ENT", "EXT", "DUM", "DEND", "ERR", "CYC",
-  "DAT", "EXP", "PAU", "SW", "USR", "XC", "MX", "TR",
-  "KBD", "PMC", "PAG", "TTL", "SKP", "CHK", "IF", "END",
-  "ADR", "ADRL", "LNK", "STR", "STRL", "REV", nullptr
-};
+// Directives whose operand opens with a delimiter character and may therefore
+// contain spaces.
+static bool isStringDirective(const std::string& s) {
+  return s == "ASC" || s == "DCI" || s == "INV" || s == "FLS" ||
+         s == "REV" || s == "STR" || s == "STRL";
+}
 
 static bool isDirective(const std::string& s) {
   for (int i = 0; DIRECTIVES[i]; i++) {
@@ -36,38 +74,154 @@ static bool isDirective(const std::string& s) {
   return false;
 }
 
-static bool isUnsupportedDirective(const std::string& s) {
-  for (int i = 0; UNSUPPORTED_DIRECTIVES[i]; i++) {
-    if (s == UNSUPPORTED_DIRECTIVES[i]) return true;
-  }
-  return false;
+// Base cycle counts per opcode. Page-crossing and branch-taken penalties are
+// not included: a listing reports the instruction's own cost, not what the
+// operands happen to do at run time.
+static const uint8_t CYCLE_TABLE[256] = {
+  /* 00 */ 7, 6, 2, 1, 5, 3, 5, 5, 3, 2, 2, 1, 6, 4, 6, 5,
+  /* 10 */ 2, 5, 5, 1, 5, 4, 6, 5, 2, 4, 2, 1, 6, 4, 6, 5,
+  /* 20 */ 6, 6, 2, 1, 3, 3, 5, 5, 4, 2, 2, 1, 4, 4, 6, 5,
+  /* 30 */ 2, 5, 5, 1, 4, 4, 6, 5, 2, 4, 2, 1, 4, 4, 6, 5,
+  /* 40 */ 6, 6, 2, 1, 3, 3, 5, 5, 3, 2, 2, 1, 3, 4, 6, 5,
+  /* 50 */ 2, 5, 5, 1, 4, 4, 6, 5, 2, 4, 3, 1, 8, 4, 6, 5,
+  /* 60 */ 6, 6, 2, 1, 3, 3, 5, 5, 4, 2, 2, 1, 6, 4, 6, 5,
+  /* 70 */ 2, 5, 5, 1, 4, 4, 6, 5, 2, 4, 4, 1, 6, 4, 6, 5,
+  /* 80 */ 3, 6, 2, 1, 3, 3, 3, 5, 2, 2, 2, 1, 4, 4, 4, 5,
+  /* 90 */ 2, 6, 5, 1, 4, 4, 4, 5, 2, 5, 2, 1, 4, 5, 5, 5,
+  /* A0 */ 2, 6, 2, 1, 3, 3, 3, 5, 2, 2, 2, 1, 4, 4, 4, 5,
+  /* B0 */ 2, 5, 5, 1, 4, 4, 4, 5, 2, 4, 2, 1, 4, 4, 4, 5,
+  /* C0 */ 2, 6, 2, 1, 3, 3, 5, 5, 2, 2, 2, 3, 4, 4, 6, 5,
+  /* D0 */ 2, 5, 5, 1, 4, 4, 6, 5, 2, 4, 3, 3, 4, 4, 7, 5,
+  /* E0 */ 2, 6, 2, 1, 3, 3, 5, 5, 2, 2, 2, 1, 4, 4, 6, 5,
+  /* F0 */ 2, 5, 5, 1, 4, 4, 6, 5, 2, 4, 4, 1, 4, 4, 7, 5,
+};
+
+int Assembler::cyclesForOpcode(uint8_t opcode) {
+  return CYCLE_TABLE[opcode];
 }
+
+// Sweet-16 interpreter mnemonics, enabled by the SW directive.
+namespace {
+enum class S16Kind : uint8_t {
+  REG,      // Rn         one byte
+  REG_IND,  // @Rn        one byte
+  SET,      // Rn,expr    three bytes
+  BRANCH,   // target     two bytes, relative
+  IMPLIED   // -          one byte
+};
+
+struct S16Op {
+  const char* name;
+  uint8_t base;
+  S16Kind kind;
+};
+
+const S16Op SWEET16_OPS[] = {
+  {"SET", 0x10, S16Kind::SET},
+  {"LD",  0x20, S16Kind::REG},      // LD @Rn is patched to 0x40 below
+  {"ST",  0x30, S16Kind::REG},      // ST @Rn is patched to 0x50 below
+  {"LDD", 0x60, S16Kind::REG_IND},
+  {"STD", 0x70, S16Kind::REG_IND},
+  {"POP", 0x80, S16Kind::REG_IND},
+  {"STP", 0x90, S16Kind::REG_IND},
+  {"ADD", 0xA0, S16Kind::REG},
+  {"SUB", 0xB0, S16Kind::REG},
+  {"POPD",0xC0, S16Kind::REG_IND},
+  {"CPR", 0xD0, S16Kind::REG},
+  {"INR", 0xE0, S16Kind::REG},
+  {"DCR", 0xF0, S16Kind::REG},
+  {"RTN", 0x00, S16Kind::IMPLIED},
+  {"BR",  0x01, S16Kind::BRANCH},
+  {"BNC", 0x02, S16Kind::BRANCH},
+  {"BC",  0x03, S16Kind::BRANCH},
+  {"BP",  0x04, S16Kind::BRANCH},
+  {"BM",  0x05, S16Kind::BRANCH},
+  {"BZ",  0x06, S16Kind::BRANCH},
+  {"BNZ", 0x07, S16Kind::BRANCH},
+  {"BM1", 0x08, S16Kind::BRANCH},
+  {"BNM1",0x09, S16Kind::BRANCH},
+  {"BK",  0x0A, S16Kind::IMPLIED},
+  {"RS",  0x0B, S16Kind::IMPLIED},
+  {"BS",  0x0C, S16Kind::BRANCH},
+};
+
+const S16Op* findSweet16(const std::string& name) {
+  for (const auto& op : SWEET16_OPS) {
+    if (name == op.name) return &op;
+  }
+  return nullptr;
+}
+} // namespace
+
+// ============================================================================
+// Small string helpers
+// ============================================================================
 
 static std::string toUpper(const std::string& s) {
   std::string r = s;
-  for (auto& c : r) c = toupper(c);
+  for (auto& c : r) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
   return r;
+}
+
+static std::string trim(const std::string& s) {
+  size_t start = 0, end = s.size();
+  while (start < end && (s[start] == ' ' || s[start] == '\t')) start++;
+  while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t')) end--;
+  return s.substr(start, end - start);
 }
 
 static void skipSpaces(const char*& p) {
   while (*p && (*p == ' ' || *p == '\t')) p++;
 }
 
+// A label may hold letters, digits and the punctuation Merlin allows in a
+// symbol. ']' and ':' lead a variable or a local label respectively.
 static bool isIdentChar(char c) {
-  return isalnum(c) || c == '_' || c == '.' || c == ':' || c == ']';
+  return isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' ||
+         c == ':' || c == ']' || c == '?';
+}
+
+static bool isIdentStart(char c) {
+  return isalpha(static_cast<unsigned char>(c)) || c == '_' || c == ':' ||
+         c == ']' || c == '?';
+}
+
+// Merlin picks the high bit from the delimiter: an apostrophe and anything
+// above it in ASCII gives plain ASCII, anything below gives high ASCII. That
+// is the rule behind the familiar pair — ' is $27 and " is $22.
+static bool delimiterSetsHighBit(char delim) {
+  return static_cast<unsigned char>(delim) < 0x27;
+}
+
+// Split a Merlin macro parameter list. Parameters are separated by ';', which
+// is why a macro call's operand is never scanned for a comment.
+static std::vector<std::string> splitMacroParams(const std::string& s) {
+  std::vector<std::string> parts;
+  std::string current;
+  for (char c : s) {
+    if (c == ';') {
+      parts.push_back(current);
+      current.clear();
+    } else {
+      current += c;
+    }
+  }
+  parts.push_back(current);
+  return parts;
 }
 
 // ============================================================================
-// Constructor
+// Constructor / opcode tables
 // ============================================================================
 
-Assembler::Assembler() : reverseTableBuilt(false), pc(0x0800) {
+Assembler::Assembler()
+    : reverseTableBuilt(false), result_(nullptr), finalPass_(false),
+      unresolved_(false), ended_(false), pc(0x0800), objAddress_(0),
+      inDummy_(false), dummyResumePC_(0), checksum_(0), listingOn_(true),
+      cycleCounts_(false), sweet16_(false), totalCycles_(0), macroDepth_(0),
+      expansionCounter_(0), lineStartPC_(0) {
   memset(reverseOpcodes, 0xFF, sizeof(reverseOpcodes));
 }
-
-// ============================================================================
-// Build reverse opcode table from disassembler's forward table
-// ============================================================================
 
 void Assembler::buildReverseOpcodeTable() {
   if (reverseTableBuilt) return;
@@ -84,278 +238,241 @@ void Assembler::buildReverseOpcodeTable() {
   reverseTableBuilt = true;
 }
 
-// ============================================================================
-// Find mnemonic index by name
-// ============================================================================
-
 int Assembler::findMnemonicIndex(const std::string& mnemonic) {
   int count = getMnemonicCount();
   for (int i = 1; i < count; i++) {
-    if (mnemonic == getMnemonicByIndex(i)) {
+    if (mnemonic == getMnemonicByIndex(static_cast<uint8_t>(i))) {
       return i;
     }
   }
   return -1;
 }
 
-// ============================================================================
-// Branch detection helpers
-// ============================================================================
-
 bool Assembler::isBranchMnemonic(int mnemonicIndex) {
-  // Check if the opcode table has this mnemonic in REL mode
-  const OpcodeInfo* table = getOpcodeTable();
-  for (int i = 0; i < 256; i++) {
-    if (table[i].mnemonicIndex == mnemonicIndex &&
-        table[i].mode == static_cast<uint8_t>(AddrMode::REL)) {
-      return true;
-    }
-  }
-  return false;
+  return mnemonicIndex >= 0 && mnemonicIndex < 99 &&
+         reverseOpcodes[mnemonicIndex][static_cast<int>(AddrMode::REL)] != 0xFF;
 }
 
 bool Assembler::isZPRMnemonic(int mnemonicIndex) {
-  const OpcodeInfo* table = getOpcodeTable();
-  for (int i = 0; i < 256; i++) {
-    if (table[i].mnemonicIndex == mnemonicIndex &&
-        table[i].mode == static_cast<uint8_t>(AddrMode::ZPR)) {
-      return true;
-    }
-  }
-  return false;
+  return mnemonicIndex >= 0 && mnemonicIndex < 99 &&
+         reverseOpcodes[mnemonicIndex][static_cast<int>(AddrMode::ZPR)] != 0xFF;
 }
 
 // ============================================================================
-// Parse source into lines
+// Parsing
 // ============================================================================
 
-std::vector<Assembler::ParsedLine> Assembler::parseSource(const char* source) {
-  std::vector<ParsedLine> lines;
-  const char* p = source;
+std::vector<Assembler::Line> Assembler::parseSource(const std::string& source,
+                                                    bool isMain,
+                                                    int reportLine) {
+  std::vector<Line> lines;
+  const char* p = source.c_str();
   int lineNum = 1;
 
   while (*p) {
-    // Find end of line
     const char* lineStart = p;
     while (*p && *p != '\n' && *p != '\r') p++;
-
-    std::string lineStr(lineStart, p - lineStart);
-
-    // Skip line endings
+    std::string lineStr(lineStart, static_cast<size_t>(p - lineStart));
     if (*p == '\r') p++;
     if (*p == '\n') p++;
 
-    ParsedLine parsed = parseLine(lineStr.c_str(), lineNum);
-    if (!parsed.mnemonic.empty() || !parsed.label.empty()) {
-      lines.push_back(parsed);
-    }
-
+    lines.push_back(parseLine(lineStr, lineNum, isMain, reportLine));
     lineNum++;
   }
 
   return lines;
 }
 
-// ============================================================================
-// Parse a single line
-// ============================================================================
-
-Assembler::ParsedLine Assembler::parseLine(const char* line, int lineNumber) {
-  ParsedLine result;
+Assembler::Line Assembler::parseLine(const std::string& text, int lineNumber,
+                                     bool isMain, int reportLine) {
+  Line result;
+  result.text = text;
   result.lineNumber = lineNumber;
+  result.reportLine = isMain ? lineNumber : reportLine;
+  result.isMain = isMain;
 
+  const char* line = text.c_str();
   const char* p = line;
 
-  // Skip empty lines
   skipSpaces(p);
   if (!*p) return result;
 
-  // Full-line comments
-  if (*p == ';' || *p == '*') return result;
+  // A '*' or ';' in the first column is a comment for the whole line. '*' is
+  // only a comment there — elsewhere it is the program counter.
+  if (*p == ';') return result;
+  if (line[0] == '*') return result;
 
-  // Reset p to start of line for column detection
   p = line;
 
-  // If line starts with non-whitespace, first token is a label
-  if (*p && *p != ' ' && *p != '\t' && *p != ';' && *p != '*') {
+  // Field 1: label, only when the line starts in column 1.
+  if (*p && *p != ' ' && *p != '\t') {
     const char* start = p;
-    while (*p && !isspace(*p)) p++;
-    result.label = std::string(start, p - start);
-    // Strip optional trailing colon (non-Merlin convention but common)
-    if (!result.label.empty() && result.label.back() == ':') {
+    while (*p && !isspace(static_cast<unsigned char>(*p))) p++;
+    result.label = std::string(start, static_cast<size_t>(p - start));
+    // A trailing colon is not Merlin, but it is what most people type. A lone
+    // ':' prefix marks a local label and must survive.
+    if (result.label.size() > 1 && result.label.back() == ':') {
       result.label.pop_back();
     }
   }
 
-  // Skip whitespace to opcode
+  // Field 2: opcode / directive / macro name.
   skipSpaces(p);
   if (!*p || *p == ';') return result;
-
-  // Extract opcode/mnemonic
   const char* opcStart = p;
-  while (*p && !isspace(*p)) p++;
-  result.mnemonic = toUpper(std::string(opcStart, p - opcStart));
+  while (*p && !isspace(static_cast<unsigned char>(*p))) p++;
+  result.mnemonic = toUpper(std::string(opcStart, static_cast<size_t>(p - opcStart)));
 
-  // Skip whitespace to operand
+  // Field 3: operand. It ends at the first space outside a string, because
+  // whatever follows that space is Merlin's comment field.
   skipSpaces(p);
   if (!*p || *p == ';') return result;
 
-  // Extract operand (up to comment or end of line)
-  // Respect string delimiters
   const char* opStart = p;
-  bool inSingle = false, inDouble = false;
-  while (*p) {
-    if (*p == '\'' && !inDouble) inSingle = !inSingle;
-    else if (*p == '"' && !inSingle) inDouble = !inDouble;
-    else if (*p == ';' && !inSingle && !inDouble) break;
+  if (isStringDirective(result.mnemonic)) {
+    // The operand opens with a delimiter of the author's choosing, so the
+    // string runs to the next copy of that character whatever it is.
+    char delim = *p;
+    p++;
+    while (*p && *p != delim) p++;
+    if (*p == delim) p++;
+  }
+  while (*p && !isspace(static_cast<unsigned char>(*p))) {
+    if (*p == '\'' || *p == '"') {
+      char q = *p;
+      p++;
+      while (*p && *p != q) p++;
+      if (!*p) break;
+    }
     p++;
   }
-
-  // Trim trailing whitespace from operand
-  const char* opEnd = p;
-  while (opEnd > opStart && isspace(*(opEnd - 1))) opEnd--;
-  result.operand = std::string(opStart, opEnd - opStart);
+  result.operand = std::string(opStart, static_cast<size_t>(p - opStart));
 
   return result;
 }
 
 // ============================================================================
-// Expression evaluator (recursive descent)
+// Expressions
+//
+// Merlin has no operator precedence and no grouping: terms are combined left
+// to right in the order written.
 // ============================================================================
 
-int32_t Assembler::evaluateExpression(const std::string& expr, bool& error,
-                                      std::string& errorMsg, int lineNumber) {
+std::string Assembler::qualifyLabel(const std::string& name) {
+  if (!name.empty() && name[0] == ':') {
+    return globalLabel_ + name;
+  }
+  return name;
+}
+
+bool Assembler::lookupSymbol(const std::string& name, int32_t& value) {
+  auto it = symbols.find(name);
+  if (it != symbols.end()) {
+    value = it->second;
+    return true;
+  }
+  // A symbol defined later in the source resolves to the value the previous
+  // pass gave it; the pass loop keeps going until those stop moving.
+  auto prev = lastPassSymbols_.find(name);
+  if (prev != lastPassSymbols_.end()) {
+    value = prev->second;
+    return true;
+  }
+  return false;
+}
+
+int32_t Assembler::evaluate(const std::string& expr, bool& error,
+                            std::string& errorMsg) {
   const char* p = expr.c_str();
   skipSpaces(p);
-  int32_t val = evalAddSub(p, error, errorMsg, lineNumber);
-  return val;
-}
 
-int32_t Assembler::evalAddSub(const char*& p, bool& error,
-                              std::string& errorMsg, int lineNumber) {
-  int32_t left = evalMulDiv(p, error, errorMsg, lineNumber);
-  if (error) return 0;
-
-  while (*p == '+' || *p == '-') {
-    char op = *p++;
-    skipSpaces(p);
-    int32_t right = evalMulDiv(p, error, errorMsg, lineNumber);
-    if (error) return 0;
-    if (op == '+') left += right;
-    else left -= right;
+  if (!*p) {
+    error = true;
+    errorMsg = "Missing expression";
+    return 0;
   }
-  return left;
-}
 
-int32_t Assembler::evalMulDiv(const char*& p, bool& error,
-                              std::string& errorMsg, int lineNumber) {
-  int32_t left = evalUnary(p, error, errorMsg, lineNumber);
-  if (error) return 0;
-
-  while (*p == '*' || *p == '/') {
-    // Peek: if * is followed by nothing meaningful (end/space/operator),
-    // it might be a standalone PC reference - stop here
-    char op = *p;
-    if (op == '*') {
-      // Check if this is multiplication or PC reference
-      // Multiplication only if preceded by a value and followed by a value
-      const char* next = p + 1;
-      skipSpaces(next);
-      if (!*next || *next == '+' || *next == '-' || *next == ')' ||
-          *next == ',' || *next == ';') {
-        break; // Not multiplication
-      }
-    }
+  // A byte selector applies to the whole expression, not just the first term:
+  // #>LABEL+1 is the high byte of LABEL+1.
+  char selector = 0;
+  if (*p == '<' || *p == '>' || *p == '^') {
+    selector = *p;
     p++;
     skipSpaces(p);
-    int32_t right = evalUnary(p, error, errorMsg, lineNumber);
+  }
+
+  int32_t value = evalTerm(p, error, errorMsg);
+  if (error) return 0;
+
+  while (*p) {
+    skipSpaces(p);
+    char op = *p;
+    if (op != '+' && op != '-' && op != '*' && op != '/' && op != '!' &&
+        op != '.' && op != '&') {
+      break;
+    }
+    p++;
+    int32_t rhs = evalTerm(p, error, errorMsg);
     if (error) return 0;
-    if (op == '/') {
-      if (right == 0) {
-        error = true;
-        errorMsg = "Division by zero";
-        return 0;
-      }
-      left /= right;
-    } else {
-      left *= right;
+    switch (op) {
+      case '+': value += rhs; break;
+      case '-': value -= rhs; break;
+      case '*': value *= rhs; break;
+      case '/':
+        if (rhs == 0) {
+          error = true;
+          errorMsg = "Division by zero";
+          return 0;
+        }
+        value /= rhs;
+        break;
+      case '!': value ^= rhs; break;   // Merlin: exclusive or
+      case '.': value |= rhs; break;   // Merlin: or
+      case '&': value &= rhs; break;   // Merlin: and
+      default: break;
     }
   }
-  return left;
+
+  switch (selector) {
+    case '<': return value & 0xFF;
+    case '>': return (value >> 8) & 0xFF;
+    case '^': return (value >> 16) & 0xFF;
+    default: return value;
+  }
 }
 
-int32_t Assembler::evalUnary(const char*& p, bool& error,
-                             std::string& errorMsg, int lineNumber) {
+int32_t Assembler::evalTerm(const char*& p, bool& error,
+                            std::string& errorMsg) {
   skipSpaces(p);
 
-  // Low byte selector: <expr
-  if (*p == '<') {
-    p++;
-    skipSpaces(p);
-    int32_t val = evalUnary(p, error, errorMsg, lineNumber);
-    return val & 0xFF;
-  }
-
-  // High byte selector: >expr
-  if (*p == '>') {
-    p++;
-    skipSpaces(p);
-    int32_t val = evalUnary(p, error, errorMsg, lineNumber);
-    return (val >> 8) & 0xFF;
-  }
-
-  // Unary minus
   if (*p == '-') {
     p++;
-    skipSpaces(p);
-    int32_t val = evalUnary(p, error, errorMsg, lineNumber);
-    return -val;
+    return -evalTerm(p, error, errorMsg);
   }
 
-  return evalPrimary(p, error, errorMsg, lineNumber);
-}
-
-int32_t Assembler::evalPrimary(const char*& p, bool& error,
-                               std::string& errorMsg, int lineNumber) {
-  skipSpaces(p);
-
-  // Parenthesized expression
-  if (*p == '(') {
-    p++;
-    skipSpaces(p);
-    int32_t val = evalAddSub(p, error, errorMsg, lineNumber);
-    if (error) return 0;
-    skipSpaces(p);
-    if (*p == ')') p++;
-    return val;
-  }
-
-  // Current PC reference: *
+  // Current program counter — the address of the line being assembled.
   if (*p == '*') {
     p++;
     return static_cast<int32_t>(pc);
   }
 
-  // Hex number: $xxxx
   if (*p == '$') {
     p++;
-    if (!isxdigit(*p)) {
+    if (!isxdigit(static_cast<unsigned char>(*p))) {
       error = true;
       errorMsg = "Expected hex digit after $";
       return 0;
     }
     int32_t val = 0;
-    while (isxdigit(*p)) {
-      val = val * 16;
+    while (isxdigit(static_cast<unsigned char>(*p))) {
+      val *= 16;
       if (*p >= '0' && *p <= '9') val += *p - '0';
-      else if (*p >= 'A' && *p <= 'F') val += *p - 'A' + 10;
-      else if (*p >= 'a' && *p <= 'f') val += *p - 'a' + 10;
+      else val += (toupper(static_cast<unsigned char>(*p)) - 'A') + 10;
       p++;
     }
     return val;
   }
 
-  // Binary number: %01010101
   if (*p == '%') {
     p++;
     if (*p != '0' && *p != '1') {
@@ -371,487 +488,1096 @@ int32_t Assembler::evalPrimary(const char*& p, bool& error,
     return val;
   }
 
-  // Character literal: 'A'
-  if (*p == '\'') {
+  // Character constants. The delimiter chooses the high bit exactly as it does
+  // for a string, so 'A is $41 and "A" is $C1.
+  if (*p == '\'' || *p == '"') {
+    char delim = *p;
     p++;
     if (!*p) {
       error = true;
-      errorMsg = "Unterminated character literal";
+      errorMsg = "Unterminated character constant";
       return 0;
     }
     int32_t val = static_cast<uint8_t>(*p);
+    if (delimiterSetsHighBit(delim)) val |= 0x80;
     p++;
-    if (*p == '\'') p++; // skip closing quote
+    if (*p == delim) p++;  // the closing delimiter is optional in Merlin
     return val;
   }
 
-  // Decimal number
-  if (isdigit(*p)) {
+  if (isdigit(static_cast<unsigned char>(*p))) {
     int32_t val = 0;
-    while (isdigit(*p)) {
+    while (isdigit(static_cast<unsigned char>(*p))) {
       val = val * 10 + (*p - '0');
       p++;
     }
     return val;
   }
 
-  // Symbol / label reference
-  if (isalpha(*p) || *p == '_' || *p == ':' || *p == ']') {
+  if (isIdentStart(*p)) {
     const char* start = p;
     while (*p && isIdentChar(*p)) p++;
-    std::string name(start, p - start);
-    std::string upper = toUpper(name);
+    std::string name = toUpper(std::string(start, static_cast<size_t>(p - start)));
+    std::string key = qualifyLabel(name);
 
-    auto it = symbols.find(upper);
-    if (it != symbols.end()) {
-      return it->second;
+    int32_t value = 0;
+    if (lookupSymbol(key, value)) return value;
+
+    // On the passes before the last one an unknown name is just a symbol the
+    // source has not reached yet. Nothing is reported, but the caller is told
+    // the value is a guess so it does not size the instruction as zero page.
+    unresolved_ = true;
+    if (finalPass_) {
+      error = true;
+      errorMsg = "Undefined symbol: " + name;
     }
-
-    // Undefined symbol
-    error = true;
-    errorMsg = "Undefined symbol: " + name;
     return 0;
   }
 
   error = true;
-  errorMsg = "Unexpected character in expression";
+  errorMsg = std::string("Unexpected character '") + *p + "' in expression";
   return 0;
 }
 
 // ============================================================================
-// Addressing mode detection
+// Emission
 // ============================================================================
 
-uint8_t Assembler::detectAddressingMode(const std::string& mnemonic,
-                                        const std::string& operand,
-                                        int32_t value, bool valueKnown) {
-  int mnemIdx = findMnemonicIndex(mnemonic);
-  if (mnemIdx < 0) return 0xFF;
+void Assembler::startSegment() {
+  needNewSegment_ = true;
+}
 
-  // No operand
-  if (operand.empty()) {
-    // Check if IMP exists for this mnemonic
-    if (reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::IMP)] != 0xFF) {
-      return static_cast<uint8_t>(AddrMode::IMP);
-    }
-    // Some shift/rotate instructions use ACC with no explicit operand
-    if (reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ACC)] != 0xFF) {
-      return static_cast<uint8_t>(AddrMode::ACC);
-    }
-    return 0xFF;
+void Assembler::emitByte(uint8_t value) {
+  uint16_t addr = pc;
+  pc = static_cast<uint16_t>(pc + 1);
+
+  // A dummy section reserves addresses without producing object code.
+  if (inDummy_) return;
+
+  lineBytes_.push_back(value);
+  checksum_ = static_cast<uint8_t>(checksum_ ^ value);
+
+  if (needNewSegment_ || result_->segments.empty()) {
+    AsmSegment seg;
+    seg.address = addr;
+    seg.offset = static_cast<uint32_t>(result_->output.size());
+    seg.length = 0;
+    result_->segments.push_back(seg);
+    needNewSegment_ = false;
+  }
+  result_->output.push_back(value);
+  result_->segments.back().length++;
+}
+
+void Assembler::defineSymbol(const std::string& name, int32_t value,
+                             const Line& line) {
+  std::string plain = toUpper(name);
+  std::string key = qualifyLabel(plain);
+
+  // Variables are meant to be reassigned; everything else is defined once.
+  bool isVariable = !plain.empty() && plain[0] == ']';
+  if (!isVariable && finalPass_ && symbols.count(key)) {
+    addError(line, "Duplicate symbol: " + name);
+    return;
   }
 
-  std::string op = operand;
+  symbols[key] = value;
+  // A global label opens a new scope for the local labels that follow it. The
+  // test is on the name as written: the key has already been qualified, so a
+  // local's key no longer looks local.
+  if (!plain.empty() && plain[0] != ':' && plain[0] != ']') {
+    globalLabel_ = plain;
+  }
+}
 
-  // Accumulator: "A" for shift/rotate instructions
-  if (op == "A" || op == "a") {
-    if (reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ACC)] != 0xFF) {
-      return static_cast<uint8_t>(AddrMode::ACC);
+// ============================================================================
+// Diagnostics and listing
+// ============================================================================
+
+void Assembler::addError(const Line& line, const std::string& msg) {
+  if (!finalPass_) return;
+  AsmError err;
+  err.lineNumber = line.reportLine;
+  err.warning = false;
+  std::string full = msg;
+  if (!line.isMain) {
+    char prefix[32];
+    snprintf(prefix, sizeof(prefix), "(line %d) ", line.lineNumber);
+    full = std::string(prefix) + msg;
+  }
+  strncpy(err.message, full.c_str(), ASM_MAX_ERROR_MSG - 1);
+  err.message[ASM_MAX_ERROR_MSG - 1] = '\0';
+  result_->errors.push_back(err);
+}
+
+void Assembler::addWarning(const Line& line, const std::string& msg) {
+  if (!finalPass_) return;
+  AsmError err;
+  err.lineNumber = line.reportLine;
+  err.warning = true;
+  strncpy(err.message, msg.c_str(), ASM_MAX_ERROR_MSG - 1);
+  err.message[ASM_MAX_ERROR_MSG - 1] = '\0';
+  result_->errors.push_back(err);
+}
+
+void Assembler::listLine(const Line& line, uint16_t address,
+                         const uint8_t* bytes, int count, int cycles) {
+  if (!finalPass_ || !listingOn_) return;
+
+  char buf[128];
+  std::string byteField;
+  int shown = count < 4 ? count : 4;
+  for (int i = 0; i < shown; i++) {
+    char hex[4];
+    snprintf(hex, sizeof(hex), "%02X ", bytes[i]);
+    byteField += hex;
+  }
+  while (byteField.size() < 12) byteField += ' ';
+
+  if (count > 0) {
+    snprintf(buf, sizeof(buf), "%5d  %04X: %s", line.lineNumber, address,
+             byteField.c_str());
+  } else {
+    snprintf(buf, sizeof(buf), "%5d        %s", line.lineNumber,
+             std::string(12, ' ').c_str());
+  }
+  result_->listing += buf;
+
+  if (cycleCounts_) {
+    char cyc[8];
+    if (cycles > 0) {
+      snprintf(cyc, sizeof(cyc), "%2d ", cycles);
+    } else {
+      snprintf(cyc, sizeof(cyc), "   ");
     }
+    result_->listing += cyc;
   }
 
-  // Immediate: #expr
-  if (op[0] == '#') {
-    return static_cast<uint8_t>(AddrMode::IMM);
+  result_->listing += line.text;
+  result_->listing += '\n';
+}
+
+void Assembler::recordLine(const Line& line, uint16_t address,
+                           const uint8_t* bytes, int count, int cycles) {
+  if (!finalPass_ || !line.isMain) return;
+  size_t index = static_cast<size_t>(line.lineNumber);
+  if (index >= lineRecorded_.size()) lineRecorded_.resize(index + 1, false);
+  if (lineRecorded_[index]) return;  // a LUP body reports its first pass only
+  lineRecorded_[index] = true;
+
+  AsmLineInfo info;
+  info.lineNumber = line.lineNumber;
+  info.address = address;
+  info.cycles = static_cast<uint16_t>(cycles);
+  info.byteCount = static_cast<uint8_t>(count > 255 ? 255 : count);
+  for (int i = 0; i < 4; i++) {
+    info.bytes[i] = i < count ? bytes[i] : 0;
+  }
+  result_->lines.push_back(info);
+}
+
+// ============================================================================
+// Pass driver
+// ============================================================================
+
+AsmResult Assembler::assemble(const char* source) {
+  buildReverseOpcodeTable();
+
+  std::vector<Line> lines = parseSource(source ? source : "", true, 0);
+
+  lastPassSymbols_.clear();
+  symbols.clear();
+
+  // Run the source to completion until the symbol table and the object size
+  // stop changing. Zero-page selection shrinks instructions once a forward
+  // reference is known, which moves every later label, so this normally
+  // settles on the second or third pass.
+  const int MAX_PASSES = 16;
+  size_t previousSize = static_cast<size_t>(-1);
+  for (int pass = 0; pass < MAX_PASSES; pass++) {
+    AsmResult scratch;
+    std::map<std::string, int32_t> before = symbols;
+    runPass(lines, scratch, false);
+    if (pass > 0 && symbols == before && scratch.output.size() == previousSize) {
+      break;
+    }
+    previousSize = scratch.output.size();
   }
 
-  // Indirect modes: start with (
-  if (op[0] == '(') {
-    // (expr,X) - Indexed Indirect or Absolute Indexed Indirect
-    if (op.size() >= 4) {
-      std::string upper = toUpper(op);
-      // Check for (expr,X)
-      if (upper.back() == ')') {
-        size_t commaPos = upper.rfind(',');
-        if (commaPos != std::string::npos) {
-          std::string afterComma = upper.substr(commaPos + 1);
-          // Remove trailing )
-          afterComma.pop_back();
-          // Trim spaces
-          while (!afterComma.empty() && afterComma[0] == ' ') afterComma.erase(0, 1);
-          while (!afterComma.empty() && afterComma.back() == ' ') afterComma.pop_back();
-          if (afterComma == "X") {
-            // IZX (zero page) or AIX (absolute) based on value
-            if (valueKnown && value >= 0 && value <= 255 &&
-                reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::IZX)] != 0xFF) {
-              return static_cast<uint8_t>(AddrMode::IZX);
-            }
-            if (reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::AIX)] != 0xFF) {
-              return static_cast<uint8_t>(AddrMode::AIX);
-            }
-            return static_cast<uint8_t>(AddrMode::IZX);
+  AsmResult result;
+  runPass(lines, result, true);
+
+  // Export the symbol table. std::map already holds it in name order.
+  result.symbols.clear();
+  result.symbols.reserve(symbols.size());
+  for (const auto& entry : symbols) {
+    AsmSymbol sym;
+    std::strncpy(sym.name, entry.first.c_str(), sizeof(sym.name) - 1);
+    sym.name[sizeof(sym.name) - 1] = '\0';
+    sym.value = entry.second;
+    result.symbols.push_back(sym);
+  }
+
+  return result;
+}
+
+void Assembler::runPass(const std::vector<Line>& lines, AsmResult& out,
+                        bool finalPass) {
+  out.output.clear();
+  out.errors.clear();
+  out.segments.clear();
+  out.lines.clear();
+  out.listing.clear();
+  out.origin = 0x0800;
+  out.endAddress = 0x0800;
+  out.success = false;
+  out.hasObjectFile = false;
+  out.objectFilename[0] = '\0';
+  out.objectDrive = 1;
+  out.objectType = 0x06;  // ProDOS BIN
+
+  result_ = &out;
+  finalPass_ = finalPass;
+  ended_ = false;
+  unresolved_ = false;
+
+  lastPassSymbols_ = symbols;
+  symbols.clear();
+  variableText_.clear();
+  macros_.clear();
+  includeStack_.clear();
+  conds_.clear();
+  lineRecorded_.assign(lines.size() + 2, false);
+
+  pc = 0x0800;
+  objAddress_ = 0;
+  inDummy_ = false;
+  dummyResumePC_ = 0;
+  checksum_ = 0;
+  listingOn_ = true;
+  cycleCounts_ = false;
+  sweet16_ = false;
+  totalCycles_ = 0;
+  globalLabel_.clear();
+  macroDepth_ = 0;
+  expansionCounter_ = 0;
+  needNewSegment_ = true;
+  originSet_ = false;
+  xcCount_ = 0;
+
+  execLines(lines);
+
+  if (!conds_.empty() && finalPass) {
+    AsmError err;
+    err.lineNumber = 0;
+    err.warning = false;
+    strncpy(err.message, "DO/IF without matching FIN", ASM_MAX_ERROR_MSG - 1);
+    err.message[ASM_MAX_ERROR_MSG - 1] = '\0';
+    out.errors.push_back(err);
+  }
+
+  if (!out.segments.empty()) {
+    out.origin = out.segments.front().address;
+  }
+  out.endAddress = pc;
+
+  bool fatal = false;
+  for (const auto& err : out.errors) {
+    if (!err.warning) fatal = true;
+  }
+  out.success = !fatal;
+
+  result_ = nullptr;
+}
+
+// ============================================================================
+// Execution
+// ============================================================================
+
+void Assembler::execLines(const std::vector<Line>& lines) {
+  for (size_t i = 0; i < lines.size() && !ended_; i++) {
+    execLine(lines[i], i, lines);
+  }
+}
+
+std::vector<Assembler::Line> Assembler::collectBlock(
+    const std::vector<Line>& lines, size_t& index, const char* opener,
+    const char* const* closers, bool& unterminated) {
+  std::vector<Line> body;
+  int depth = 1;
+  size_t i = index + 1;
+  for (; i < lines.size(); i++) {
+    const std::string& m = lines[i].mnemonic;
+    if (m == opener) {
+      depth++;
+    } else {
+      bool isCloser = false;
+      for (int c = 0; closers[c]; c++) {
+        if (m == closers[c]) { isCloser = true; break; }
+      }
+      if (isCloser) {
+        depth--;
+        if (depth == 0) break;
+      }
+    }
+    body.push_back(lines[i]);
+  }
+  unterminated = (i >= lines.size());
+  index = unterminated ? lines.size() - 1 : i;
+  return body;
+}
+
+void Assembler::execLine(const Line& line, size_t& index,
+                         const std::vector<Line>& lines) {
+  const std::string& mnem = line.mnemonic;
+
+  lineBytes_.clear();
+  lineStartPC_ = pc;
+
+  // ------------------------------------------------------------------
+  // Conditionals. These are read even inside a region that is not being
+  // assembled, so that nesting stays balanced.
+  // ------------------------------------------------------------------
+  if (mnem == "DO" || mnem == "IF") {
+    bool parentActive = active();
+    bool taken = false;
+    if (parentActive) {
+      if (mnem == "IF") {
+        // Merlin's IF compares a character with the first character of its
+        // second operand: IF "A",]1. It is written for macro parameters, and a
+        // parameter has already been substituted textually by the time the
+        // line is read — so the comparison is against text, not a value. That
+        // is what makes IF "",]1 the idiom for "was this parameter omitted?".
+        size_t comma = line.operand.find(',');
+        if (comma != std::string::npos) {
+          std::string lhs = trim(line.operand.substr(0, comma));
+          std::string rhs = trim(line.operand.substr(comma + 1));
+          if (!lhs.empty() && (lhs[0] == '"' || lhs[0] == '\'')) {
+            char quote = lhs[0];
+            bool closed = lhs.size() >= 2 && lhs.back() == quote;
+            lhs = closed ? lhs.substr(1, lhs.size() - 2) : lhs.substr(1);
           }
+          char want = lhs.empty() ? 0 : lhs[0];
+
+          std::string haveText = rhs;
+          if (!rhs.empty() && rhs[0] == ']') {
+            auto it = variableText_.find(qualifyLabel(toUpper(rhs)));
+            haveText = it != variableText_.end() ? it->second : std::string();
+          }
+          if (!haveText.empty() &&
+              (haveText[0] == '"' || haveText[0] == '\'')) {
+            haveText = haveText.substr(1);
+          }
+          char have = haveText.empty() ? 0 : haveText[0];
+          taken = (want == have);
+        } else {
+          bool error = false;
+          std::string msg;
+          taken = evaluate(line.operand, error, msg) != 0;
+          if (error) addError(line, "IF: " + msg);
         }
-      }
-      // (expr),Y - Indirect Indexed
-      size_t closeParen = upper.find(')');
-      if (closeParen != std::string::npos && closeParen < upper.size() - 1) {
-        std::string afterParen = upper.substr(closeParen + 1);
-        // Trim spaces
-        while (!afterParen.empty() && afterParen[0] == ' ') afterParen.erase(0, 1);
-        if (afterParen.size() >= 2 && afterParen[0] == ',' &&
-            (afterParen[1] == 'Y' || afterParen[1] == 'y' ||
-             (afterParen.size() >= 3 && afterParen[2] == 'Y'))) {
-          return static_cast<uint8_t>(AddrMode::IZY);
-        }
+      } else {
+        bool error = false;
+        std::string msg;
+        taken = evaluate(line.operand, error, msg) != 0;
+        if (error) addError(line, "DO: " + msg);
       }
     }
-    // (expr) - Indirect or Zero Page Indirect
-    if (op.back() == ')') {
-      if (valueKnown && value >= 0 && value <= 255 &&
-          reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ZPI)] != 0xFF) {
-        return static_cast<uint8_t>(AddrMode::ZPI);
-      }
-      return static_cast<uint8_t>(AddrMode::IND);
+    Cond frame;
+    frame.parentActive = parentActive;
+    frame.active = parentActive && taken;
+    frame.everActive = frame.active;
+    conds_.push_back(frame);
+    listLine(line, pc, nullptr, 0, 0);
+    return;
+  }
+
+  if (mnem == "ELSE") {
+    if (conds_.empty()) {
+      addError(line, "ELSE without DO");
+    } else {
+      Cond& frame = conds_.back();
+      frame.active = frame.parentActive && !frame.everActive;
+      frame.everActive = frame.everActive || frame.active;
     }
+    listLine(line, pc, nullptr, 0, 0);
+    return;
   }
 
-  // ZPR mode: zp,target (for BBR/BBS)
-  if (isZPRMnemonic(mnemIdx)) {
-    return static_cast<uint8_t>(AddrMode::ZPR);
+  if (mnem == "FIN") {
+    if (conds_.empty()) {
+      addError(line, "FIN without DO");
+    } else {
+      conds_.pop_back();
+    }
+    listLine(line, pc, nullptr, 0, 0);
+    return;
   }
 
-  // Branch instructions: REL mode
-  if (isBranchMnemonic(mnemIdx)) {
-    return static_cast<uint8_t>(AddrMode::REL);
-  }
-
-  // Check for ,X or ,Y suffix
-  {
-    std::string upper = toUpper(op);
-    size_t commaPos = upper.rfind(',');
-    if (commaPos != std::string::npos) {
-      std::string suffix = upper.substr(commaPos + 1);
-      while (!suffix.empty() && suffix[0] == ' ') suffix.erase(0, 1);
-
-      if (suffix == "X") {
-        if (valueKnown && value >= 0 && value <= 255 &&
-            reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ZPX)] != 0xFF) {
-          return static_cast<uint8_t>(AddrMode::ZPX);
-        }
-        return static_cast<uint8_t>(AddrMode::ABX);
-      }
-      if (suffix == "Y") {
-        if (valueKnown && value >= 0 && value <= 255 &&
-            reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ZPY)] != 0xFF) {
-          return static_cast<uint8_t>(AddrMode::ZPY);
-        }
-        return static_cast<uint8_t>(AddrMode::ABY);
+  // ------------------------------------------------------------------
+  // Block bodies must be consumed whether or not they are being assembled,
+  // or their contents would leak into the surrounding source.
+  // ------------------------------------------------------------------
+  if (mnem == "MAC") {
+    static const char* closers[] = {"EOM", "<<<", nullptr};
+    bool unterminated = false;
+    std::vector<Line> body = collectBlock(lines, index, "MAC", closers,
+                                          unterminated);
+    if (unterminated) {
+      addError(line, "MAC without EOM");
+      return;
+    }
+    if (active()) {
+      if (line.label.empty()) {
+        addError(line, "MAC needs a name in the label field");
+      } else {
+        Macro macro;
+        macro.name = toUpper(line.label);
+        macro.body = std::move(body);
+        macros_[macro.name] = std::move(macro);
       }
     }
+    listLine(line, pc, nullptr, 0, 0);
+    return;
   }
 
-  // Plain operand: ZP or ABS based on value
-  if (valueKnown && value >= 0 && value <= 255 &&
-      reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ZP)] != 0xFF) {
-    return static_cast<uint8_t>(AddrMode::ZP);
+  if (mnem == "LUP") {
+    static const char* closers[] = {"--^", "ELUP", nullptr};
+    bool unterminated = false;
+    std::vector<Line> body = collectBlock(lines, index, "LUP", closers,
+                                          unterminated);
+    if (unterminated) {
+      addError(line, "LUP without --^");
+      return;
+    }
+    if (active()) {
+      bool error = false;
+      std::string msg;
+      int32_t count = evaluate(line.operand, error, msg);
+      if (error) {
+        addError(line, "LUP: " + msg);
+        return;
+      }
+      if (count < 0 || count > 0x8000) {
+        addError(line, "LUP count out of range (0..32768)");
+        return;
+      }
+      listLine(line, pc, nullptr, 0, 0);
+      for (int32_t i = 0; i < count && !ended_; i++) {
+        execLines(body);
+      }
+      return;
+    }
+    listLine(line, pc, nullptr, 0, 0);
+    return;
   }
-  return static_cast<uint8_t>(AddrMode::ABS);
+
+  if (!active()) {
+    listLine(line, pc, nullptr, 0, 0);
+    return;
+  }
+
+  // ------------------------------------------------------------------
+  // Label
+  // ------------------------------------------------------------------
+  bool labelIsAddress = true;
+  if (mnem == "EQU" || mnem == "=" || mnem == "VAR" || mnem == "KBD" ||
+      mnem == "ORG" || mnem == "DUM") {
+    labelIsAddress = false;
+  }
+  if (!line.label.empty() && labelIsAddress) {
+    defineSymbol(line.label, static_cast<int32_t>(pc), line);
+  }
+
+  if (mnem.empty()) {
+    listLine(line, pc, nullptr, 0, 0);
+    if (!line.label.empty()) recordLine(line, pc, nullptr, 0, 0);
+    return;
+  }
+
+  // ------------------------------------------------------------------
+  // Directive, macro call or instruction
+  // ------------------------------------------------------------------
+  if (isDirective(mnem)) {
+    handleDirective(line, mnem, index, lines);
+    return;
+  }
+
+  auto macro = macros_.find(mnem);
+  if (macro != macros_.end()) {
+    listLine(line, pc, nullptr, 0, 0);
+    expandAndRecord(macro->second, line.operand, line);
+    return;
+  }
+
+  assembleInstruction(line, mnem);
 }
 
 // ============================================================================
-// Instruction sizing (for pass 1)
+// Macros
 // ============================================================================
 
-int Assembler::getInstructionSize(const std::string& mnemonic,
-                                  const std::string& operand,
-                                  bool labelsComplete) {
-  if (operand.empty()) {
-    // IMP or ACC = 1 byte
-    return 1;
+// Expand a macro and credit whatever it emitted to the line that called it.
+// The body's own lines came from a macro definition, not from the source being
+// edited, so the call site is the only line an editor can hang the bytes on.
+void Assembler::expandAndRecord(const Macro& macro, const std::string& operand,
+                                const Line& callSite) {
+  uint16_t address = pc;
+  size_t before = result_->output.size();
+  expandMacro(macro, operand, callSite);
+  size_t after = result_->output.size();
+  int count = static_cast<int>(after - before);
+  recordLine(callSite, address, count ? &result_->output[before] : nullptr,
+             count, 0);
+}
+
+void Assembler::expandMacro(const Macro& macro, const std::string& operand,
+                            const Line& callSite) {
+  if (macroDepth_ >= 32) {
+    addError(callSite, "Macro nesting too deep (recursive macro?)");
+    return;
   }
 
-  // Immediate
-  if (operand[0] == '#') return 2;
+  std::vector<std::string> params = splitMacroParams(operand);
 
-  int mnemIdx = findMnemonicIndex(mnemonic);
-  if (mnemIdx < 0) return 0;
+  // Merlin scopes a macro's local labels to one expansion, so the same macro
+  // can be called twice without its :loops colliding.
+  std::string savedGlobal = globalLabel_;
+  char scope[24];
+  snprintf(scope, sizeof(scope), "\x01M%d", ++expansionCounter_);
+  globalLabel_ = scope;
+  macroDepth_++;
 
-  // Branch
-  if (isBranchMnemonic(mnemIdx)) return 2;
-
-  // ZPR (BBR/BBS)
-  if (isZPRMnemonic(mnemIdx)) return 3;
-
-  // Accumulator
-  if (toUpper(operand) == "A" &&
-      reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ACC)] != 0xFF) {
-    return 1;
-  }
-
-  // Try to evaluate to determine ZP vs ABS
-  if (labelsComplete) {
-    bool error = false;
-    std::string errorMsg;
-
-    // Extract base expression (before ,X or ,Y)
-    std::string exprStr = operand;
-    bool hasIndex = false;
-    {
-      std::string upper = toUpper(operand);
-      size_t commaPos = upper.rfind(',');
-      if (commaPos != std::string::npos) {
-        std::string suffix = upper.substr(commaPos + 1);
-        while (!suffix.empty() && suffix[0] == ' ') suffix.erase(0, 1);
-        if (suffix == "X" || suffix == "Y") {
-          exprStr = operand.substr(0, commaPos);
-          hasIndex = true;
-        }
+  std::vector<Line> body;
+  body.reserve(macro.body.size());
+  for (const Line& src : macro.body) {
+    // Parameters substitute textually, then the line is parsed again: a
+    // parameter can carry a whole operand, so it can change the line's shape.
+    std::string text = src.text;
+    std::string expanded;
+    for (size_t i = 0; i < text.size(); i++) {
+      if (text[i] == ']' && i + 1 < text.size() && text[i + 1] >= '1' &&
+          text[i + 1] <= '8' &&
+          (i + 2 >= text.size() || !isIdentChar(text[i + 2]))) {
+        size_t which = static_cast<size_t>(text[i + 1] - '1');
+        if (which < params.size()) expanded += trim(params[which]);
+        i++;
+        continue;
       }
+      expanded += text[i];
     }
-
-    // Strip parentheses for indirect modes
-    std::string evalStr = exprStr;
-    if (!evalStr.empty() && evalStr[0] == '(') {
-      evalStr = evalStr.substr(1);
-      if (!evalStr.empty() && evalStr.back() == ')') evalStr.pop_back();
-    }
-
-    int32_t val = evaluateExpression(evalStr, error, errorMsg, 0);
-    if (!error) {
-      uint8_t mode = detectAddressingMode(mnemonic, operand, val, true);
-      if (mode != 0xFF) {
-        switch (static_cast<AddrMode>(mode)) {
-          case AddrMode::IMP:
-          case AddrMode::ACC:
-            return 1;
-          case AddrMode::IMM:
-          case AddrMode::ZP:
-          case AddrMode::ZPX:
-          case AddrMode::ZPY:
-          case AddrMode::IZX:
-          case AddrMode::IZY:
-          case AddrMode::ZPI:
-          case AddrMode::REL:
-            return 2;
-          case AddrMode::ABS:
-          case AddrMode::ABX:
-          case AddrMode::ABY:
-          case AddrMode::IND:
-          case AddrMode::AIX:
-          case AddrMode::ZPR:
-            return 3;
-        }
-      }
-    }
+    body.push_back(parseLine(expanded, src.lineNumber, false,
+                             callSite.reportLine));
   }
 
-  // Default: assume ABS (3 bytes) for forward references
-  return 3;
+  execLines(body);
+
+  macroDepth_--;
+  globalLabel_ = savedGlobal;
 }
 
 // ============================================================================
-// Directive sizing
+// Directives
 // ============================================================================
 
-int Assembler::getDirectiveSize(const std::string& directive,
-                                const std::string& operand,
-                                bool& error, std::string& errorMsg,
-                                int lineNumber) {
-  if (directive == "ORG" || directive == "EQU") return 0;
+bool Assembler::handleDirective(const Line& line, const std::string& directive,
+                                size_t& index, const std::vector<Line>& lines) {
+  (void)index;
+  (void)lines;
+  bool error = false;
+  std::string msg;
+  uint16_t address = pc;
+
+  // ---- Object layout ----
+
+  if (directive == "ORG") {
+    int32_t value = evaluate(line.operand, error, msg);
+    if (error) { addError(line, "ORG: " + msg); return true; }
+    pc = static_cast<uint16_t>(value);
+    startSegment();
+    if (!originSet_) {
+      result_->origin = pc;
+      originSet_ = true;
+    }
+    if (!line.label.empty()) defineSymbol(line.label, static_cast<int32_t>(pc), line);
+    listLine(line, pc, nullptr, 0, 0);
+    recordLine(line, pc, nullptr, 0, 0);
+    return true;
+  }
+
+  if (directive == "OBJ") {
+    // Merlin uses OBJ to say where the object code is buffered while it is
+    // being built. Nothing here buffers anything, so the value is recorded and
+    // otherwise has no effect.
+    int32_t value = evaluate(line.operand, error, msg);
+    if (!error) objAddress_ = static_cast<uint16_t>(value);
+    listLine(line, pc, nullptr, 0, 0);
+    return true;
+  }
+
+  if (directive == "EQU" || directive == "=") {
+    if (line.label.empty()) {
+      addError(line, directive + " needs a label");
+      return true;
+    }
+    int32_t value = evaluate(line.operand, error, msg);
+    if (error) {
+      addError(line, directive + ": " + msg);
+      return true;
+    }
+    defineSymbol(line.label, value, line);
+    if (!line.label.empty() && line.label[0] == ']') {
+      variableText_[toUpper(line.label)] = trim(line.operand);
+    }
+    listLine(line, pc, nullptr, 0, 0);
+    return true;
+  }
+
+  if (directive == "VAR") {
+    // Merlin 16: VAR loads ]1, ]2 ... from a ';'-separated list.
+    std::vector<std::string> values = splitMacroParams(line.operand);
+    for (size_t i = 0; i < values.size() && i < 8; i++) {
+      std::string text = trim(values[i]);
+      if (text.empty()) continue;
+      int32_t value = evaluate(text, error, msg);
+      if (error) { addError(line, "VAR: " + msg); return true; }
+      char name[4] = {']', static_cast<char>('1' + i), '\0', '\0'};
+      symbols[name] = value;
+      variableText_[name] = text;
+    }
+    listLine(line, pc, nullptr, 0, 0);
+    return true;
+  }
 
   if (directive == "DS") {
-    int32_t val = evaluateExpression(operand, error, errorMsg, lineNumber);
-    if (error) return 0;
-    return static_cast<int>(val);
+    emitStorage(line.operand, line);
+    listLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()), 0);
+    recordLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()), 0);
+    return true;
   }
+
+  if (directive == "DUM") {
+    int32_t value = evaluate(line.operand, error, msg);
+    if (error) { addError(line, "DUM: " + msg); return true; }
+    if (!inDummy_) dummyResumePC_ = pc;
+    inDummy_ = true;
+    pc = static_cast<uint16_t>(value);
+    if (!line.label.empty()) defineSymbol(line.label, static_cast<int32_t>(pc), line);
+    listLine(line, pc, nullptr, 0, 0);
+    return true;
+  }
+
+  if (directive == "DEND") {
+    if (!inDummy_) {
+      addError(line, "DEND without DUM");
+      return true;
+    }
+    inDummy_ = false;
+    pc = dummyResumePC_;
+    startSegment();
+    listLine(line, pc, nullptr, 0, 0);
+    return true;
+  }
+
+  // ---- Data ----
 
   if (directive == "DFB" || directive == "DB") {
-    // Count comma-separated values
-    int count = 1;
-    bool inStr = false;
-    for (char c : operand) {
-      if (c == '"' || c == '\'') inStr = !inStr;
-      if (c == ',' && !inStr) count++;
-    }
-    return count;
-  }
+    emitDataList(line.operand, 1, false, line);
+  } else if (directive == "DW" || directive == "DA") {
+    emitDataList(line.operand, 2, false, line);
+  } else if (directive == "DDB") {
+    emitDataList(line.operand, 2, true, line);
+  } else if (directive == "ADR") {
+    emitDataList(line.operand, 3, false, line);
+  } else if (directive == "ADRL") {
+    emitDataList(line.operand, 4, false, line);
+  } else if (directive == "HEX") {
+    emitHex(line.operand, line);
+  } else if (isStringDirective(directive)) {
+    emitString(line.operand, directive, line);
+  } else if (directive == "CHK") {
+    // The checksum byte is the exclusive or of everything emitted so far, so
+    // it has to be read before it is written.
+    uint8_t sum = checksum_;
+    emitByte(sum);
+  } else {
+    // ---- Control flow, files and options ----
 
-  if (directive == "DW" || directive == "DA") {
-    int count = 1;
-    for (char c : operand) {
-      if (c == ',') count++;
+    if (directive == "END") {
+      ended_ = true;
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
     }
-    return count * 2;
-  }
 
-  if (directive == "DDB") {
-    int count = 1;
-    for (char c : operand) {
-      if (c == ',') count++;
-    }
-    return count * 2;
-  }
-
-  if (directive == "HEX") {
-    // Count hex digit pairs (ignore spaces)
-    int digits = 0;
-    for (char c : operand) {
-      if (isxdigit(c)) digits++;
-    }
-    return digits / 2;
-  }
-
-  if (directive == "ASC") {
-    // Count characters between delimiters
-    if (operand.size() >= 2) {
-      char delim = operand[0];
-      size_t end = operand.find(delim, 1);
-      if (end != std::string::npos) {
-        return static_cast<int>(end - 1);
+    if (directive == "ERR") {
+      int32_t value = evaluate(line.operand, error, msg);
+      if (error) {
+        addError(line, "ERR: " + msg);
+      } else if (value != 0) {
+        addError(line, "ERR: assertion failed");
       }
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
     }
-    return static_cast<int>(operand.size());
-  }
 
-  if (directive == "DCI") {
-    if (operand.size() >= 2) {
-      char delim = operand[0];
-      size_t end = operand.find(delim, 1);
-      if (end != std::string::npos) {
-        return static_cast<int>(end - 1);
+    if (directive == "PMC" || directive == ">>>") {
+      std::string operand = line.operand;
+      size_t sep = operand.find(';');
+      std::string name = toUpper(trim(sep == std::string::npos
+                                          ? operand
+                                          : operand.substr(0, sep)));
+      std::string params =
+          sep == std::string::npos ? "" : operand.substr(sep + 1);
+      auto macro = macros_.find(name);
+      if (macro == macros_.end()) {
+        addError(line, "Undefined macro: " + name);
+        return true;
       }
+      listLine(line, pc, nullptr, 0, 0);
+      expandAndRecord(macro->second, params, line);
+      return true;
     }
-    return static_cast<int>(operand.size());
+
+    if (directive == "EOM" || directive == "<<<") {
+      addError(line, directive + " without MAC");
+      return true;
+    }
+
+    if (directive == "--^" || directive == "ELUP") {
+      addError(line, directive + " without LUP");
+      return true;
+    }
+
+    if (directive == "PUT" || directive == "USE" || directive == "CHN") {
+      std::string name = trim(line.operand);
+      listLine(line, pc, nullptr, 0, 0);
+      if (name.empty()) {
+        addError(line, directive + " needs a filename");
+        return true;
+      }
+      if (!includeProvider_) {
+        addError(line, directive + ": no source files are available here");
+        return true;
+      }
+      if (includeStack_.size() >= 8) {
+        addError(line, directive + ": includes nested too deeply");
+        return true;
+      }
+      for (const auto& open : includeStack_) {
+        if (toUpper(open) == toUpper(name)) {
+          addError(line, directive + ": " + name + " includes itself");
+          return true;
+        }
+      }
+      std::string text;
+      if (!includeProvider_(name, text)) {
+        addError(line, directive + ": cannot read " + name);
+        return true;
+      }
+      includeStack_.push_back(name);
+      std::vector<Line> included = parseSource(text, false, line.reportLine);
+      execLines(included);
+      includeStack_.pop_back();
+      // CHN hands assembly over to the named file rather than returning.
+      if (directive == "CHN") ended_ = true;
+      return true;
+    }
+
+    if (directive == "DSK" || directive == "SAV") {
+      if (result_->hasObjectFile) {
+        addError(line, directive + ": only one object file per assembly is supported");
+        return true;
+      }
+      std::string filename;
+      std::string errorMsg;
+      int drive = 1;
+      if (!parseObjectFileOperand(line.operand, filename, drive, errorMsg)) {
+        addError(line, directive + ": " + errorMsg);
+        return true;
+      }
+      strncpy(result_->objectFilename, filename.c_str(),
+              sizeof(result_->objectFilename) - 1);
+      result_->objectFilename[sizeof(result_->objectFilename) - 1] = '\0';
+      result_->objectDrive = drive;
+      result_->hasObjectFile = true;
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
+    }
+
+    if (directive == "TYP") {
+      int32_t value = evaluate(line.operand, error, msg);
+      if (error) {
+        addError(line, "TYP: " + msg);
+      } else {
+        result_->objectType = value & 0xFF;
+      }
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
+    }
+
+    if (directive == "LST") {
+      std::string arg = toUpper(trim(line.operand));
+      listingOn_ = !(arg == "OFF" || arg == "0");
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
+    }
+
+    if (directive == "CYC") {
+      std::string arg = toUpper(trim(line.operand));
+      cycleCounts_ = !(arg == "OFF");
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
+    }
+
+    if (directive == "SW") {
+      sweet16_ = toUpper(trim(line.operand)) != "OFF";
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
+    }
+
+    if (directive == "XC") {
+      // The first XC enables 65C02 opcodes, which are always on here. A second
+      // one asks for the 65816, which the //e's processor cannot run.
+      if (toUpper(trim(line.operand)) == "OFF") {
+        xcCount_ = 0;
+      } else if (++xcCount_ >= 2) {
+        addWarning(line, "XC: 65816 opcodes are not available on a //e");
+      }
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
+    }
+
+    if (directive == "KBD") {
+      // Merlin prompted the operator during assembly. Nothing here can, so the
+      // variable takes the operand's value if it has one, and zero otherwise.
+      int32_t value = 0;
+      if (!trim(line.operand).empty()) {
+        bool err2 = false;
+        std::string m2;
+        int32_t parsed = evaluate(line.operand, err2, m2);
+        if (!err2) value = parsed;
+      }
+      if (!line.label.empty()) defineSymbol(line.label, value, line);
+      addWarning(line, "KBD cannot prompt during assembly; used " +
+                           std::to_string(value));
+      listLine(line, pc, nullptr, 0, 0);
+      return true;
+    }
+
+    if (directive == "REL" || directive == "ENT" || directive == "EXT" ||
+        directive == "LNK") {
+      addError(line, directive + ": relocatable output needs a linker, which "
+                                 "this assembler does not have");
+      return true;
+    }
+
+    // EXP, PAG, TTL, SKP, PAU, DAT, TR, USR, MX shape a printed listing or an
+    // option this assembler has no equivalent for. They are accepted so that a
+    // real Merlin source assembles unchanged.
+    listLine(line, pc, nullptr, 0, 0);
+    return true;
   }
 
-  return 0;
+  listLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()), 0);
+  recordLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()), 0);
+  return true;
 }
 
-// ============================================================================
-// Directive emission
-// ============================================================================
+// ---- Data helpers ---------------------------------------------------------
 
-void Assembler::forEachOperandValue(
-    const std::string& operand, bool& error, std::string& errorMsg,
-    int lineNumber, const std::function<void(int32_t)>& emit) {
+void Assembler::emitDataList(const std::string& operand, int byteCount,
+                             bool bigEndian, const Line& line) {
+  if (trim(operand).empty()) {
+    addError(line, "Expected a value");
+    return;
+  }
   const char* p = operand.c_str();
   while (*p) {
     skipSpaces(p);
     if (!*p) break;
 
-    // A value runs to the next comma that is not inside parentheses
     const char* start = p;
-    int depth = 0;
-    while (*p && (*p != ',' || depth > 0)) {
-      if (*p == '(') depth++;
-      if (*p == ')') depth--;
+    while (*p && *p != ',') {
+      if (*p == '\'' || *p == '"') {
+        char q = *p;
+        p++;
+        while (*p && *p != q) p++;
+        if (!*p) break;
+      }
       p++;
     }
-    std::string val(start, p - start);
-    while (!val.empty() && val.back() == ' ') val.pop_back();
-
-    int32_t value = evaluateExpression(val, error, errorMsg, lineNumber);
-    if (error) return;
-    emit(value);
-
+    std::string item = trim(std::string(start, static_cast<size_t>(p - start)));
     if (*p == ',') p++;
+    if (item.empty()) continue;
+
+    bool error = false;
+    std::string msg;
+    int32_t value = evaluate(item, error, msg);
+    if (error) {
+      addError(line, msg);
+      return;
+    }
+    if (bigEndian) {
+      for (int i = byteCount - 1; i >= 0; i--) {
+        emitByte(static_cast<uint8_t>((value >> (8 * i)) & 0xFF));
+      }
+    } else {
+      for (int i = 0; i < byteCount; i++) {
+        emitByte(static_cast<uint8_t>((value >> (8 * i)) & 0xFF));
+      }
+    }
   }
 }
 
-void Assembler::emitDirective(const std::string& directive,
-                              const std::string& operand,
-                              std::vector<uint8_t>& output,
-                              bool& error, std::string& errorMsg,
-                              int lineNumber) {
-  if (directive == "ORG" || directive == "EQU") return;
-
-  if (directive == "DS") {
-    int32_t val = evaluateExpression(operand, error, errorMsg, lineNumber);
-    if (error) return;
-    for (int32_t i = 0; i < val; i++) {
-      output.push_back(0);
+void Assembler::emitHex(const std::string& operand, const Line& line) {
+  const char* p = operand.c_str();
+  auto hexVal = [](char c) -> uint8_t {
+    if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+    return static_cast<uint8_t>(toupper(static_cast<unsigned char>(c)) - 'A' + 10);
+  };
+  while (*p) {
+    if (isspace(static_cast<unsigned char>(*p)) || *p == ',') { p++; continue; }
+    if (!isxdigit(static_cast<unsigned char>(*p))) {
+      addError(line, "Invalid hex digit");
+      return;
     }
+    char hi = *p++;
+    if (!isxdigit(static_cast<unsigned char>(*p))) {
+      addError(line, "Odd number of hex digits");
+      return;
+    }
+    char lo = *p++;
+    emitByte(static_cast<uint8_t>((hexVal(hi) << 4) | hexVal(lo)));
+  }
+}
+
+void Assembler::emitStorage(const std::string& operand, const Line& line) {
+  std::string arg = trim(operand);
+  uint8_t fill = 0;
+
+  size_t comma = arg.rfind(',');
+  if (comma != std::string::npos) {
+    bool error = false;
+    std::string msg;
+    int32_t value = evaluate(trim(arg.substr(comma + 1)), error, msg);
+    if (error) {
+      addError(line, "DS: " + msg);
+      return;
+    }
+    fill = static_cast<uint8_t>(value & 0xFF);
+    arg = trim(arg.substr(0, comma));
+  }
+
+  int32_t count = 0;
+  if (arg == "\\") {
+    // Merlin's page-align form: reserve up to the next $100 boundary.
+    count = (pc & 0xFF) == 0 ? 0 : 0x100 - (pc & 0xFF);
+  } else {
+    bool error = false;
+    std::string msg;
+    count = evaluate(arg, error, msg);
+    if (error) {
+      addError(line, "DS: " + msg);
+      return;
+    }
+  }
+
+  if (count < 0 || count > 0x10000) {
+    addError(line, "DS: count out of range");
+    return;
+  }
+  for (int32_t i = 0; i < count; i++) emitByte(fill);
+}
+
+void Assembler::emitString(const std::string& operand,
+                           const std::string& directive, const Line& line) {
+  std::string arg = trim(operand);
+  if (arg.empty()) {
+    addError(line, directive + " needs a string");
     return;
   }
 
-  // DFB/DB, DW/DA and DDB walk the same comma-separated expression list and
-  // differ only in how each value is laid down.
-  if (directive == "DFB" || directive == "DB") {
-    forEachOperandValue(operand, error, errorMsg, lineNumber, [&](int32_t v) {
-      output.push_back(static_cast<uint8_t>(v & 0xFF));
-    });
-    return;
-  }
+  size_t i = 0;
+  bool emittedAnything = false;
 
-  if (directive == "DW" || directive == "DA") {
-    forEachOperandValue(operand, error, errorMsg, lineNumber, [&](int32_t v) {
-      output.push_back(static_cast<uint8_t>(v & 0xFF));
-      output.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
-    });
-    return;
-  }
+  while (i < arg.size()) {
+    if (arg[i] == ',') { i++; continue; }
 
-  if (directive == "DDB") {
-    // Big-endian
-    forEachOperandValue(operand, error, errorMsg, lineNumber, [&](int32_t v) {
-      output.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
-      output.push_back(static_cast<uint8_t>(v & 0xFF));
-    });
-    return;
-  }
+    char first = arg[i];
+    bool isDelimited = !isalnum(static_cast<unsigned char>(first));
 
-  if (directive == "HEX") {
-    const char* p = operand.c_str();
-    while (*p) {
-      if (isspace(*p) || *p == ',') { p++; continue; }
-      if (!isxdigit(*p)) {
-        error = true;
-        errorMsg = "Invalid hex digit";
+    if (isDelimited) {
+      char delim = first;
+      size_t end = arg.find(delim, i + 1);
+      if (end == std::string::npos) {
+        addError(line, directive + ": unterminated string");
         return;
       }
-      char hi = *p++;
-      if (!isxdigit(*p)) {
-        error = true;
-        errorMsg = "Odd number of hex digits";
-        return;
+      std::string text = arg.substr(i + 1, end - i - 1);
+      i = end + 1;
+      emittedAnything = true;
+
+      bool high = delimiterSetsHighBit(delim);
+      std::vector<uint8_t> chars;
+      chars.reserve(text.size());
+      for (char c : text) {
+        uint8_t ch = static_cast<uint8_t>(c);
+        if (directive == "INV" || directive == "FLS") {
+          ch = static_cast<uint8_t>(toupper(static_cast<unsigned char>(ch)) & 0x3F);
+          if (directive == "FLS") ch |= 0x40;
+        } else if (high) {
+          ch |= 0x80;
+        }
+        chars.push_back(ch);
       }
-      char lo = *p++;
-      auto hexVal = [](char c) -> uint8_t {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        return 0;
-      };
-      output.push_back((hexVal(hi) << 4) | hexVal(lo));
+
+      if (directive == "REV") {
+        std::reverse(chars.begin(), chars.end());
+      } else if (directive == "DCI") {
+        // Dextral character inverted: the last character carries the opposite
+        // high bit, which is how a reader finds the end of the string.
+        if (!chars.empty()) chars.back() ^= 0x80;
+      } else if (directive == "STR") {
+        if (chars.size() > 255) {
+          addError(line, "STR: string longer than 255 characters");
+          return;
+        }
+        emitByte(static_cast<uint8_t>(chars.size()));
+      } else if (directive == "STRL") {
+        emitByte(static_cast<uint8_t>(chars.size() & 0xFF));
+        emitByte(static_cast<uint8_t>((chars.size() >> 8) & 0xFF));
+      }
+
+      for (uint8_t ch : chars) emitByte(ch);
+      continue;
     }
-    return;
+
+    // Merlin lets hex bytes follow the string, with or without a comma, so a
+    // terminator can be written as ASC "PROMPT"8D00.
+    size_t start = i;
+    while (i < arg.size() && isxdigit(static_cast<unsigned char>(arg[i]))) i++;
+    std::string digits = arg.substr(start, i - start);
+    if (digits.empty() || (digits.size() % 2) != 0) {
+      addError(line, directive + ": expected pairs of hex digits after the string");
+      return;
+    }
+    auto hexVal = [](char c) -> uint8_t {
+      if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+      return static_cast<uint8_t>(toupper(static_cast<unsigned char>(c)) - 'A' + 10);
+    };
+    for (size_t d = 0; d + 1 < digits.size(); d += 2) {
+      emitByte(static_cast<uint8_t>((hexVal(digits[d]) << 4) | hexVal(digits[d + 1])));
+    }
+    emittedAnything = true;
   }
 
-  if (directive == "ASC") {
-    if (operand.size() < 2) return;
-    char delim = operand[0];
-    bool highBit = (delim == '"'); // Merlin convention: " sets high bit
-    for (size_t i = 1; i < operand.size(); i++) {
-      if (operand[i] == delim) break;
-      uint8_t ch = static_cast<uint8_t>(operand[i]);
-      if (highBit) ch |= 0x80;
-      output.push_back(ch);
-    }
-    return;
-  }
-
-  if (directive == "DCI") {
-    if (operand.size() < 2) return;
-    char delim = operand[0];
-    // Collect characters
-    std::vector<uint8_t> chars;
-    for (size_t i = 1; i < operand.size(); i++) {
-      if (operand[i] == delim) break;
-      chars.push_back(static_cast<uint8_t>(operand[i]));
-    }
-    // Emit all but last with normal, last with high bit set
-    for (size_t i = 0; i < chars.size(); i++) {
-      uint8_t ch = chars[i];
-      if (i == chars.size() - 1) ch |= 0x80;
-      output.push_back(ch);
-    }
-    return;
+  if (!emittedAnything) {
+    addError(line, directive + " needs a string");
   }
 }
 
 // ============================================================================
-// DSK directive operand
+// DSK / SAV operand
 // ============================================================================
 
 bool Assembler::parseObjectFileOperand(const std::string& operand,
@@ -873,12 +1599,6 @@ bool Assembler::parseObjectFileOperand(const std::string& operand,
     }
   }
   fields.push_back(current);
-
-  auto trim = [](std::string s) {
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
-    return s;
-  };
 
   filename = trim(fields[0]);
   // Merlin sources are unquoted, but a quoted name is the obvious thing to try
@@ -921,397 +1641,385 @@ bool Assembler::parseObjectFileOperand(const std::string& operand,
 }
 
 // ============================================================================
-// Main assemble function
+// Instructions
 // ============================================================================
 
-AsmResult Assembler::assemble(const char* source) {
-  AsmResult result;
-  result.origin = 0x0800;
-  result.endAddress = 0x0800;
-  result.success = false;
-  result.hasObjectFile = false;
-  result.objectFilename[0] = '\0';
-  result.objectDrive = 1;
+namespace {
+// How the operand was written, before any decision about how wide it is.
+enum class OperandForm {
+  NONE,      // no operand
+  ACCUM,     // A
+  IMMEDIATE, // #expr
+  DIRECT,    // expr
+  INDEX_X,   // expr,X
+  INDEX_Y,   // expr,Y
+  IND_X,     // (expr,X)
+  IND_Y,     // (expr),Y
+  INDIRECT,  // (expr)
+  INVALID
+};
 
-  buildReverseOpcodeTable();
-  symbols.clear();
+struct ParsedOperand {
+  OperandForm form = OperandForm::NONE;
+  std::string expr;
+  bool forceZeroPage = false;
+  bool forceAbsolute = false;
+};
 
-  // Parse source
-  auto lines = parseSource(source);
-  if (lines.empty()) {
-    result.success = true;
-    return result;
+ParsedOperand parseOperand(const std::string& raw) {
+  ParsedOperand out;
+  std::string s = trim(raw);
+  if (s.empty()) return out;
+
+  if (s[0] == '#') {
+    out.form = OperandForm::IMMEDIATE;
+    out.expr = trim(s.substr(1));
+    return out;
   }
 
-  auto addError = [&](int lineNum, const std::string& msg) {
-    AsmError err;
-    err.lineNumber = lineNum;
-    strncpy(err.message, msg.c_str(), ASM_MAX_ERROR_MSG - 1);
-    err.message[ASM_MAX_ERROR_MSG - 1] = '\0';
-    result.errors.push_back(err);
+  // Outside an immediate, Merlin 16's '<' and '|'/'>' prefixes force the width
+  // rather than select a byte.
+  if (s[0] == '<') {
+    out.forceZeroPage = true;
+    s = trim(s.substr(1));
+  } else if (s[0] == '|' || s[0] == '>') {
+    out.forceAbsolute = true;
+    s = trim(s.substr(1));
+  }
+  if (s.empty()) {
+    out.form = OperandForm::INVALID;
+    return out;
+  }
+
+  if (s[0] == '(') {
+    size_t close = s.rfind(')');
+    if (close == std::string::npos) {
+      out.form = OperandForm::INVALID;
+      return out;
+    }
+    std::string inner = trim(s.substr(1, close - 1));
+    std::string after = trim(s.substr(close + 1));
+
+    std::string upperInner = inner;
+    for (auto& c : upperInner) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+    if (upperInner.size() > 2 &&
+        upperInner.compare(upperInner.size() - 2, 2, ",X") == 0) {
+      out.form = OperandForm::IND_X;
+      out.expr = trim(inner.substr(0, inner.size() - 2));
+      return out;
+    }
+
+    std::string upperAfter = after;
+    for (auto& c : upperAfter) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+    if (upperAfter == ",Y") {
+      out.form = OperandForm::IND_Y;
+      out.expr = inner;
+      return out;
+    }
+    if (after.empty()) {
+      out.form = OperandForm::INDIRECT;
+      out.expr = inner;
+      return out;
+    }
+    out.form = OperandForm::INVALID;
+    return out;
+  }
+
+  std::string upper = s;
+  for (auto& c : upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+  if (upper == "A") {
+    out.form = OperandForm::ACCUM;
+    return out;
+  }
+  if (upper.size() > 2 && upper.compare(upper.size() - 2, 2, ",X") == 0) {
+    out.form = OperandForm::INDEX_X;
+    out.expr = trim(s.substr(0, s.size() - 2));
+    return out;
+  }
+  if (upper.size() > 2 && upper.compare(upper.size() - 2, 2, ",Y") == 0) {
+    out.form = OperandForm::INDEX_Y;
+    out.expr = trim(s.substr(0, s.size() - 2));
+    return out;
+  }
+
+  out.form = OperandForm::DIRECT;
+  out.expr = s;
+  return out;
+}
+} // namespace
+
+void Assembler::assembleInstruction(const Line& line,
+                                    const std::string& mnemonic) {
+  if (sweet16_ && findSweet16(mnemonic)) {
+    assembleSweet16(line, mnemonic);
+    return;
+  }
+
+  int mnemIdx = findMnemonicIndex(mnemonic);
+  if (mnemIdx < 0) {
+    addError(line, "Unknown mnemonic or directive: " + mnemonic);
+    return;
+  }
+
+  uint16_t address = pc;
+  auto supports = [&](AddrMode mode) {
+    return reverseOpcodes[mnemIdx][static_cast<int>(mode)] != 0xFF;
   };
 
-  // ========================================================================
-  // Pass 1: Collect labels and compute sizes
-  // ========================================================================
-
-  pc = 0x0800;
-  result.origin = pc;
-
-  for (auto& line : lines) {
-    std::string mnem = line.mnemonic;
-
-    // Handle ORG directive
-    if (mnem == "ORG") {
-      bool error = false;
-      std::string errorMsg;
-      int32_t val = evaluateExpression(line.operand, error, errorMsg,
-                                       line.lineNumber);
-      if (error) {
-        addError(line.lineNumber, "ORG: " + errorMsg);
-        continue;
-      }
-      pc = static_cast<uint16_t>(val);
-      if (result.output.empty()) {
-        result.origin = pc;
-      }
-      continue;
+  // ---- BBR/BBS take a zero page address and a branch target ----
+  if (isZPRMnemonic(mnemIdx)) {
+    size_t comma = line.operand.find(',');
+    if (comma == std::string::npos) {
+      addError(line, mnemonic + " needs a zp,target operand");
+      return;
     }
+    bool error = false;
+    std::string msg;
+    int32_t zpValue = evaluate(trim(line.operand.substr(0, comma)), error, msg);
+    if (error) { addError(line, msg); return; }
+    int32_t target = evaluate(trim(line.operand.substr(comma + 1)), error, msg);
+    if (error) { addError(line, msg); return; }
 
-    // Record label address
-    if (!line.label.empty()) {
-      std::string labelUpper = toUpper(line.label);
-
-      // Handle EQU: label = value
-      if (mnem == "EQU") {
-        bool error = false;
-        std::string errorMsg;
-        int32_t val = evaluateExpression(line.operand, error, errorMsg,
-                                         line.lineNumber);
-        if (!error) {
-          symbols[labelUpper] = val;
-        }
-        // If error, will be caught in pass 2
-        continue;
-      }
-
-      symbols[labelUpper] = static_cast<int32_t>(pc);
+    int32_t offset = target - (address + 3);
+    if (finalPass_ && (offset < -128 || offset > 127)) {
+      addError(line, "Branch target out of range");
+      return;
     }
-
-    if (mnem.empty()) continue;
-
-    // Handle DSK: name the object file the assembled code is written to. It
-    // emits nothing, so it is resolved here and skipped in pass 2.
-    if (mnem == "DSK") {
-      if (result.hasObjectFile) {
-        addError(line.lineNumber,
-                 "DSK: only one object file per assembly is supported");
-        continue;
-      }
-      std::string filename;
-      std::string errorMsg;
-      int drive = 1;
-      if (!parseObjectFileOperand(line.operand, filename, drive, errorMsg)) {
-        addError(line.lineNumber, "DSK: " + errorMsg);
-        continue;
-      }
-      strncpy(result.objectFilename, filename.c_str(),
-              sizeof(result.objectFilename) - 1);
-      result.objectFilename[sizeof(result.objectFilename) - 1] = '\0';
-      result.objectDrive = drive;
-      result.hasObjectFile = true;
-      continue;
-    }
-
-    // Handle unsupported directives
-    if (isUnsupportedDirective(mnem)) {
-      addError(line.lineNumber, "Unsupported directive: " + mnem);
-      continue;
-    }
-
-    // Directive sizing
-    if (isDirective(mnem)) {
-      bool error = false;
-      std::string errorMsg;
-      int size = getDirectiveSize(mnem, line.operand, error, errorMsg,
-                                  line.lineNumber);
-      if (error) {
-        // Ignore sizing errors in pass 1 (may have forward references)
-        size = 0;
-      }
-      pc += size;
-      continue;
-    }
-
-    // Instruction sizing
-    int mnemIdx = findMnemonicIndex(mnem);
-    if (mnemIdx < 0) {
-      addError(line.lineNumber, "Unknown mnemonic: " + mnem);
-      continue;
-    }
-
-    // Evaluate the operand now so a known value (literal or already-defined
-    // EQU/back-reference) sizes as zero-page when it fits. getInstructionSize
-    // falls back to ABS (3) only when the operand can't be evaluated yet — a
-    // genuine forward reference. Passing false here defaulted EVERY plain
-    // operand to ABS, so each zero-page instruction (e.g. STA $06) over-counted
-    // by one byte in pass 1, shifting every later label and corrupting branch
-    // offsets and absolute references.
-    int size = getInstructionSize(mnem, line.operand, true);
-    if (size == 0) {
-      addError(line.lineNumber, "Invalid instruction: " + mnem);
-      continue;
-    }
-    pc += size;
+    uint8_t opcode = reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ZPR)];
+    emitByte(opcode);
+    emitByte(static_cast<uint8_t>(zpValue & 0xFF));
+    emitByte(static_cast<uint8_t>(offset & 0xFF));
+    listLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()),
+             CYCLE_TABLE[opcode]);
+    recordLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()),
+               CYCLE_TABLE[opcode]);
+    return;
   }
 
-  // Track if we had pass 1 errors (still run pass 2 to find more errors)
-  bool hadPass1Errors = !result.errors.empty();
+  ParsedOperand op = parseOperand(line.operand);
+  if (op.form == OperandForm::INVALID) {
+    addError(line, "Malformed operand: " + line.operand);
+    return;
+  }
 
-  // ========================================================================
-  // Pass 2: Encode instructions (run even with errors to find all issues)
-  // ========================================================================
-
-  pc = result.origin;
-
-  for (auto& line : lines) {
-    std::string mnem = line.mnemonic;
-
-    // Handle ORG
-    if (mnem == "ORG") {
-      bool error = false;
-      std::string errorMsg;
-      int32_t val = evaluateExpression(line.operand, error, errorMsg,
-                                       line.lineNumber);
-      if (error) {
-        addError(line.lineNumber, "ORG: " + errorMsg);
-        continue;
-      }
-      pc = static_cast<uint16_t>(val);
-      continue;
-    }
-
-    // EQU already handled in pass 1
-    if (mnem == "EQU") {
-      // Re-evaluate to catch errors
-      bool error = false;
-      std::string errorMsg;
-      int32_t val = evaluateExpression(line.operand, error, errorMsg,
-                                       line.lineNumber);
-      if (error) {
-        addError(line.lineNumber, "EQU: " + errorMsg);
-      } else {
-        symbols[toUpper(line.label)] = val;
-      }
-      continue;
-    }
-
-    if (mnem.empty()) continue;
-
-    // DSK was resolved in pass 1 and emits nothing
-    if (mnem == "DSK") continue;
-
-    // Skip unsupported directives (already errored in pass 1)
-    if (isUnsupportedDirective(mnem)) continue;
-
-    // Handle directives
-    if (isDirective(mnem)) {
-      bool error = false;
-      std::string errorMsg;
-      emitDirective(mnem, line.operand, result.output, error, errorMsg,
-                    line.lineNumber);
-      if (error) {
-        addError(line.lineNumber, mnem + ": " + errorMsg);
-      }
-      // Advance PC by actual emitted bytes
-      int size = getDirectiveSize(mnem, line.operand, error, errorMsg,
-                                  line.lineNumber);
-      pc += size;
-      continue;
-    }
-
-    // Instruction encoding
-    int mnemIdx = findMnemonicIndex(mnem);
-    if (mnemIdx < 0) continue; // Already errored in pass 1
-
-    // Evaluate operand expression
-    std::string exprStr = line.operand;
-    int32_t value = 0;
-    bool valueKnown = false;
-
-    if (!exprStr.empty()) {
-      // Handle ZPR mode (BBR/BBS): zp,target
-      if (isZPRMnemonic(mnemIdx)) {
-        // Split on comma to get zp and target
-        size_t commaPos = exprStr.find(',');
-        if (commaPos == std::string::npos) {
-          addError(line.lineNumber, "ZPR instructions need zp,target operand");
-          continue;
-        }
-        std::string zpStr = exprStr.substr(0, commaPos);
-        std::string targetStr = exprStr.substr(commaPos + 1);
-        // Trim
-        while (!zpStr.empty() && zpStr.back() == ' ') zpStr.pop_back();
-        while (!targetStr.empty() && targetStr[0] == ' ') targetStr.erase(0, 1);
-
-        bool zpError = false, targetError = false;
-        std::string zpErrMsg, targetErrMsg;
-        int32_t zpVal = evaluateExpression(zpStr, zpError, zpErrMsg,
-                                           line.lineNumber);
-        int32_t targetVal = evaluateExpression(targetStr, targetError,
-                                              targetErrMsg, line.lineNumber);
-        if (zpError) {
-          addError(line.lineNumber, zpErrMsg);
-          continue;
-        }
-        if (targetError) {
-          addError(line.lineNumber, targetErrMsg);
-          continue;
-        }
-
-        uint8_t opcode = reverseOpcodes[mnemIdx][static_cast<int>(AddrMode::ZPR)];
-        if (opcode == 0xFF) {
-          addError(line.lineNumber, "Invalid mode for " + mnem);
-          continue;
-        }
-
-        // Calculate relative offset from PC+3 (instruction is 3 bytes)
-        int32_t offset = targetVal - (pc + 3);
-        if (offset < -128 || offset > 127) {
-          addError(line.lineNumber, "Branch target out of range");
-          continue;
-        }
-
-        result.output.push_back(opcode);
-        result.output.push_back(static_cast<uint8_t>(zpVal & 0xFF));
-        result.output.push_back(static_cast<uint8_t>(offset & 0xFF));
-        pc += 3;
-        continue;
-      }
-
-      // Strip index suffix for expression evaluation
-      std::string evalStr = exprStr;
-      {
-        std::string upper = toUpper(exprStr);
-        size_t commaPos = upper.rfind(',');
-        if (commaPos != std::string::npos) {
-          std::string suffix = upper.substr(commaPos + 1);
-          while (!suffix.empty() && suffix[0] == ' ') suffix.erase(0, 1);
-          if (suffix == "X" || suffix == "Y") {
-            evalStr = exprStr.substr(0, commaPos);
-          }
-        }
-      }
-
-      // Strip # prefix for immediate
-      if (!evalStr.empty() && evalStr[0] == '#') {
-        evalStr = evalStr.substr(1);
-      }
-
-      // Strip parentheses for indirect
-      if (!evalStr.empty() && evalStr[0] == '(') {
-        evalStr = evalStr.substr(1);
-        if (!evalStr.empty() && evalStr.back() == ')') evalStr.pop_back();
-      }
-
-      // Trim
-      while (!evalStr.empty() && evalStr[0] == ' ') evalStr.erase(0, 1);
-      while (!evalStr.empty() && evalStr.back() == ' ') evalStr.pop_back();
-
-      bool error = false;
-      std::string errorMsg;
-      value = evaluateExpression(evalStr, error, errorMsg, line.lineNumber);
-      if (error) {
-        addError(line.lineNumber, errorMsg);
-        continue;
-      }
-      valueKnown = true;
-    }
-
-    // Detect addressing mode
-    uint8_t mode = detectAddressingMode(mnem, line.operand, value, valueKnown);
-    if (mode == 0xFF) {
-      addError(line.lineNumber, "Cannot determine addressing mode for " + mnem);
-      continue;
-    }
-
-    // Look up opcode
-    uint8_t opcode = reverseOpcodes[mnemIdx][mode];
-    if (opcode == 0xFF) {
-      addError(line.lineNumber, mnem + " does not support this addressing mode");
-      continue;
-    }
-
-    // Emit instruction bytes
-    AddrMode addrMode = static_cast<AddrMode>(mode);
-    switch (addrMode) {
-      case AddrMode::IMP:
-      case AddrMode::ACC:
-        result.output.push_back(opcode);
-        pc += 1;
-        break;
-
-      case AddrMode::IMM:
-      case AddrMode::ZP:
-      case AddrMode::ZPX:
-      case AddrMode::ZPY:
-      case AddrMode::IZX:
-      case AddrMode::IZY:
-      case AddrMode::ZPI:
-        result.output.push_back(opcode);
-        result.output.push_back(static_cast<uint8_t>(value & 0xFF));
-        pc += 2;
-        break;
-
-      case AddrMode::REL: {
-        int32_t offset = value - (pc + 2);
-        if (offset < -128 || offset > 127) {
-          addError(line.lineNumber, "Branch target out of range");
-          continue;
-        }
-        result.output.push_back(opcode);
-        result.output.push_back(static_cast<uint8_t>(offset & 0xFF));
-        pc += 2;
-        break;
-      }
-
-      case AddrMode::ABS:
-      case AddrMode::ABX:
-      case AddrMode::ABY:
-      case AddrMode::IND:
-      case AddrMode::AIX:
-        result.output.push_back(opcode);
-        result.output.push_back(static_cast<uint8_t>(value & 0xFF));
-        result.output.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
-        pc += 3;
-        break;
-
-      default:
-        addError(line.lineNumber, "Internal error: unhandled addressing mode");
-        continue;
+  // "A" is a symbol before it is the accumulator: a source that defines A
+  // means the symbol, and Merlin's own accumulator form is a bare mnemonic.
+  if (op.form == OperandForm::ACCUM) {
+    int32_t ignored = 0;
+    if (!supports(AddrMode::ACC) || lookupSymbol("A", ignored)) {
+      op.form = OperandForm::DIRECT;
+      op.expr = "A";
     }
   }
 
-  result.endAddress = pc;
-  result.success = result.errors.empty();
-
-  // Copy symbol table into result for inspection
-  result.symbols.clear();
-  result.symbols.reserve(symbols.size());
-  for (const auto& [name, value] : symbols) {
-    AsmSymbol sym;
-    std::strncpy(sym.name, name.c_str(), sizeof(sym.name) - 1);
-    sym.name[sizeof(sym.name) - 1] = '\0';
-    sym.value = value;
-    result.symbols.push_back(sym);
+  int32_t value = 0;
+  bool valueKnown = false;
+  bool wasUnresolved = false;
+  if (op.form != OperandForm::NONE && op.form != OperandForm::ACCUM) {
+    bool error = false;
+    std::string msg;
+    unresolved_ = false;
+    value = evaluate(op.expr, error, msg);
+    if (error) { addError(line, msg); return; }
+    wasUnresolved = unresolved_;
+    valueKnown = true;
   }
-  // Sort alphabetically
-  std::sort(result.symbols.begin(), result.symbols.end(),
-            [](const AsmSymbol& a, const AsmSymbol& b) {
-              return std::strcmp(a.name, b.name) < 0;
-            });
 
-  return result;
+  // A value that is still a guess must not shrink the instruction to zero
+  // page: doing so would move every label after it and never settle.
+  bool fitsZeroPage = valueKnown && !wasUnresolved && value >= 0 && value <= 255;
+  if (op.forceAbsolute) fitsZeroPage = false;
+  if (op.forceZeroPage) fitsZeroPage = true;
+
+  AddrMode mode;
+  switch (op.form) {
+    case OperandForm::NONE:
+      if (supports(AddrMode::IMP)) mode = AddrMode::IMP;
+      else if (supports(AddrMode::ACC)) mode = AddrMode::ACC;
+      else { addError(line, mnemonic + " needs an operand"); return; }
+      break;
+    case OperandForm::ACCUM:
+      mode = AddrMode::ACC;
+      break;
+    case OperandForm::IMMEDIATE:
+      mode = AddrMode::IMM;
+      break;
+    case OperandForm::IND_X:
+      mode = (fitsZeroPage && supports(AddrMode::IZX))
+                 ? AddrMode::IZX
+                 : (supports(AddrMode::AIX) ? AddrMode::AIX : AddrMode::IZX);
+      break;
+    case OperandForm::IND_Y:
+      mode = AddrMode::IZY;
+      break;
+    case OperandForm::INDIRECT:
+      mode = (fitsZeroPage && supports(AddrMode::ZPI)) ? AddrMode::ZPI
+                                                       : AddrMode::IND;
+      break;
+    case OperandForm::INDEX_X:
+      mode = (fitsZeroPage && supports(AddrMode::ZPX)) ? AddrMode::ZPX
+                                                       : AddrMode::ABX;
+      break;
+    case OperandForm::INDEX_Y:
+      mode = (fitsZeroPage && supports(AddrMode::ZPY)) ? AddrMode::ZPY
+                                                       : AddrMode::ABY;
+      break;
+    case OperandForm::DIRECT:
+    default:
+      if (isBranchMnemonic(mnemIdx)) mode = AddrMode::REL;
+      else if (fitsZeroPage && supports(AddrMode::ZP)) mode = AddrMode::ZP;
+      else mode = AddrMode::ABS;
+      break;
+  }
+
+  uint8_t opcode = reverseOpcodes[mnemIdx][static_cast<int>(mode)];
+  if (opcode == 0xFF) {
+    addError(line, mnemonic + " does not support this addressing mode");
+    return;
+  }
+
+  switch (mode) {
+    case AddrMode::IMP:
+    case AddrMode::ACC:
+      emitByte(opcode);
+      break;
+
+    case AddrMode::REL: {
+      int32_t offset = value - (address + 2);
+      if (finalPass_ && (offset < -128 || offset > 127)) {
+        addError(line, "Branch target out of range");
+        return;
+      }
+      emitByte(opcode);
+      emitByte(static_cast<uint8_t>(offset & 0xFF));
+      break;
+    }
+
+    case AddrMode::IMM:
+    case AddrMode::ZP:
+    case AddrMode::ZPX:
+    case AddrMode::ZPY:
+    case AddrMode::IZX:
+    case AddrMode::IZY:
+    case AddrMode::ZPI:
+      emitByte(opcode);
+      emitByte(static_cast<uint8_t>(value & 0xFF));
+      break;
+
+    default:
+      emitByte(opcode);
+      emitByte(static_cast<uint8_t>(value & 0xFF));
+      emitByte(static_cast<uint8_t>((value >> 8) & 0xFF));
+      break;
+  }
+
+  totalCycles_ += CYCLE_TABLE[opcode];
+  listLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()),
+           CYCLE_TABLE[opcode]);
+  recordLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()),
+             CYCLE_TABLE[opcode]);
+}
+
+// ============================================================================
+// Sweet-16
+// ============================================================================
+
+void Assembler::assembleSweet16(const Line& line,
+                                const std::string& mnemonic) {
+  const S16Op* op = findSweet16(mnemonic);
+  uint16_t address = pc;
+  std::string operand = trim(line.operand);
+
+  auto parseRegister = [&](const std::string& text, bool& indirect,
+                           bool& ok) -> int32_t {
+    std::string s = trim(text);
+    indirect = false;
+    ok = false;
+    if (!s.empty() && s[0] == '@') {
+      indirect = true;
+      s = trim(s.substr(1));
+    }
+    if (s.size() < 2 || toupper(static_cast<unsigned char>(s[0])) != 'R') {
+      return 0;
+    }
+    bool error = false;
+    std::string msg;
+    int32_t reg = evaluate(s.substr(1), error, msg);
+    if (error || reg < 0 || reg > 15) return 0;
+    ok = true;
+    return reg;
+  };
+
+  switch (op->kind) {
+    case S16Kind::IMPLIED:
+      emitByte(op->base);
+      break;
+
+    case S16Kind::BRANCH: {
+      bool error = false;
+      std::string msg;
+      int32_t target = evaluate(operand, error, msg);
+      if (error) { addError(line, msg); return; }
+      int32_t offset = target - (address + 2);
+      if (finalPass_ && (offset < -128 || offset > 127)) {
+        addError(line, "Sweet-16 branch target out of range");
+        return;
+      }
+      emitByte(op->base);
+      emitByte(static_cast<uint8_t>(offset & 0xFF));
+      break;
+    }
+
+    case S16Kind::SET: {
+      size_t comma = operand.find(',');
+      if (comma == std::string::npos) {
+        addError(line, "SET needs Rn,value");
+        return;
+      }
+      bool indirect = false, ok = false;
+      int32_t reg = parseRegister(operand.substr(0, comma), indirect, ok);
+      if (!ok || indirect) {
+        addError(line, "SET needs a register R0-R15");
+        return;
+      }
+      bool error = false;
+      std::string msg;
+      int32_t value = evaluate(trim(operand.substr(comma + 1)), error, msg);
+      if (error) { addError(line, msg); return; }
+      emitByte(static_cast<uint8_t>(op->base | reg));
+      emitByte(static_cast<uint8_t>(value & 0xFF));
+      emitByte(static_cast<uint8_t>((value >> 8) & 0xFF));
+      break;
+    }
+
+    case S16Kind::REG:
+    case S16Kind::REG_IND: {
+      bool indirect = false, ok = false;
+      int32_t reg = parseRegister(operand, indirect, ok);
+      if (!ok) {
+        addError(line, mnemonic + " needs a register R0-R15");
+        return;
+      }
+      uint8_t base = op->base;
+      if (op->kind == S16Kind::REG && indirect) {
+        // LD and ST have a second, indirect form one nibble higher.
+        if (mnemonic == "LD") base = 0x40;
+        else if (mnemonic == "ST") base = 0x50;
+        else {
+          addError(line, mnemonic + " has no indirect form");
+          return;
+        }
+      }
+      if (op->kind == S16Kind::REG_IND && !indirect) {
+        // Merlin accepts the register with or without the '@' for these.
+      }
+      emitByte(static_cast<uint8_t>(base | reg));
+      break;
+    }
+  }
+
+  listLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()), 0);
+  recordLine(line, address, lineBytes_.data(), static_cast<int>(lineBytes_.size()), 0);
 }
 
 } // namespace a2e

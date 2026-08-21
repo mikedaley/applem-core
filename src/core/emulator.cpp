@@ -113,6 +113,7 @@ void Emulator::reset() {
 
   keyboardLatch_ = 0;
   keyDown_ = false;
+  clearPasteBuffer();
   // speedMultiplier_ is deliberately left alone: it is a host preference (the
   // user's chosen clock speed, or a paste boost in flight), not machine state,
   // so a reset must not drop the machine back to 1 MHz behind their back.
@@ -490,6 +491,11 @@ void Emulator::runCycles(int cycles) {
     // Update parallel card Centronics BUSY/ACK handshake timer
     if (parallelCard_) parallelCard_->update(static_cast<int>(cyclesUsed));
 
+    // Hand the next pasted character to the keyboard once its wait is up.
+    // Nothing else would: the strobe is already clear, so no keyboard access
+    // is coming to prompt it.
+    if (!pasteBuffer_.empty()) loadNextPasteKey();
+
     // Progressive rendering: render scanlines up to current cycle
     video_->renderUpToCycle(cpu_->getTotalCycles());
 
@@ -601,6 +607,10 @@ int Emulator::handleRawKeyDown(int browserKeycode, bool shift, bool ctrl,
 void Emulator::handleRawKeyUp(int browserKeycode, bool shift, bool ctrl,
                               bool alt, bool meta, int keyLocation) {
   keyboard_->handleKeyUp(browserKeycode, shift, ctrl, alt, meta, keyLocation);
+  // The released key stops asserting AKD. Without this the line stayed high
+  // from the first keystroke of the session onwards, so anything polling
+  // $C010 for a still-held key — key repeat, game input — saw one forever.
+  updateAnyKeyDown();
 
   // Update button state from modifier keys
   setButton(0, keyboard_->isOpenApplePressed());   // Open Apple
@@ -609,20 +619,105 @@ void Emulator::handleRawKeyUp(int browserKeycode, bool shift, bool ctrl,
 
 void Emulator::releaseModifiers() {
   keyboard_->releaseModifiers();
+  updateAnyKeyDown();
   setButton(0, keyboard_->isOpenApplePressed());
   setButton(1, keyboard_->isClosedApplePressed());
 }
 
 void Emulator::keyDown(int keycode) {
-  // Direct Apple II keycode input (used for paste functionality)
-  // Sets the keyboard latch with high bit set
+  // Direct Apple II keycode input.
+  // Sets the keyboard latch with high bit set.
   keyboardLatch_ = (keycode & 0x7F) | 0x80;
-  keyDown_ = true;
+  // A key press wins the latch outright; whatever the paste buffer had put
+  // there has been overwritten, so it no longer owns AKD.
+  pasteHoldsKey_ = false;
+  updateAnyKeyDown();
 }
 
 void Emulator::keyUp(int keycode) {
   (void)keycode;
-  keyDown_ = false;
+  updateAnyKeyDown();
+}
+
+void Emulator::updateAnyKeyDown() {
+  keyDown_ = pasteHoldsKey_ || (keyboard_ && keyboard_->isAnyKeyDown());
+}
+
+// ============================================================================
+// Paste / typed-text buffer
+// ============================================================================
+
+size_t Emulator::pasteText(const char *utf8) {
+  if (!utf8) return 0;
+
+  size_t queued = 0;
+  const auto *p = reinterpret_cast<const unsigned char *>(utf8);
+
+  while (*p) {
+    // Decode one UTF-8 code point. charToAppleKey() takes a code point, and
+    // the host used to hand it one per character, so text pasted from a
+    // browser must be decoded the same way rather than byte by byte.
+    uint32_t cp = *p;
+    int extra = 0;
+    if (cp >= 0xF0) { cp &= 0x07; extra = 3; }
+    else if (cp >= 0xE0) { cp &= 0x0F; extra = 2; }
+    else if (cp >= 0xC0) { cp &= 0x1F; extra = 1; }
+    else if (cp >= 0x80) { cp = 0xFFFD; }  // stray continuation byte
+    ++p;
+    for (int i = 0; i < extra && (*p & 0xC0) == 0x80; ++i) {
+      cp = (cp << 6) | (*p & 0x3F);
+      ++p;
+    }
+
+    int key = charToAppleKey(static_cast<int>(cp));
+    if (key >= 0) {
+      pasteBuffer_.push_back(static_cast<uint8_t>(key & 0x7F));
+      ++queued;
+    }
+  }
+
+  loadNextPasteKey();
+  return queued;
+}
+
+void Emulator::pasteKey(int appleKey) {
+  if (appleKey < 0) return;
+  pasteBuffer_.push_back(static_cast<uint8_t>(appleKey & 0x7F));
+  loadNextPasteKey();
+}
+
+void Emulator::clearPasteBuffer() {
+  pasteBuffer_.clear();
+  pasteReadyCycle_ = 0;
+  if (pasteHoldsKey_) {
+    pasteHoldsKey_ = false;
+    updateAnyKeyDown();
+  }
+}
+
+void Emulator::loadNextPasteKey() {
+  // Only ever fill an empty latch. While the strobe is still set the program
+  // has not read the previous character, and overwriting it would lose keys —
+  // the buffer exists precisely so that cannot happen.
+  if (keyboardLatch_ & 0x80) return;
+  if (pasteBuffer_.empty()) {
+    if (pasteHoldsKey_) {
+      // The last buffered key has been read: it stops holding AKD.
+      pasteHoldsKey_ = false;
+      updateAnyKeyDown();
+    }
+    return;
+  }
+
+  // Still inside the gap after the previous character. runCycles() calls back
+  // here as time passes, so the key appears on its own once the wait is over,
+  // with no keyboard access needed to prompt it.
+  if (cpu_->getTotalCycles() < pasteReadyCycle_) return;
+
+  keyboardLatch_ = pasteBuffer_.front() | 0x80;
+  pasteBuffer_.pop_front();
+  pasteHoldsKey_ = true;
+  updateAnyKeyDown();
 }
 
 void Emulator::setButton(int button, bool pressed) {
@@ -933,7 +1028,24 @@ void Emulator::cpuWrite(uint16_t address, uint8_t value) {
 uint8_t Emulator::getKeyboardData() { return keyboardLatch_; }
 
 void Emulator::clearKeyboardStrobe() {
+  const bool tookPastedKey = pasteHoldsKey_ && (keyboardLatch_ & 0x80);
+  const uint8_t consumed = keyboardLatch_ & 0x7F;
+
   keyboardLatch_ &= 0x7F; // Clear high bit
+
+  if (tookPastedKey) {
+    // The character has been taken. Hold the next one back for a moment: a
+    // flush arriving right behind the read must find the keyboard empty, the
+    // way it would if a person were typing. A carriage return waits longer,
+    // because the machine has the line to process before it wants more.
+    pasteHoldsKey_ = false;
+    const uint64_t now = cpu_->getTotalCycles();
+    pasteReadyCycle_ =
+        now + (consumed == 0x0D ? PASTE_LINE_GAP_CYCLES : PASTE_KEY_GAP_CYCLES);
+    updateAnyKeyDown();
+  }
+
+  loadNextPasteKey();
 }
 
 void Emulator::toggleSpeaker() {

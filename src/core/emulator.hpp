@@ -24,6 +24,7 @@
 #include "types.hpp"
 #include "video/video.hpp"
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <set>
 #include <string>
@@ -70,9 +71,35 @@ public:
   /** Release every held modifier — for when the host loses keyboard focus. */
   void releaseModifiers();
 
-  // Input - direct Apple II keycodes (for paste functionality)
+  // Input - direct Apple II keycodes
   void keyDown(int keycode);
   void keyUp(int keycode);
+
+  // ---- Paste / typed-text buffer -------------------------------------
+  //
+  // Pasted text goes into a FIFO here rather than being metered out a
+  // character at a time by the host. The machine drains it itself: a
+  // character is handed to the keyboard latch, and the next one is loaded
+  // the moment the program clears the strobe. That is what a type-ahead
+  // buffer on a real machine does, and it means the paste runs at whatever
+  // rate the software reads keys — no host timer, no speed boost, and no
+  // round trip per character.
+
+  /**
+   * Queue UTF-8 text for typing. Characters that have no Apple II
+   * equivalent are dropped, exactly as charToAppleKey() decides.
+   * @return the number of key codes actually queued
+   */
+  size_t pasteText(const char *utf8);
+
+  /** Queue one already-translated Apple II key code. */
+  void pasteKey(int appleKey);
+
+  /** How many key codes are still waiting to be typed. */
+  size_t pastePending() const { return pasteBuffer_.size(); }
+
+  /** Discard anything still waiting (Cancel, reset, state load). */
+  void clearPasteBuffer();
   void setButton(int button, bool pressed);  // Set button state (0=Open Apple, 1=Closed Apple, 2=Button2)
   void setPaddleValue(int paddle, int value);  // Set paddle value (0-3, value 0-255)
   int getPaddleValue(int paddle) const;  // Get paddle value (0-3)
@@ -353,6 +380,17 @@ private:
   uint8_t getKeyboardData();
   void clearKeyboardStrobe();
 
+  /** Move the next buffered key into the latch, if the latch is free. */
+  void loadNextPasteKey();
+
+  /**
+   * Recompute AKD ($C010 bit 7) from the two things that can hold a key down:
+   * a physically held host key, and a pasted character still sitting unread in
+   * the latch. Deriving it is what stops it sticking on — every path that
+   * asserts it now has a matching release.
+   */
+  void updateAnyKeyDown();
+
   // Speaker callback
   void toggleSpeaker();
 
@@ -378,9 +416,52 @@ private:
   std::unique_ptr<ExpansionCard> diskStorage_;
   std::unique_ptr<ExpansionCard> mbStorage_;
 
-  // Keyboard state
+  // Keyboard state. keyDown_ is AKD, derived by updateAnyKeyDown() rather than
+  // set directly, and kept as a member because save states carry it.
   uint8_t keyboardLatch_ = 0;
   bool keyDown_ = false;
+
+public:
+  // Pacing for the paste buffer, in CPU cycles so it scales with the machine
+  // rather than with the host.
+  //
+  // A pasted key must NOT appear the instant the strobe is cleared. Clearing
+  // the strobe twice is a keyboard *flush*, and it is everywhere in Apple II
+  // software — `POKE -16368,0` in BASIC, `STA $C010` in assembly, the ROM and
+  // DOS doing it before settling down to wait for input. A person typing
+  // leaves nothing pending for those flushes to eat; a buffer that refilled
+  // the latch immediately handed them a fresh character to throw away, which
+  // is seen as a paste arriving with characters missing, and only in the
+  // programs that flush. The gap is what makes a flush harmless: it has to
+  // outlast the work a program does between taking a character and flushing.
+  //
+  // A poll of $C000 finding the keyboard empty looks like a better signal —
+  // the program asking for input — but it is not one: Applesoft polls $C000
+  // between every statement to check for Ctrl-C, so the key is released long
+  // before the program reaches its flush. That was measured, not assumed.
+  //
+  // KEY is ~65 characters a second, several times faster than anyone types
+  // and far longer than the handful of statements a program runs between a
+  // GET and its flush. LINE is much longer because a carriage return leaves
+  // the machine a line to digest — Applesoft tokenises it, DOS and
+  // BASIC.SYSTEM run their command parsers — with flushes at the end of that
+  // work. Both are emulated time, so the paste speed boost shortens the
+  // wall-clock wait in step with everything else.
+  static constexpr uint64_t PASTE_KEY_GAP_CYCLES = 15000;   // ~15ms
+  static constexpr uint64_t PASTE_LINE_GAP_CYCLES = 150000; // ~150ms
+
+private:
+
+  // Type-ahead buffer for pasted / programmatically typed text. Host state,
+  // not machine state: it is deliberately absent from save states, like the
+  // speed multiplier, so loading a state cannot resurrect a half-finished
+  // paste. pasteHoldsKey_ records that the key currently in the latch came
+  // from this buffer, so draining it can release AKD without touching the
+  // state of a physically held key.
+  std::deque<uint8_t> pasteBuffer_;
+  bool pasteHoldsKey_ = false;
+  // Earliest cycle at which the next buffered key may enter the latch.
+  uint64_t pasteReadyCycle_ = 0;
 
   // Button state (Open Apple, Closed Apple, Button 2)
   bool buttonState_[3] = {false, false, false};

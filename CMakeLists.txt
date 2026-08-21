@@ -118,6 +118,10 @@ if(EMSCRIPTEN)
                 \"_handleRawKeyUp\", \
                 \"_releaseModifiers\", \
                 \"_charToAppleKey\", \
+                \"_pasteText\", \
+                \"_pasteKey\", \
+                \"_pastePending\", \
+                \"_clearPasteBuffer\", \
                 \"_insertDisk\", \
                 \"_insertBlankDisk\", \
                 \"_ejectDisk\", \
@@ -312,6 +316,16 @@ if(EMSCRIPTEN)
                 \"_getAsmErrorCount\", \
                 \"_getAsmErrorLine\", \
                 \"_getAsmErrorMessage\", \
+                \"_getAsmErrorIsWarning\", \
+                \"_getAsmSegmentCount\", \
+                \"_getAsmSegmentAddress\", \
+                \"_getAsmSegmentOffset\", \
+                \"_getAsmSegmentLength\", \
+                \"_getAsmLineCount\", \
+                \"_getAsmLineRecordSize\", \
+                \"_getAsmLineBuffer\", \
+                \"_getAsmListing\", \
+                \"_getAsmObjectType\", \
                 \"_loadAsmIntoMemory\", \
                 \"_getAsmSymbolCount\", \
                 \"_getAsmSymbolName\", \

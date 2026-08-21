@@ -396,3 +396,77 @@ TEST_CASE("state converges when the last Alt is released, whatever the location"
     CHECK_FALSE(kb.isOpenApplePressed());
     CHECK_FALSE(kb.isClosedApplePressed());
 }
+
+// ============================================================================
+// AKD — any key down ($C010 bit 7)
+// ============================================================================
+
+TEST_CASE("AKD is asserted while a key is held and released on key-up",
+          "[keyboard][akd]") {
+    Keyboard kb;
+    REQUIRE_FALSE(kb.isAnyKeyDown());
+
+    kb.handleKeyDown(65, false, false, false, false, false); // 'A' down
+    REQUIRE(kb.isAnyKeyDown());
+
+    kb.handleKeyUp(65, false, false, false, false);
+    REQUIRE_FALSE(kb.isAnyKeyDown());
+}
+
+TEST_CASE("AKD stays asserted until the last of several keys is released",
+          "[keyboard][akd]") {
+    Keyboard kb;
+    kb.handleKeyDown(65, false, false, false, false, false); // 'A'
+    kb.handleKeyDown(66, false, false, false, false, false); // 'B'
+    REQUIRE(kb.isAnyKeyDown());
+
+    kb.handleKeyUp(65, false, false, false, false);
+    REQUIRE(kb.isAnyKeyDown()); // 'B' is still down
+
+    kb.handleKeyUp(66, false, false, false, false);
+    REQUIRE_FALSE(kb.isAnyKeyDown());
+}
+
+TEST_CASE("Auto-repeat does not double-count a held key", "[keyboard][akd]") {
+    // A held key repeats key-down events; one key-up must still clear AKD.
+    Keyboard kb;
+    for (int i = 0; i < 5; ++i) {
+        kb.handleKeyDown(65, false, false, false, false, false);
+    }
+    kb.handleKeyUp(65, false, false, false, false);
+    REQUIRE_FALSE(kb.isAnyKeyDown());
+}
+
+TEST_CASE("Modifiers and unmapped keys do not assert AKD", "[keyboard][akd]") {
+    // Shift, Control, Caps Lock and the Apple buttons are separate lines on
+    // real hardware, not keys in the matrix.
+    Keyboard kb;
+    kb.handleKeyDown(16, true, false, false, false, false);  // Shift
+    kb.handleKeyDown(17, false, true, false, false, false);  // Ctrl
+    kb.handleKeyDown(18, false, false, true, false, false, Keyboard::LOCATION_LEFT);
+    kb.handleKeyDown(91, false, false, false, true, false);  // Meta
+    REQUIRE_FALSE(kb.isAnyKeyDown());
+    REQUIRE(kb.isOpenApplePressed());
+}
+
+TEST_CASE("A key-up that never arrives is cleared by losing focus",
+          "[keyboard][akd]") {
+    // A key held while the host loses focus delivers no key-up, which would
+    // otherwise leave AKD high for the rest of the session.
+    Keyboard kb;
+    kb.handleKeyDown(65, false, false, false, false, false);
+    REQUIRE(kb.isAnyKeyDown());
+
+    kb.releaseModifiers();
+    REQUIRE_FALSE(kb.isAnyKeyDown());
+}
+
+TEST_CASE("Shift released before the key still clears AKD", "[keyboard][akd]") {
+    // Tracking is by browser keycode, so the modifier state at release time
+    // cannot strand a key: 'A' pressed shifted and released unshifted is the
+    // same key going up.
+    Keyboard kb;
+    kb.handleKeyDown(65, true, false, false, false, false);
+    kb.handleKeyUp(65, false, false, false, false);
+    REQUIRE_FALSE(kb.isAnyKeyDown());
+}
