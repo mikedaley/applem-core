@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "../machine/machine_profile.hpp"
 #include "../types.hpp"
 #include <array>
 #include <cstdint>
@@ -31,8 +32,19 @@ public:
   using WatchpointReadCallback = std::function<void(uint16_t, uint8_t)>;
   using WatchpointWriteCallback = std::function<void(uint16_t, uint8_t)>;
 
-  MMU();
+  // The profile supplies video timing: the floating-bus scanner and the VBL
+  // status bit are both derived from where in the frame the machine is, and a
+  // frame is a count of cycles that differs between machines.
+  explicit MMU(const MachineProfile &machine = defaultMachineProfile());
   ~MMU();  // Defined in mmu.cpp (needed for unique_ptr<ExpansionCard>)
+
+  // The machine this MMU is modelling.
+  const MachineProfile &getMachine() const { return *machine_; }
+
+  // Base of the address window systemROM_ covers. Every ROM read indexes the
+  // array as `address - ROM_WINDOW_BASE`, and loadROM() places a machine's
+  // image at the offset its own ROM base implies.
+  static constexpr uint16_t ROM_WINDOW_BASE = 0xC000;
 
   // Memory access
   uint8_t read(uint16_t address);
@@ -206,6 +218,13 @@ private:
   void handleLanguageCardSwitchWrite(uint8_t reg);
 
   // Memory banks
+  // Rewrites a freshly loaded character ROM into the single layout the video
+  // renderer reads, per the machine's MachineCharRom.
+  void normaliseCharROM(size_t length);
+
+  // Not owned: profiles are static constexpr objects with program lifetime.
+  const MachineProfile *machine_ = &defaultMachineProfile();
+
   std::array<uint8_t, MAIN_RAM_SIZE> mainRAM_{};
   std::array<uint8_t, AUX_RAM_SIZE> auxRAM_{};
 
@@ -250,7 +269,11 @@ private:
   std::unique_ptr<NoSlotClock> noSlotClock_;
 
   // Expansion slots (1-7, index 0-6)
-  std::array<std::unique_ptr<ExpansionCard>, 7> slots_;
+  // Indexed by slot number, so slots_[6] is slot 6. There are eight entries
+  // rather than seven because slot 0 is a real slot on a II+ — it is where the
+  // 16K language card goes — even though a //e has nothing there. Which of
+  // them exist on a given machine is the profile's answer, not this array's.
+  std::array<std::unique_ptr<ExpansionCard>, MACHINE_SLOT_COUNT> slots_;
   uint8_t activeExpansionSlot_ = 0;  // Which card owns $C800-$CFFF (0 = none)
 
   // Memory access tracking for debugger heat map

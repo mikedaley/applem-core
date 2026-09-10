@@ -23,10 +23,10 @@
 
 namespace a2e {
 
-Emulator::Emulator() {
-  mmu_ = std::make_unique<MMU>();
+Emulator::Emulator(MachineId machine) : machine_(&machineProfile(machine)) {
+  mmu_ = std::make_unique<MMU>(*machine_);
   video_ = std::make_unique<Video>(*mmu_);
-  audio_ = std::make_unique<Audio>();
+  audio_ = std::make_unique<Audio>(*machine_);
   keyboard_ = std::make_unique<Keyboard>();
 
   // Create cards, keep raw pointers, then insert into slots
@@ -39,7 +39,7 @@ Emulator::Emulator() {
   cpu_ = std::make_unique<CPU6502>(
       [this](uint16_t addr) { return cpuRead(addr); },
       [this](uint16_t addr, uint8_t val) { cpuWrite(addr, val); },
-      CPUVariant::CMOS_65C02);
+      machine_->cpu);
 
   // Set up keyboard callback to receive translated keys
   keyboard_->setKeyCallback([this](int key) { keyDown(key); });
@@ -76,9 +76,27 @@ Emulator::Emulator() {
   // during instruction execution (before disk_->update() is called)
   disk_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
 
-  // Insert cards into slots (transfers ownership to MMU)
-  mmu_->insertCard(6, std::move(disk));
-  mmu_->insertCard(4, std::move(mb));
+  // Fit the cards this machine ships with. Which slots those are is the
+  // machine's business — a //e comes with a Mockingboard in 4 and a Disk II in
+  // 6, a II+ with only the Disk II — so the profile decides rather than this
+  // constructor. Anything the machine does not ship is left constructed but
+  // unfitted, so the host can install it later without rebuilding.
+  for (int slot = machine_->firstSlot; slot <= machine_->lastSlot; slot++) {
+    const char *card = machine_->slots[slot].defaultCard;
+    if (!card) continue;
+    if (strcmp(card, "disk2") == 0 && disk) {
+      mmu_->insertCard(static_cast<uint8_t>(slot), std::move(disk));
+    } else if (strcmp(card, "mockingboard") == 0 && mb) {
+      mmu_->insertCard(static_cast<uint8_t>(slot), std::move(mb));
+    }
+  }
+
+  // A card this machine does not ship is parked rather than dropped. Both are
+  // still pointed at by disk_ and mockingboard_, and setSlotCard() fits them
+  // later from exactly these members, so letting either go out of scope here
+  // would leave those pointers dangling.
+  if (disk) diskStorage_ = std::move(disk);
+  if (mb) mbStorage_ = std::move(mb);
 
   // Audio gets raw pointer
   audio_->setMockingboard(mockingboard_);
@@ -87,10 +105,48 @@ Emulator::Emulator() {
 
 Emulator::~Emulator() = default;
 
+namespace {
+
+// The system ROM built in for a machine, or an empty span when there is none.
+struct SystemRoms {
+  const uint8_t *system;
+  size_t systemSize;
+  const uint8_t *chars;
+  size_t charSize;
+};
+
+SystemRoms romsFor(MachineId machine) {
+  if (machine == MachineId::AppleIIPlus) {
+    return {roms::ROM_SYSTEM_II_PLUS, roms::ROM_SYSTEM_II_PLUS_SIZE,
+            roms::ROM_CHAR_II_PLUS, roms::ROM_CHAR_II_PLUS_SIZE};
+  }
+  return {roms::ROM_SYSTEM, roms::ROM_SYSTEM_SIZE, roms::ROM_CHAR,
+          roms::ROM_CHAR_SIZE};
+}
+
+} // namespace
+
+bool Emulator::isMachineRunnable(MachineId machine) {
+  // A machine's ROM has to actually fill the space its profile claims. A short
+  // image would leave the reset vector reading whatever the array was
+  // initialised to, which looks like a running machine that immediately goes
+  // nowhere.
+  return romsFor(machine).systemSize >= machineProfile(machine).memory.romSize;
+}
+
 void Emulator::init() {
-  // Load system and character ROMs into MMU
-  mmu_->loadROM(roms::ROM_SYSTEM, roms::ROM_SYSTEM_SIZE,
-                roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  // Each machine has its own system and character ROMs. The II+ set is
+  // optional at build time (see scripts/generate_roms.sh): when its files are
+  // absent the arrays are empty, and rather than leave the machine silently
+  // running a //e's ROM — or nothing — we record that it has none. The host
+  // asks through hasSystemROM() and can say so instead of presenting a machine
+  // that will never reach a prompt.
+  const SystemRoms rom = romsFor(machine_->id);
+  systemRomLoaded_ = isMachineRunnable(machine_->id);
+
+  if (systemRomLoaded_) {
+    mmu_->loadROM(rom.system, rom.systemSize, rom.chars, rom.charSize);
+  }
 
   // Load Disk II ROM into the card
   disk_->loadROM(roms::ROM_DISK2, roms::ROM_DISK2_SIZE);
@@ -110,6 +166,7 @@ void Emulator::reset() {
   // Clear Apple button states
   setButton(0, false);
   setButton(1, false);
+  joyport_.reset();
 
   keyboardLatch_ = 0;
   keyDown_ = false;
@@ -166,6 +223,7 @@ void Emulator::warmReset() {
   // Clear Apple button states
   setButton(0, false);
   setButton(1, false);
+  joyport_.reset();
 
   // Reset video to clean frame state
   video_->beginNewFrame(cpu_->getTotalCycles());
@@ -245,8 +303,9 @@ void Emulator::runCycles(int cycles) {
       // Progressive rendering and frame boundary
       video_->renderUpToCycle(cpu_->getTotalCycles());
       uint64_t currentCycle = cpu_->getTotalCycles();
-      if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
-        lastFrameCycle_ += CYCLES_PER_FRAME;
+      if (currentCycle - lastFrameCycle_ >=
+          static_cast<uint64_t>(machine_->timing.cyclesPerFrame())) {
+        lastFrameCycle_ += machine_->timing.cyclesPerFrame();
         video_->renderFrame();
         video_->beginNewFrame(lastFrameCycle_);
         frameReady_ = true;
@@ -501,11 +560,12 @@ void Emulator::runCycles(int cycles) {
 
     // Check for frame boundary
     uint64_t currentCycle = cpu_->getTotalCycles();
-    if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
-      // Advance by exactly CYCLES_PER_FRAME to stay aligned with VBL detection
-      // ($C019 uses cycles % CYCLES_PER_FRAME). Using currentCycle would drift
+    if (currentCycle - lastFrameCycle_ >=
+        static_cast<uint64_t>(machine_->timing.cyclesPerFrame())) {
+      // Advance by exactly one frame to stay aligned with VBL detection ($C019
+      // uses cycles modulo the frame length). Using currentCycle would drift
       // by a few cycles each frame, desynchronizing raster effects.
-      lastFrameCycle_ += CYCLES_PER_FRAME;
+      lastFrameCycle_ += machine_->timing.cyclesPerFrame();
       video_->renderFrame();                   // Uses this frame's change log
       video_->beginNewFrame(lastFrameCycle_);   // Reset log, aligned to frame boundary
       frameReady_ = true;
@@ -517,7 +577,9 @@ void Emulator::runCycles(int cycles) {
     // Check beam breakpoints
     if (!beamBreakpoints_.empty()) {
       uint64_t fc = cpu_->getTotalCycles() - lastFrameCycle_;
-      if (fc >= CYCLES_PER_FRAME) fc %= CYCLES_PER_FRAME;
+      const auto framecycles =
+          static_cast<uint64_t>(machine_->timing.cyclesPerFrame());
+      if (fc >= framecycles) fc %= framecycles;
       int16_t sl = static_cast<int16_t>(fc / 65);
       int16_t hp = static_cast<int16_t>(fc % 65);
       for (auto& bp : beamBreakpoints_) {
@@ -567,7 +629,9 @@ void Emulator::applySpeedToAudio() {
 
 int Emulator::generateStereoAudioSamples(float *buffer, int sampleCount) {
   // Calculate cycles needed for this audio buffer, scaled by speed multiplier
-  int cyclesToRun = static_cast<int>(sampleCount * CYCLES_PER_SAMPLE * speedMultiplier_);
+  int cyclesToRun = static_cast<int>(
+      sampleCount * machine_->timing.cyclesPerSample(AUDIO_SAMPLE_RATE) *
+      speedMultiplier_);
 
   // Run emulation for the required cycles
   runCycles(cyclesToRun);
@@ -734,7 +798,26 @@ int Emulator::getPaddleValue(int paddle) const {
   return mmu_->getPaddleValue(paddle);
 }
 
+void Emulator::setGamePortDevice(GamePortDevice device) {
+  if (device == gamePortDevice_) return;
+  gamePortDevice_ = device;
+  // Whatever was held on the old device is not held on the new one, and a
+  // switch mid-game would otherwise leave a direction stuck down.
+  joyport_.reset();
+  setButton(0, false);
+  setButton(1, false);
+  setButton(2, false);
+}
+
+void Emulator::setJoyportStick(int stick, int switches) {
+  joyport_.setStickState(stick, static_cast<uint8_t>(switches));
+}
+
 uint8_t Emulator::getButtonState(int button) {
+  if (gamePortDevice_ == GamePortDevice::SiriusJoyport) {
+    const SoftSwitches &sw = mmu_->getSoftSwitches();
+    return joyport_.readPushButton(button, sw.an0, sw.an1);
+  }
   if (button >= 0 && button < 3 && buttonState_[button]) {
     return 0x80; // Bit 7 set = button pressed
   }
@@ -907,8 +990,9 @@ void Emulator::stepInstruction() {
 
   // Check for frame boundary
   uint64_t currentCycle = cpu_->getTotalCycles();
-  if (currentCycle - lastFrameCycle_ >= CYCLES_PER_FRAME) {
-    lastFrameCycle_ += CYCLES_PER_FRAME;
+  if (currentCycle - lastFrameCycle_ >=
+      static_cast<uint64_t>(machine_->timing.cyclesPerFrame())) {
+    lastFrameCycle_ += machine_->timing.cyclesPerFrame();
     video_->renderFrame();
     video_->beginNewFrame(lastFrameCycle_);
     frameReady_ = true;
@@ -1073,13 +1157,16 @@ void Emulator::mouseButton(bool pressed) {
 // ============================================================================
 
 const char* Emulator::getSlotCardName(uint8_t slot) const {
-  if (slot < 1 || slot > 7) {
+  if (!machine_->hasSlot(slot)) {
     return "invalid";
   }
 
-  // Slot 3 is built-in 80-column
-  if (slot == 3) {
-    return "80col";
+  // A slot the machine fills itself. On a //e that is the 80-column card in
+  // slot 3; on a II+ it is the language card in slot 0, and slot 3 is an
+  // ordinary slot. Reporting "80col" for every machine's slot 3 put a card in
+  // a II+ that it has never had.
+  if (const char *fixed = machine_->slots[slot].fixedCard) {
+    return fixed;
   }
 
   // Check the slot array for all cards

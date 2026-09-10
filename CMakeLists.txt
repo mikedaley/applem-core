@@ -22,6 +22,7 @@ set(CORE_SOURCES
     src/core/disk-image/woz_disk_image.cpp
     src/core/disk-image/disk_converter.cpp
     src/core/disk-image/gcr_encoding.cpp
+    src/core/input/joyport.cpp
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
     src/core/cards/mockingboard/ay8910.cpp
@@ -69,12 +70,41 @@ set(ROM_FILES
     "roms/Apple Parallel Interface Card ROM - 341-0057.bin" # Parallel Interface Card PROM (341-0005/341-0019)
 )
 
+# Apple II Plus ROMs are optional — the generator emits empty arrays when they
+# are missing, and the II+ profile then reports having no ROM. Listed separately
+# so a missing file is not a broken dependency for the //e build.
+set(ROM_FILES_OPTIONAL_CANDIDATES
+    roms/341-0011.bin   # Applesoft $D000-$D7FF
+    roms/341-0012.bin   # Applesoft $D800-$DFFF
+    roms/341-0013.bin   # Applesoft $E000-$E7FF
+    roms/341-0014.bin   # Applesoft $E800-$EFFF
+    roms/341-0015.bin   # Applesoft $F000-$F7FF
+    roms/341-0020.bin   # Autostart monitor $F800-$FFFF
+    roms/apple2plus.rom # ...or one combined 12KB image instead of the six
+    roms/341-0036.bin   # II+ character generator
+)
+
+# Only the candidates that are actually present become build dependencies. A
+# DEPENDS entry with no rule to build it is a hard error, and these are
+# alternatives — supplying the six motherboard ROMs means apple2plus.rom will
+# never exist, and vice versa. Re-run cmake after adding ROMs.
+set(ROM_FILES_OPTIONAL "")
+foreach(candidate ${ROM_FILES_OPTIONAL_CANDIDATES})
+    if(EXISTS ${CMAKE_SOURCE_DIR}/${candidate})
+        list(APPEND ROM_FILES_OPTIONAL ${candidate})
+    endif()
+endforeach()
+
 # Custom command to generate ROM header
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/generated/roms.cpp
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
     COMMAND ${CMAKE_SOURCE_DIR}/scripts/generate_roms.sh ${CMAKE_SOURCE_DIR}/roms ${CMAKE_BINARY_DIR}/generated/roms.cpp
-    DEPENDS ${ROM_FILES} ${CMAKE_SOURCE_DIR}/scripts/generate_roms.sh
+    # ROM_FILES_OPTIONAL must be listed too. Without it, dropping the II+ ROMs
+    # into roms/ changed nothing the build was watching, so roms.cpp stayed as
+    # it was and the machine reported having no ROM long after its ROM existed.
+    DEPENDS ${ROM_FILES} ${ROM_FILES_OPTIONAL}
+            ${CMAKE_SOURCE_DIR}/scripts/generate_roms.sh
     COMMENT "Generating ROM data arrays"
 )
 
@@ -110,6 +140,15 @@ if(EMSCRIPTEN)
                 \"_consumeFrameSamples\", \
                 \"_getFramebuffer\", \
                 \"_getFramebufferSize\", \
+                \"_getMachineCount\", \
+                \"_getMachineKey\", \
+                \"_getMachineKeyAt\", \
+                \"_getMachineName\", \
+                \"_getMachineProfileJSON\", \
+                \"_getMachineProfileJSONAt\", \
+                \"_hasSystemROM\", \
+                \"_isMachineRunnable\", \
+                \"_setMachine\", \
                 \"_forceRenderFrame\", \
                 \"_isFrameReady\", \
                 \"_keyDown\", \
@@ -376,6 +415,10 @@ if(EMSCRIPTEN)
                 \"_setAudioMuted\", \
                 \"_setButton\", \
                 \"_setPaddleValue\", \
+                \"_setGamePortDevice\", \
+                \"_getGamePortDevice\", \
+                \"_setJoyportStick\", \
+                \"_getJoyportStick\", \
                 \"_getPaddleValue\", \
                 \"_getDiskSectorData\", \
                 \"_stopDiskMotor\", \
@@ -450,6 +493,7 @@ else()
     set(ALL_CORE_INCLUDES
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
+        ${CMAKE_SOURCE_DIR}/src/core/machine
         ${CMAKE_SOURCE_DIR}/src/core/mmu
         ${CMAKE_SOURCE_DIR}/src/core/video
         ${CMAKE_SOURCE_DIR}/src/core/audio
@@ -485,6 +529,7 @@ else()
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/disk_converter.cpp
         src/core/disk-image/gcr_encoding.cpp
+        src/core/input/joyport.cpp
         src/core/input/keyboard.cpp
         src/core/disassembler/disassembler.cpp
         src/core/cards/mockingboard/ay8910.cpp
@@ -614,6 +659,12 @@ else()
         src/core/input/keyboard.cpp
     )
 
+    # Sirius Joyport (only joyport.cpp)
+    add_catch2_test(test_joyport
+        tests/unit/test_joyport.cpp
+        src/core/input/joyport.cpp
+    )
+
     # AY-3-8910 (only ay8910.cpp)
     add_catch2_test(test_ay8910
         tests/unit/test_ay8910.cpp
@@ -667,6 +718,15 @@ else()
         src/core/mmu/mmu.cpp
         src/core/noslot_clock.cpp
         src/core/cards/thunderclock/thunderclock_card.cpp
+    )
+
+    # Machine profile. Links the whole core: the point of these tests is that a
+    # profile reaches the subsystems that read it, including the Emulator that
+    # selects the CPU and the ROMs.
+    add_catch2_test(test_machine_profile
+        tests/unit/test_machine_profile.cpp
+        ${CORE_TEST_SOURCES}
+        ${TEST_COMMON_SOURCES}
     )
 
     # NTSC composite decoding (standalone — no MMU needed)

@@ -12,7 +12,10 @@
 
 namespace a2e {
 
-MMU::MMU() : noSlotClock_(std::make_unique<NoSlotClock>()) { reset(); }
+MMU::MMU(const MachineProfile &machine)
+    : machine_(&machine), noSlotClock_(std::make_unique<NoSlotClock>()) {
+  reset();
+}
 
 MMU::~MMU() = default;
 
@@ -73,12 +76,20 @@ void MMU::warmReset() {
 // ===== Expansion Slot Management =====
 
 std::unique_ptr<ExpansionCard> MMU::insertCard(uint8_t slot, std::unique_ptr<ExpansionCard> card) {
-  if (slot < 1 || slot > 7) {
-    return card; // Invalid slot, return card unchanged
+  // Which slots exist is the machine's business, so the profile decides. A //e
+  // answers for 1-7; a II+ also has slot 0.
+  if (!machine_->hasSlot(slot)) {
+    return card; // No such slot on this machine, return the card unchanged
   }
 
-  std::unique_ptr<ExpansionCard> previous = std::move(slots_[slot - 1]);
-  slots_[slot - 1] = std::move(card);
+  std::unique_ptr<ExpansionCard> previous = std::move(slots_[slot]);
+  slots_[slot] = std::move(card);
+
+  // A card is entitled to know what it has been plugged into before it is
+  // asked to do anything.
+  if (slots_[slot]) {
+    slots_[slot]->setMachine(*machine_);
+  }
 
   // If the removed card owned the expansion ROM, clear it
   if (activeExpansionSlot_ == slot) {
@@ -89,11 +100,11 @@ std::unique_ptr<ExpansionCard> MMU::insertCard(uint8_t slot, std::unique_ptr<Exp
 }
 
 std::unique_ptr<ExpansionCard> MMU::removeCard(uint8_t slot) {
-  if (slot < 1 || slot > 7) {
+  if (!machine_->hasSlot(slot)) {
     return nullptr;
   }
 
-  std::unique_ptr<ExpansionCard> card = std::move(slots_[slot - 1]);
+  std::unique_ptr<ExpansionCard> card = std::move(slots_[slot]);
 
   // If this card owned the expansion ROM, clear it
   if (activeExpansionSlot_ == slot) {
@@ -104,17 +115,17 @@ std::unique_ptr<ExpansionCard> MMU::removeCard(uint8_t slot) {
 }
 
 ExpansionCard* MMU::getCard(uint8_t slot) const {
-  if (slot < 1 || slot > 7) {
+  if (!machine_->hasSlot(slot)) {
     return nullptr;
   }
-  return slots_[slot - 1].get();
+  return slots_[slot].get();
 }
 
 bool MMU::isSlotEmpty(uint8_t slot) const {
-  if (slot < 1 || slot > 7) {
+  if (!machine_->hasSlot(slot)) {
     return true;
   }
-  return !slots_[slot - 1];
+  return !slots_[slot];
 }
 
 void MMU::enableNoSlotClock(bool enable) {
@@ -148,11 +159,54 @@ void MMU::decayTracking(uint8_t amount) {
 void MMU::loadROM(const uint8_t *systemRom, size_t systemSize,
                   const uint8_t *charRom, size_t charSize) {
   if (systemRom && systemSize > 0) {
-    std::memcpy(systemROM_.data(), systemRom,
-                std::min(systemSize, systemROM_.size()));
+    // systemROM_ is a window over $C000-$FFFF and every read indexes it as
+    // `address - ROM_WINDOW_BASE`. A machine whose ROM starts higher — a II+
+    // has 12KB at $D000, with nothing on the motherboard answering below it —
+    // is placed at the matching offset, so the read path needs no knowledge of
+    // where a given machine's ROM begins.
+    const size_t offset = machine_->memory.romBaseAddress - ROM_WINDOW_BASE;
+    if (offset < systemROM_.size()) {
+      std::memcpy(systemROM_.data() + offset, systemRom,
+                  std::min(systemSize, systemROM_.size() - offset));
+    }
   }
   if (charRom && charSize > 0) {
-    std::memcpy(charROM_.data(), charRom, std::min(charSize, charROM_.size()));
+    const size_t copied = std::min(charSize, charROM_.size());
+    std::memcpy(charROM_.data(), charRom, copied);
+    normaliseCharROM(copied);
+  }
+}
+
+// Bring a character generator into the one layout the renderer reads: bit 0 is
+// the leftmost pixel of a glyph row, and each eight-byte cell holds its rows in
+// scanline order with any blank row last. See MachineCharRom for why the two
+// machines differ.
+void MMU::normaliseCharROM(size_t length) {
+  const auto &layout = machine_->memory.charRom;
+  if (!layout.bitReversed && layout.rowRotate == 0) return;
+
+  constexpr size_t CELL = 8; // Scanlines per character
+
+  for (size_t base = 0; base + CELL <= length; base += CELL) {
+    if (layout.rowRotate != 0) {
+      std::array<uint8_t, CELL> cell{};
+      for (size_t row = 0; row < CELL; row++) {
+        const size_t from = (row + static_cast<size_t>(layout.rowRotate)) % CELL;
+        cell[row] = charROM_[base + from];
+      }
+      std::copy(cell.begin(), cell.end(), charROM_.begin() + base);
+    }
+
+    if (layout.bitReversed) {
+      for (size_t row = 0; row < CELL; row++) {
+        const uint8_t v = charROM_[base + row];
+        uint8_t reversed = v & 0x80; // Bit 7 is not part of the 7-dot glyph
+        for (int bit = 0; bit < 7; bit++) {
+          if (v & (1u << bit)) reversed |= static_cast<uint8_t>(1u << (6 - bit));
+        }
+        charROM_[base + row] = reversed;
+      }
+    }
   }
 }
 
@@ -242,8 +296,8 @@ uint8_t MMU::peek(uint16_t address) const {
     if (address < 0xC800) {
       uint8_t slot = (address >> 8) & 0x07;
       uint8_t offset = address & 0xFF;
-      if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
-        return slots_[slot - 1]->readROM(offset);
+      if (slot >= 1 && slot <= 7 && slots_[slot]) {
+        return slots_[slot]->readROM(offset);
       }
       return 0xFF;
     }
@@ -380,8 +434,8 @@ uint8_t MMU::peekSoftSwitch(uint16_t address) const {
     uint8_t slot = ((reg - 0x80) >> 4);
     uint8_t offset = reg & 0x0F;
 
-    if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
-      return slots_[slot - 1]->peekIO(offset);
+    if (slot >= 1 && slot <= 7 && slots_[slot]) {
+      return slots_[slot]->peekIO(offset);
     }
 
     return 0x00;
@@ -515,9 +569,9 @@ uint8_t MMU::read(uint16_t address) {
       uint8_t offset = address & 0xFF;
 
       // Access to slot ROM activates that card's expansion ROM
-      if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
+      if (slot >= 1 && slot <= 7 && slots_[slot]) {
         activeExpansionSlot_ = slot;
-        return slots_[slot - 1]->readROM(offset);
+        return slots_[slot]->readROM(offset);
       }
 
       return getFloatingBusValue();
@@ -539,7 +593,7 @@ uint8_t MMU::read(uint16_t address) {
 
     // Check if a card owns the expansion ROM space
     if (activeExpansionSlot_ >= 1 && activeExpansionSlot_ <= 7) {
-      auto& card = slots_[activeExpansionSlot_ - 1];
+      auto& card = slots_[activeExpansionSlot_];
       if (card && card->hasExpansionROM()) {
         uint8_t value = card->readExpansionROM(address - 0xC800);
         // Access to $CFFF clears the expansion ROM select AFTER the read
@@ -681,8 +735,8 @@ void MMU::write(uint16_t address, uint8_t value) {
       uint8_t slot = (address >> 8) & 0x07;
       uint8_t offset = address & 0xFF;
 
-      if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
-        slots_[slot - 1]->writeROM(offset, value);
+      if (slot >= 1 && slot <= 7 && slots_[slot]) {
+        slots_[slot]->writeROM(offset, value);
       }
     }
     return;
@@ -705,12 +759,14 @@ uint16_t MMU::getVideoScannerAddress(uint64_t cycles) const {
   constexpr int V_LINE_0_STATE = 0x100; // V[543210CBA] at the first visible line
   constexpr int V_PRESET_LINE = 256;
 
-  uint32_t frameCycle = static_cast<uint32_t>(cycles % CYCLES_PER_FRAME);
+  const auto &timing = machine_->timing;
+  uint32_t frameCycle =
+      static_cast<uint32_t>(cycles % timing.cyclesPerFrame());
 
   // Our frame cycle counts from the start of horizontal blanking, while the
   // scanner's clock 0 is the first visible cycle 25 cycles later.
-  int hClock = static_cast<int>((frameCycle + (CYCLES_PER_SCANLINE - 25)) %
-                                CYCLES_PER_SCANLINE);
+  int hClock = static_cast<int>((frameCycle + (timing.cyclesPerScanline - 25)) %
+                                timing.cyclesPerScanline);
   int hState = H_CLOCK_0_STATE + hClock;
   if (hClock >= H_PRESET_CLOCK) {
     hState -= 1; // The preset repeats a state, so one clock shares two
@@ -723,10 +779,10 @@ uint16_t MMU::getVideoScannerAddress(uint64_t cycles) const {
   int h4 = (hState >> 4) & 1;
   int h5 = (hState >> 5) & 1;
 
-  int vLine = static_cast<int>(frameCycle / CYCLES_PER_SCANLINE);
+  int vLine = static_cast<int>(frameCycle / timing.cyclesPerScanline);
   int vState = V_LINE_0_STATE + vLine;
   if (vLine >= V_PRESET_LINE) {
-    vState -= SCANLINES_PER_FRAME;
+    vState -= timing.scanlinesPerFrame;
   }
 
   int vA = (vState >> 0) & 1;
@@ -845,8 +901,10 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
   case 0x19: { // RDVBLBAR - vertical blank status
     // Bit 7 = 0 during vertical blank (scanlines 192-261), 1 during active display
     uint64_t cycles = cycleCallback_ ? cycleCallback_() : 0;
-    uint32_t scanline = (cycles % CYCLES_PER_FRAME) / CYCLES_PER_SCANLINE;
-    bool inVBL = (scanline >= 192);
+    uint32_t scanline = (cycles % machine_->timing.cyclesPerFrame()) /
+                        machine_->timing.cyclesPerScanline;
+    bool inVBL = (scanline >= static_cast<uint32_t>(
+                                  machine_->timing.visibleScanlines));
     return (inVBL ? 0x00 : 0x80) | (getFloatingBusValue() & 0x7F);
   }
   case 0x1A:
@@ -1051,8 +1109,8 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     uint8_t slot = ((reg - 0x80) >> 4);
     uint8_t offset = reg & 0x0F;
 
-    if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
-      return slots_[slot - 1]->readIO(offset);
+    if (slot >= 1 && slot <= 7 && slots_[slot]) {
+      return slots_[slot]->readIO(offset);
     }
 
     return getFloatingBusValue();
@@ -1135,6 +1193,16 @@ uint8_t MMU::handleLanguageCardSwitch(uint8_t reg) {
 
 void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
   uint8_t reg = address & 0xFF;
+
+  // $C000-$C00F are the //e's memory and display management switches: 80STORE,
+  // RAMRD/RAMWRT, INTCXROM, ALTZP, SLOTC3ROM, 80COL and ALTCHARSET. A machine
+  // without an auxiliary bank has none of them — on a II+ that address range
+  // is keyboard territory and a write there manages no memory at all. Ignoring
+  // the group wholesale is what stops software probing for a //e from
+  // convincing this MMU it has hardware the machine does not have.
+  if (reg <= 0x0F && !machine_->caps.hasAuxRam) {
+    return;
+  }
 
   switch (reg) {
   // Keyboard strobe
@@ -1296,8 +1364,8 @@ void MMU::writeSoftSwitch(uint16_t address, uint8_t value) {
     uint8_t slot = ((reg - 0x80) >> 4);
     uint8_t offset = reg & 0x0F;
 
-    if (slot >= 1 && slot <= 7 && slots_[slot - 1]) {
-      slots_[slot - 1]->writeIO(offset, value);
+    if (slot >= 1 && slot <= 7 && slots_[slot]) {
+      slots_[slot]->writeIO(offset, value);
     }
     break;
   }
