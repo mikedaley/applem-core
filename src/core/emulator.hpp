@@ -127,6 +127,9 @@ public:
   // Game I/O connector: an Apple resistive joystick or a Sirius Joyport.
   // Host preference rather than machine state, so it survives reset and is not
   // written into a save state.
+  /** How long after a reset the Joyport stays off PB0/PB1 (~50ms). */
+  static constexpr uint64_t JOYPORT_RESET_GUARD_CYCLES = 50000;
+
   void setGamePortDevice(GamePortDevice device);
   GamePortDevice gamePortDevice() const { return gamePortDevice_; }
   /** Set one Joyport stick's switches (a mask of Joyport::SwitchBit). */
@@ -508,6 +511,22 @@ private:
   // than adding to them — which is why this is a device selection.
   GamePortDevice gamePortDevice_ = GamePortDevice::AppleJoystick;
   Joyport joyport_;
+
+  // Cycle after which the Joyport may drive PB0/PB1 again following a reset.
+  //
+  // The //e's reset routine reads $C061 and $C062 to see whether Open or
+  // Closed Apple is held: Open Apple asks for a cold boot, Closed Apple runs
+  // the self test. A Joyport idles both lines *high*, which is exactly what a
+  // held key looks like, so a //e with one plugged in ran the self test on
+  // every reset and could never reach a prompt. That is faithful — the game
+  // connector's pins 2 and 3 really are the Apple keys on a //e, which is why
+  // the Joyport belongs to the II and II+ era — but it makes the device
+  // useless on the machine most people run here.
+  //
+  // So the Joyport lets go of PB0 and PB1 for a brief window after reset, long
+  // enough to cover the ROM's key check and far too short for a game to have
+  // asked about the stick yet. PB2 is untouched: no Apple key is wired to it.
+  uint64_t joyportResetGuardCycle_ = 0;
 
   // Speed control
   int speedMultiplier_ = 1;

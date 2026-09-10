@@ -167,6 +167,7 @@ void Emulator::reset() {
   setButton(0, false);
   setButton(1, false);
   joyport_.reset();
+  joyportResetGuardCycle_ = cpu_->getTotalCycles() + JOYPORT_RESET_GUARD_CYCLES;
 
   keyboardLatch_ = 0;
   keyDown_ = false;
@@ -224,6 +225,7 @@ void Emulator::warmReset() {
   setButton(0, false);
   setButton(1, false);
   joyport_.reset();
+  joyportResetGuardCycle_ = cpu_->getTotalCycles() + JOYPORT_RESET_GUARD_CYCLES;
 
   // Reset video to clean frame state
   video_->beginNewFrame(cpu_->getTotalCycles());
@@ -815,6 +817,12 @@ void Emulator::setJoyportStick(int stick, int switches) {
 
 uint8_t Emulator::getButtonState(int button) {
   if (gamePortDevice_ == GamePortDevice::SiriusJoyport) {
+    // See joyportResetGuardCycle_: the Joyport's idle-high PB0/PB1 read as a
+    // held Open and Closed Apple, which sends the //e's reset routine into the
+    // self test. Let go of those two lines until the ROM has looked.
+    if (button < 2 && cpu_->getTotalCycles() < joyportResetGuardCycle_) {
+      return 0x00;
+    }
     const SoftSwitches &sw = mmu_->getSoftSwitches();
     return joyport_.readPushButton(button, sw.an0, sw.an1);
   }
