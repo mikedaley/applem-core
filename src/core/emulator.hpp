@@ -10,6 +10,7 @@
 #include "audio/audio.hpp"
 #include "cpu/6502/cpu6502.hpp"
 #include "cards/disk2/disk2_card.hpp"
+#include "cards/iwm/iwm.hpp"
 #include "cards/expansion_card.hpp"
 #include "input/joyport.hpp"
 #include "input/keyboard.hpp"
@@ -19,6 +20,8 @@
 #include "cards/smartport/smartport_card.hpp"
 #include "cards/parallel/parallel_card.hpp"
 #include "cards/softcard/softcard_z80.hpp"
+#include "cards/serial/serial_port.hpp"
+#include "input/mouse_iou.hpp"
 #include "cards/ssc/ssc_card.hpp"
 #include "disk-image/disk_converter.hpp"
 #include "filesystem/fs_write_status.hpp"
@@ -364,18 +367,38 @@ public:
   MMU &getMMU() { return *mmu_; }
   Video &getVideo() { return *video_; }
   Audio &getAudio() { return *audio_; }
-  Disk2Card &getDisk() { return *disk_; }
-  Disk2Card *getDiskPtr() { return disk_; }
+  // The drive controller, whichever part this machine carries: a Disk II card
+  // in a slot, or a //c's IWM soldered to the board. Everything the host asks
+  // it — insert, eject, which track, is the motor running — is the same
+  // question of both, so callers take the base rather than the part.
+  DiskController &getDisk() { return *disk_; }
+  DiskController *getDiskPtr() { return disk_; }
   MockingboardCard &getMockingboard() { return *mockingboard_; }
   MockingboardCard *getMockingboardPtr() { return mockingboard_; }
   MouseCard* getMouseCard() { return mouse_; }
+
+  // A //c's mouse, which is not a card: null on machines whose mouse is one.
+  MouseIOU* getMouseIOU() { return mouseIOU_.get(); }
+  bool isMouseInstalled() const { return mouse_ != nullptr || mouseIOU_ != nullptr; }
   SmartPortCard* getSmartPortCard() { return smartport_; }
   SoftCardZ80* getSoftCard() { return softcard_; }
   SSCCard* getSSCCard() { return ssc_; }
 
-  // Serial I/O for Super Serial Card
+  // A //c's built-in ports: 1 is the printer port, 2 the modem port. Null on a
+  // machine whose serial is a card in a slot instead.
+  SerialPort* getSerialPort(uint8_t port) {
+    return (port == 1 || port == 2) ? serialPorts_[port - 1] : nullptr;
+  }
+
+  // Serial I/O. The same two calls serve a Super Serial Card and a //c's
+  // built-in ports, because the host's question is about a serial line rather
+  // than about what is providing it.
   void serialReceive(uint8_t byte);
   bool isSSCInstalled() const { return ssc_ != nullptr; }
+  bool isSerialInstalled() const {
+    return ssc_ != nullptr || serialPorts_[0] != nullptr ||
+           serialPorts_[1] != nullptr;
+  }
   void setSerialTxCallback(SSCCard::SerialTxCallback cb);
 
   // Parallel Interface Card (a generic Centronics port; a printer is one device
@@ -441,12 +464,16 @@ private:
   std::unique_ptr<Keyboard> keyboard_;
 
   // Non-owning pointers to cards (owned by MMU slot system)
-  Disk2Card* disk_ = nullptr;
+  DiskController* disk_ = nullptr;
   MockingboardCard* mockingboard_ = nullptr;
   MouseCard* mouse_ = nullptr;
+  // Owned, unlike the cards: a //c's mouse is part of the machine, not
+  // something fitted to it, so there is no slot to hold it.
+  std::unique_ptr<MouseIOU> mouseIOU_;
   SmartPortCard* smartport_ = nullptr;
   SoftCardZ80* softcard_ = nullptr;
   SSCCard* ssc_ = nullptr;
+  SerialPort* serialPorts_[2] = {nullptr, nullptr};
   ParallelCard* parallelCard_ = nullptr;
   ParallelCard::ParallelTxCallback parallelTxCallback_;
   SSCCard::SerialTxCallback serialTxCallback_;

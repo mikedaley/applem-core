@@ -7,9 +7,11 @@
 
 #include "emulator.hpp"
 #include "cards/disk2/disk2_card.hpp"
+#include "cards/iwm/iwm.hpp"
 #include "cards/mockingboard/mockingboard_card.hpp"
 #include "cards/thunderclock/thunderclock_card.hpp"
 #include "cards/mouse/mouse_card.hpp"
+#include "cards/serial/serial_port.hpp"
 #include "cards/smartport/smartport_card.hpp"
 #include "cards/softcard/softcard_z80.hpp"
 #include "debug/condition_evaluator.hpp"
@@ -29,8 +31,16 @@ Emulator::Emulator(MachineId machine) : machine_(&machineProfile(machine)) {
   audio_ = std::make_unique<Audio>(*machine_);
   keyboard_ = std::make_unique<Keyboard>();
 
-  // Create cards, keep raw pointers, then insert into slots
-  auto disk = std::make_unique<Disk2Card>();
+  // Create cards, keep raw pointers, then insert into slots. Which drive
+  // controller gets built is the machine's: a //e and a II+ take a Disk II
+  // card in a slot, a //c has an IWM on the board with no ROM of its own.
+  std::unique_ptr<DiskController> disk;
+  if (const char *slot6 = machine_->slots[6].fixedCard;
+      slot6 && strcmp(slot6, "iwm") == 0) {
+    disk = std::make_unique<IWM>();
+  } else {
+    disk = std::make_unique<Disk2Card>();
+  }
   auto mb = std::make_unique<MockingboardCard>();
   disk_ = disk.get();
   mockingboard_ = mb.get();
@@ -65,12 +75,35 @@ Emulator::Emulator(MachineId machine) : machine_(&machineProfile(machine)) {
   mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
 
-  // Set up level-triggered IRQ polling for VIA/mouse interrupts
+  // Whether anything is currently pulling the interrupt line down.
+  //
+  // The CPU samples this once per instruction, so it is deliberately a handful
+  // of null checks against pointers this class already holds rather than a walk
+  // of the slots asking each card: the slot array is eight virtual calls on the
+  // hottest loop in the emulator, to serve devices that can be counted on one
+  // hand. A card that can hold the line and is not named here is still heard
+  // through its own edge — it just cannot re-interrupt a handler that returned
+  // without servicing it.
   cpu_->setIRQStatusCallback([this]() {
-    bool active = mockingboard_ ? mockingboard_->isIRQActive() : false;
-    if (mouse_) active = active || mouse_->isIRQActive();
-    return active;
+    if (mockingboard_ && mockingboard_->isIRQActive()) return true;
+    if (mouse_ && mouse_->isIRQActive()) return true;
+    if (mouseIOU_ && mouseIOU_->isIRQActive()) return true;
+    if (ssc_ && ssc_->isIRQActive()) return true;
+    for (const SerialPort *port : serialPorts_) {
+      if (port && port->isIRQActive()) return true;
+    }
+    return false;
   });
+
+  // A //c's mouse is not a card in slot 4; it is the IOU, and the profile
+  // names it in slot 4 only because that is where its firmware lives. A
+  // machine with sockets gets a MouseCard instead, when the user fits one.
+  if (!machine_->caps.hasExpansionSlots && machine_->slots[4].fixedCard &&
+      strcmp(machine_->slots[4].fixedCard, "mouse") == 0) {
+    mouseIOU_ = std::make_unique<MouseIOU>();
+    mouseIOU_->setIRQCallback([this]() { cpu_->irq(); });
+    mmu_->setMouseIOU(mouseIOU_.get());
+  }
 
   // Set up disk timing callback - allows disk reads to get accurate cycle count
   // during instruction execution (before disk_->update() is called)
@@ -84,10 +117,20 @@ Emulator::Emulator(MachineId machine) : machine_(&machineProfile(machine)) {
   for (int slot = machine_->firstSlot; slot <= machine_->lastSlot; slot++) {
     const char *card = machine_->slots[slot].defaultCard;
     if (!card) continue;
-    if (strcmp(card, "disk2") == 0 && disk) {
+    if ((strcmp(card, "disk2") == 0 || strcmp(card, "iwm") == 0) && disk) {
       mmu_->insertCard(static_cast<uint8_t>(slot), std::move(disk));
     } else if (strcmp(card, "mockingboard") == 0 && mb) {
       mmu_->insertCard(static_cast<uint8_t>(slot), std::move(mb));
+    } else if (strcmp(card, "serial1") == 0 || strcmp(card, "serial2") == 0) {
+      // A //c's two ports. Built here rather than kept in storage like the
+      // disk and the Mockingboard, because they are soldered to the board:
+      // there is no state in which the machine exists without them.
+      const uint8_t port = card[6] == '2' ? 2 : 1;
+      auto serial = std::make_unique<SerialPort>(port);
+      serial->setIRQCallback([this]() { cpu_->irq(); });
+      if (serialTxCallback_) serial->setSerialTxCallback(serialTxCallback_);
+      serialPorts_[port - 1] = serial.get();
+      mmu_->insertCard(static_cast<uint8_t>(slot), std::move(serial));
     }
   }
 
@@ -116,9 +159,18 @@ struct SystemRoms {
 };
 
 SystemRoms romsFor(MachineId machine) {
-  if (machine == MachineId::AppleIIPlus) {
+  // Named one at a time rather than defaulted: the fallback is the //e's ROM,
+  // and a machine that fell through to it would boot someone else's firmware
+  // and look like it worked.
+  switch (machine) {
+  case MachineId::AppleIIPlus:
     return {roms::ROM_SYSTEM_II_PLUS, roms::ROM_SYSTEM_II_PLUS_SIZE,
             roms::ROM_CHAR_II_PLUS, roms::ROM_CHAR_II_PLUS_SIZE};
+  case MachineId::AppleIIc:
+    return {roms::ROM_SYSTEM_IIC, roms::ROM_SYSTEM_IIC_SIZE,
+            roms::ROM_CHAR_IIC, roms::ROM_CHAR_IIC_SIZE};
+  case MachineId::AppleIIe:
+    break;
   }
   return {roms::ROM_SYSTEM, roms::ROM_SYSTEM_SIZE, roms::ROM_CHAR,
           roms::ROM_CHAR_SIZE};
@@ -148,8 +200,12 @@ void Emulator::init() {
     mmu_->loadROM(rom.system, rom.systemSize, rom.chars, rom.charSize);
   }
 
-  // Load Disk II ROM into the card
-  disk_->loadROM(roms::ROM_DISK2, roms::ROM_DISK2_SIZE);
+  // The P5A boot ROM belongs to the Disk II card. A //c's IWM has no ROM
+  // space of its own — its disk firmware is part of the system ROM — so there
+  // is nothing to load into one.
+  if (auto *card = dynamic_cast<Disk2Card *>(disk_)) {
+    card->loadROM(roms::ROM_DISK2, roms::ROM_DISK2_SIZE);
+  }
 
   reset();
 }
@@ -160,6 +216,7 @@ void Emulator::reset() {
   cpu_->reset();
   audio_->reset();
   if (disk_) disk_->reset();
+  if (mouseIOU_) mouseIOU_->reset();
   keyboard_->reset();
   if (mockingboard_) mockingboard_->reset();
 
@@ -299,6 +356,8 @@ void Emulator::runCycles(int cycles) {
       if (disk_) disk_->update(static_cast<int>(cyclesUsed));
       if (mockingboard_) mockingboard_->update(static_cast<int>(cyclesUsed));
       if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
+      if (mouseIOU_)
+        mouseIOU_->update(cpu_->getTotalCycles(), mmu_->isInVerticalBlank());
       softcard_->update(static_cast<int>(cyclesUsed));
       if (parallelCard_) parallelCard_->update(static_cast<int>(cyclesUsed));
 
@@ -545,6 +604,8 @@ void Emulator::runCycles(int cycles) {
 
     // Update mouse card for VBL interrupt detection
     if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
+    if (mouseIOU_)
+      mouseIOU_->update(cpu_->getTotalCycles(), mmu_->isInVerticalBlank());
 
     // Update Z-80 SoftCard (runs Z80 T-states when active)
     if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
@@ -986,6 +1047,8 @@ void Emulator::stepInstruction() {
 
   // Update mouse card
   if (mouse_) mouse_->update(static_cast<int>(cyclesUsed));
+  if (mouseIOU_)
+    mouseIOU_->update(cpu_->getTotalCycles(), mmu_->isInVerticalBlank());
 
   // Update Z-80 SoftCard
   if (softcard_) softcard_->update(static_cast<int>(cyclesUsed));
@@ -1149,14 +1212,23 @@ void Emulator::toggleSpeaker() {
 // ============================================================================
 
 void Emulator::mouseMove(int dx, int dy) {
+  // Whichever mouse this machine has. The host asks the machine to move a
+  // mouse; what is on the other end of the question — a card's PIA or a //c's
+  // IOU — is not its business.
   if (mouse_) {
     mouse_->addDelta(dx, dy);
+  }
+  if (mouseIOU_) {
+    mouseIOU_->addDelta(dx, dy);
   }
 }
 
 void Emulator::mouseButton(bool pressed) {
   if (mouse_) {
     mouse_->setMouseButton(pressed);
+  }
+  if (mouseIOU_) {
+    mouseIOU_->setButton(pressed);
   }
 }
 
@@ -1188,6 +1260,9 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
   if (strcmp(name, "Disk II") == 0) {
     return "disk2";
   }
+  if (strcmp(name, "IWM") == 0) {
+    return "iwm";
+  }
   if (strcmp(name, "Mockingboard") == 0) {
     return "mockingboard";
   }
@@ -1206,6 +1281,12 @@ const char* Emulator::getSlotCardName(uint8_t slot) const {
   if (strcmp(name, "Super Serial Card") == 0) {
     return "ssc";
   }
+  if (strcmp(name, "Serial Port 1") == 0) {
+    return "serial1";
+  }
+  if (strcmp(name, "Serial Port 2") == 0) {
+    return "serial2";
+  }
   if (strcmp(name, "Parallel Card") == 0) {
     return "parallel";
   }
@@ -1218,8 +1299,12 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     return false;
   }
 
-  // Slot 3 is built-in 80-column and cannot be changed
-  if (slot == 3) {
+  // A slot the machine fills itself is not the user's to change: a //e's
+  // 80-column card in slot 3, and on a //c every slot there is, because none
+  // of them is a socket. This used to be a bare `slot == 3`, which was the //e
+  // spelling of the same rule and would have let a caller pull the IWM out of
+  // a machine that has no way to put one back.
+  if (machine_->slots[slot].fixedCard) {
     return false;
   }
 
@@ -1235,7 +1320,9 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
         mockingboard_ = nullptr;
         audio_->setMockingboard(nullptr);
       }
-    } else if (strcmp(existingName, "Disk II") == 0 && slot == 6) {
+    } else if ((strcmp(existingName, "Disk II") == 0 ||
+                strcmp(existingName, "IWM") == 0) &&
+               slot == 6) {
       if (!diskStorage_) {
         diskStorage_ = mmu_->removeCard(6);
         disk_ = nullptr;
@@ -1272,7 +1359,7 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     }
     // Re-insert from storage
     if (diskStorage_) {
-      disk_ = static_cast<Disk2Card*>(diskStorage_.get());
+      disk_ = static_cast<DiskController*>(diskStorage_.get());
       mmu_->insertCard(6, std::move(diskStorage_));
     }
     return true;
@@ -1440,13 +1527,29 @@ const uint8_t* Emulator::getSmartPortBlockData(int device, size_t* size) const {
 void Emulator::serialReceive(uint8_t byte) {
   if (ssc_) {
     ssc_->serialReceive(byte);
+    return;
+  }
+  // On a //c a byte coming in from outside is arriving at the modem port,
+  // which is port 2 — port 1 is the printer port, and a printer does not talk
+  // back. A machine with only a port 1 would still be given it rather than
+  // dropping it on the floor.
+  if (serialPorts_[1]) {
+    serialPorts_[1]->serialReceive(byte);
+  } else if (serialPorts_[0]) {
+    serialPorts_[0]->serialReceive(byte);
   }
 }
 
 void Emulator::setSerialTxCallback(SSCCard::SerialTxCallback cb) {
   serialTxCallback_ = cb;
   if (ssc_) {
-    ssc_->setSerialTxCallback(std::move(cb));
+    ssc_->setSerialTxCallback(cb);
+  }
+  // Both //c ports transmit to the same host callback, which is what the SSC
+  // does for all three of its uses: what is on the other end — a printer, a
+  // modem, a terminal — is the host's business, not the chip's.
+  for (SerialPort *port : serialPorts_) {
+    if (port) port->setSerialTxCallback(cb);
   }
 }
 

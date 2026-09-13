@@ -23,19 +23,23 @@ set(CORE_SOURCES
     src/core/disk-image/disk_converter.cpp
     src/core/disk-image/gcr_encoding.cpp
     src/core/input/joyport.cpp
+    src/core/input/mouse_iou.cpp
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
     src/core/cards/mockingboard/ay8910.cpp
     src/core/debug/debug_log.cpp
     src/core/cards/mockingboard/via6522.cpp
     src/core/cards/mockingboard/mockingboard_card.cpp
+    src/core/cards/disk_controller.cpp
     src/core/cards/disk2/disk2_card.cpp
+    src/core/cards/iwm/iwm.cpp
     src/core/cards/thunderclock/thunderclock_card.cpp
     src/core/cards/mouse/mouse_card.cpp
     src/core/cards/smartport/block_device.cpp
     src/core/cards/smartport/smartport_card.cpp
     src/core/cards/softcard/softcard_z80.cpp
     src/core/cards/ssc/acia6551.cpp
+    src/core/cards/serial/serial_port.cpp
     src/core/cards/ssc/ssc_card.cpp
     src/core/cards/parallel/parallel_card.cpp
     src/core/cards/softcard/z80/z80.cpp
@@ -501,6 +505,9 @@ else()
         ${CMAKE_SOURCE_DIR}/src/core/cards
         ${CMAKE_SOURCE_DIR}/src/core/cards/mockingboard
         ${CMAKE_SOURCE_DIR}/src/core/cards/disk2
+        ${CMAKE_SOURCE_DIR}/src/core/cards/iwm
+        ${CMAKE_SOURCE_DIR}/src/core/cards/serial
+        ${CMAKE_SOURCE_DIR}/src/core/cards/ssc
         ${CMAKE_SOURCE_DIR}/src/core/cards/thunderclock
         ${CMAKE_SOURCE_DIR}/src/core/cards/mouse
         ${CMAKE_SOURCE_DIR}/src/core/cards/softcard
@@ -530,19 +537,23 @@ else()
         src/core/disk-image/disk_converter.cpp
         src/core/disk-image/gcr_encoding.cpp
         src/core/input/joyport.cpp
+        src/core/input/mouse_iou.cpp
         src/core/input/keyboard.cpp
         src/core/disassembler/disassembler.cpp
         src/core/cards/mockingboard/ay8910.cpp
         src/core/debug/debug_log.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
+        src/core/cards/iwm/iwm.cpp
         src/core/cards/thunderclock/thunderclock_card.cpp
         src/core/cards/mouse/mouse_card.cpp
         src/core/cards/smartport/block_device.cpp
         src/core/cards/smartport/smartport_card.cpp
         src/core/cards/softcard/softcard_z80.cpp
         src/core/cards/ssc/acia6551.cpp
+        src/core/cards/serial/serial_port.cpp
         src/core/cards/ssc/ssc_card.cpp
         src/core/cards/parallel/parallel_card.cpp
         src/core/cards/softcard/z80/z80.cpp
@@ -659,10 +670,17 @@ else()
         src/core/input/keyboard.cpp
     )
 
+    # A //c's IOU mouse (only mouse_iou.cpp)
+    add_catch2_test(test_mouse_iou
+        tests/unit/test_mouse_iou.cpp
+        src/core/input/mouse_iou.cpp
+    )
+
     # Sirius Joyport (only joyport.cpp)
     add_catch2_test(test_joyport
         tests/unit/test_joyport.cpp
         src/core/input/joyport.cpp
+        src/core/input/mouse_iou.cpp
     )
 
     # AY-3-8910 (only ay8910.cpp)
@@ -709,6 +727,7 @@ else()
     add_catch2_test(test_mmu
         tests/unit/test_mmu.cpp
         src/core/mmu/mmu.cpp
+        src/core/input/mouse_iou.cpp
         src/core/noslot_clock.cpp
     )
 
@@ -716,6 +735,7 @@ else()
     add_catch2_test(test_mmu_slots
         tests/unit/test_mmu_slots.cpp
         src/core/mmu/mmu.cpp
+        src/core/input/mouse_iou.cpp
         src/core/noslot_clock.cpp
         src/core/cards/thunderclock/thunderclock_card.cpp
     )
@@ -741,13 +761,34 @@ else()
         src/core/video/video.cpp
         src/core/video/ntsc.cpp
         src/core/mmu/mmu.cpp
+        src/core/input/mouse_iou.cpp
         src/core/noslot_clock.cpp
     )
 
     # Disk2 Card (disk2_card.cpp + disk images + gcr)
     add_catch2_test(test_disk2_card
         tests/unit/test_disk2_card.cpp
+        src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
+        src/core/cards/iwm/iwm.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # A //c's serial ports — the SSC's ACIA with no card around it
+    add_catch2_test(test_serial_port
+        tests/unit/test_serial_port.cpp
+        src/core/cards/serial/serial_port.cpp
+        src/core/cards/ssc/acia6551.cpp
+    )
+
+    # IWM — a //c's drive controller, sharing DiskController with the card
+    add_catch2_test(test_iwm
+        tests/unit/test_iwm.cpp
+        src/core/cards/disk_controller.cpp
+        src/core/cards/disk2/disk2_card.cpp
+        src/core/cards/iwm/iwm.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -838,7 +879,9 @@ else()
 
     add_catch2_test(test_expansion_card
         tests/unit/test_expansion_card.cpp
+        src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
+        src/core/cards/iwm/iwm.cpp
         src/core/cards/mockingboard/mockingboard_card.cpp
         src/core/cards/thunderclock/thunderclock_card.cpp
         src/core/cards/mouse/mouse_card.cpp

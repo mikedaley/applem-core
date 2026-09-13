@@ -167,6 +167,86 @@ TEST_CASE("The II+ profile describes an Apple II Plus", "[machine]") {
     }
 }
 
+TEST_CASE("The //c profile describes an Apple //c", "[machine]") {
+    const auto &m = machineProfile(MachineId::AppleIIc);
+    const auto &iie = machineProfile(MachineId::AppleIIe);
+
+    SECTION("identity") {
+        REQUIRE(m.id == MachineId::AppleIIc);
+        REQUIRE(std::string(m.key) == "apple2c");
+        REQUIRE(std::string(m.logotype) == "//c");
+        // The same processor as an enhanced //e, unlike the II+.
+        REQUIRE(m.cpu == CPUVariant::CMOS_65C02);
+    }
+
+    SECTION("it is a //e in the numbers that make the picture") {
+        REQUIRE(m.timing.cpuClockHz == iie.timing.cpuClockHz);
+        REQUIRE(m.timing.cyclesPerScanline == iie.timing.cyclesPerScanline);
+        REQUIRE(m.timing.scanlinesPerFrame == iie.timing.scanlinesPerFrame);
+        REQUIRE(m.timing.visibleScanlines == iie.timing.visibleScanlines);
+        REQUIRE(m.display.pixelWidth == iie.display.pixelWidth);
+        REQUIRE(m.display.pixelHeight == iie.display.pixelHeight);
+        // Same IOU, so text is as crisp as a //e's rather than fringed.
+        REQUIRE(m.caps.inhibitsBurstInText);
+    }
+
+    SECTION("128K soldered down, and the //e's 16KB of ROM") {
+        REQUIRE(m.memory.mainRamSize == 64 * 1024);
+        REQUIRE(m.memory.auxRamSize == 64 * 1024);
+        REQUIRE(m.caps.hasAuxRam);
+        REQUIRE(m.caps.has80Column);
+        REQUIRE(m.caps.hasDoubleHires);
+        REQUIRE(m.memory.romSize == 16 * 1024);
+        REQUIRE(m.memory.romBaseAddress == 0xC000);
+        REQUIRE(m.caps.hasInternalSlotRom);
+    }
+
+    SECTION("one character set, where a //e has two") {
+        // A //e's 8KB generator holds a US and a UK set; a US //c's 4KB one
+        // holds a single set, and asking for a second reads past the image.
+        REQUIRE(m.memory.charRomSize == 4 * 1024);
+        REQUIRE(m.caps.hasAltCharSet); // MouseText is in the same set
+        REQUIRE_FALSE(m.caps.hasUkCharSet);
+        REQUIRE(iie.caps.hasUkCharSet);
+        // The generator is wired as a //e's, not a II+'s.
+        REQUIRE(m.memory.charRom.bitReversed == iie.memory.charRom.bitReversed);
+        REQUIRE(m.memory.charRom.rowRotate == iie.memory.charRom.rowRotate);
+    }
+
+    SECTION("every slot it has is fixed, because none of them is a socket") {
+        REQUIRE_FALSE(m.caps.hasExpansionSlots);
+        REQUIRE(iie.caps.hasExpansionSlots);
+        REQUIRE(machineProfile(MachineId::AppleIIPlus).caps.hasExpansionSlots);
+
+        REQUIRE(m.firstSlot == 1); // No slot 0: the //e's arrangement
+        REQUIRE_FALSE(m.hasSlot(0));
+        REQUIRE(std::string(m.slots[1].fixedCard) == "serial1");
+        REQUIRE(std::string(m.slots[2].fixedCard) == "serial2");
+        REQUIRE(std::string(m.slots[3].fixedCard) == "80col");
+        REQUIRE(std::string(m.slots[4].fixedCard) == "mouse");
+        REQUIRE(std::string(m.slots[6].fixedCard) == "iwm");
+
+        // Nothing is fitted where nothing answers, and nothing anywhere is
+        // merely a default the user could then take out.
+        REQUIRE(m.slots[5].fixedCard == nullptr);
+        REQUIRE(m.slots[5].defaultCard == nullptr);
+        REQUIRE(m.slots[7].fixedCard == nullptr);
+        REQUIRE(m.slots[7].defaultCard == nullptr);
+        for (int slot = m.firstSlot; slot <= m.lastSlot; slot++) {
+            INFO("slot " << slot);
+            if (m.slots[slot].defaultCard)
+                REQUIRE(m.slots[slot].fixedCard != nullptr);
+        }
+    }
+
+    SECTION("its disk is not a Disk II") {
+        // A //c drives its 5.25" through an IWM on the motherboard, which is
+        // why slot 6 does not name the card a //e fits there.
+        REQUIRE(std::string(m.slots[6].fixedCard) != "disk2");
+        REQUIRE(std::string(iie.slots[6].defaultCard) == "disk2");
+    }
+}
+
 TEST_CASE("Every registered profile is internally consistent", "[machine]") {
     // profileIsSelfConsistent and profileFitsCompiledStorage run as
     // static_asserts at build time, so a broken profile cannot compile. This
@@ -182,9 +262,16 @@ TEST_CASE("Every registered profile is internally consistent", "[machine]") {
 TEST_CASE("The registry finds machines by key", "[machine]") {
     REQUIRE(findMachineProfile("apple2e") == &APPLE_IIE_PROFILE);
     REQUIRE(findMachineProfile("apple2plus") == &APPLE_II_PLUS_PROFILE);
+    REQUIRE(findMachineProfile("apple2c") == &APPLE_IIC_PROFILE);
 
     SECTION("keys are distinct") {
         REQUIRE(std::string(APPLE_IIE_PROFILE.key) !=
+                std::string(APPLE_II_PLUS_PROFILE.key));
+        REQUIRE(std::string(APPLE_IIC_PROFILE.key) !=
+                std::string(APPLE_IIE_PROFILE.key));
+        // "apple2c" is a prefix of nothing here, but it shares five characters
+        // with "apple2e" and the constexpr compare is hand-rolled.
+        REQUIRE(std::string(APPLE_IIC_PROFILE.key) !=
                 std::string(APPLE_II_PLUS_PROFILE.key));
     }
 
@@ -441,6 +528,315 @@ TEST_CASE("Each machine boots to its own prompt", "[machine][boot]") {
         REQUIRE_FALSE(sw.col80);
         REQUIRE_FALSE(sw.ramrd);
         REQUIRE_FALSE(sw.altzp);
+    }
+
+    SECTION("the //c reaches Applesoft through firmware in its own ROM") {
+        // Optional in the same way, and the machine that most needs the test:
+        // every byte between $C100 and $CFFF a //c executes comes from its
+        // system ROM rather than from a card, and its firmware runs there
+        // before it ever reaches the monitor.
+        if (!Emulator::isMachineRunnable(MachineId::AppleIIc)) {
+            WARN("//c ROMs not built in; skipping the boot test");
+            return;
+        }
+
+        Emulator e(MachineId::AppleIIc);
+        e.init();
+        REQUIRE(e.hasSystemROM());
+
+        // Before the reset it has drawn its own banner and is asking the drive
+        // it has no implementation for, which is as far as a //c can get.
+        runFrames(e, 120);
+        bool banner = false;
+        for (const auto &line : visibleLines(e)) {
+            if (line.find("Apple //c") != std::string::npos) banner = true;
+        }
+        REQUIRE(banner);
+
+        e.warmReset();
+        runFrames(e, 120);
+        REQUIRE(showsApplesoftPrompt(e));
+    }
+}
+
+TEST_CASE("A machine with no sockets answers slot addresses from its own ROM",
+          "[machine][mmu]") {
+    // $C100-$CFFF is where a //e chooses between its internal ROM and the card
+    // in a slot, and INTCXROM starts off, so a //e with an empty slot reads the
+    // floating bus there. A //c has the same address decoding and no sockets
+    // behind it: the firmware for its serial ports, its mouse and its drive is
+    // part of the system ROM, so the internal ROM answers whatever the switch
+    // says. Without this the machine reads zeroes across the whole region and
+    // its reset lands on a BRK that vectors to another one.
+    if (!Emulator::isMachineRunnable(MachineId::AppleIIc)) {
+        WARN("//c ROMs not built in; skipping the internal ROM test");
+        return;
+    }
+
+    Emulator iic(MachineId::AppleIIc);
+    iic.init();
+    auto &mmu = iic.getMMU();
+    REQUIRE_FALSE(mmu.getSoftSwitches().intcxrom);
+
+    const uint8_t *rom = mmu.getSystemROM();
+    for (uint16_t address : {0xC100, 0xC300, 0xC600, 0xC800, 0xCF00}) {
+        INFO("address " << std::hex << address);
+        REQUIRE(mmu.read(address) == rom[address - 0xC000]);
+        REQUIRE(mmu.peek(address) == rom[address - 0xC000]);
+    }
+
+    SECTION("and turning INTCXROM on changes nothing, because it cannot") {
+        mmu.read(0xC100);
+        const uint8_t withSwitchOff = mmu.read(0xC600);
+        mmu.write(0xC007, 0); // INTCXROM on
+        REQUIRE(mmu.read(0xC600) == withSwitchOff);
+    }
+}
+
+TEST_CASE("A //c's disk is a chip on the board, not a card in a slot",
+          "[machine][disk]") {
+    // Slot 6 on a //c decodes the same sixteen addresses a Disk II card does,
+    // and an IWM answers them. What it does not have is the card's other half:
+    // a boot ROM in the slot's 256 bytes. A //c boots from $C600 all the same,
+    // because those bytes are part of its system ROM.
+    if (!Emulator::isMachineRunnable(MachineId::AppleIIc)) {
+        WARN("//c ROMs not built in; skipping the disk controller test");
+        return;
+    }
+
+    Emulator iic(MachineId::AppleIIc);
+    iic.init();
+    REQUIRE(std::string(iic.getDisk().getName()) == "IWM");
+    REQUIRE(std::string(iic.getSlotCardName(6)) == "iwm");
+    REQUIRE_FALSE(iic.getDisk().hasROM());
+    REQUIRE(iic.getMMU().read(0xC600) ==
+            iic.getMMU().getSystemROM()[0xC600 - 0xC000]);
+
+    SECTION("and the chip is reached at slot 6's addresses") {
+        // $C0E9 is the motor, wherever the controller came from.
+        iic.getMMU().read(0xC0E9);
+        REQUIRE(iic.getDisk().isMotorOn());
+        iic.getMMU().read(0xC0EB);
+        REQUIRE(iic.getDisk().getSelectedDrive() == 1);
+    }
+
+    SECTION("and it cannot be taken out, because there is no socket") {
+        // Every slot on a //c is fixed, so none of them is the user's to
+        // change. The rule used to be spelled `slot == 3`, which is the //e's
+        // version of it and would have let a caller pull the IWM out of a
+        // machine with no way to put one back.
+        REQUIRE_FALSE(iic.setSlotCard(6, "empty"));
+        REQUIRE_FALSE(iic.setSlotCard(6, "smartport"));
+        REQUIRE(std::string(iic.getDisk().getName()) == "IWM");
+        REQUIRE(iic.getMMU().getCard(6) != nullptr);
+    }
+
+    SECTION("while a //e's slot 6 is a card, with its own ROM in it") {
+        Emulator iie(MachineId::AppleIIe);
+        iie.init();
+        REQUIRE(std::string(iie.getDisk().getName()) == "Disk II");
+        REQUIRE(iie.getDisk().hasROM());
+        REQUIRE(iie.getMMU().read(0xC600) == roms::ROM_DISK2[0]);
+    }
+}
+
+TEST_CASE("A //c's serial ports are on the board, and its firmware uses them",
+          "[machine][serial]") {
+    // Slots 1 and 2 on a //c decode what a Super Serial Card would, and a 6551
+    // answers behind each: the printer port at $C098 and the modem port at
+    // $C0A8. The test that matters is the machine's own firmware driving them,
+    // because PR# and IN# are how anything on an Apple II reaches a port, and
+    // that firmware is in the system ROM rather than in a card.
+    if (!Emulator::isMachineRunnable(MachineId::AppleIIc)) {
+        WARN("//c ROMs not built in; skipping the serial port test");
+        return;
+    }
+
+    Emulator e(MachineId::AppleIIc);
+    e.init();
+
+    REQUIRE(e.getSerialPort(1) != nullptr);
+    REQUIRE(e.getSerialPort(2) != nullptr);
+    REQUIRE(std::string(e.getSlotCardName(1)) == "serial1");
+    REQUIRE(std::string(e.getSlotCardName(2)) == "serial2");
+    REQUIRE(e.isSerialInstalled());
+    REQUIRE_FALSE(e.isSSCInstalled()); // and not by way of a card
+
+    // Neither port has a ROM, so slot 1 and 2's ROM space is the system ROM's.
+    REQUIRE_FALSE(e.getSerialPort(1)->hasROM());
+    REQUIRE(e.getMMU().read(0xC100) ==
+            e.getMMU().getSystemROM()[0xC100 - 0xC000]);
+
+    std::string sent;
+    e.setSerialTxCallback([&sent](uint8_t byte) {
+        sent += static_cast<char>(byte & 0x7F);
+    });
+
+    // The machine boots looking for a disk; Ctrl+Reset is what drops it into
+    // Applesoft, where PR# and IN# are available.
+    runFrames(e, 120);
+    e.warmReset();
+    runFrames(e, 120);
+    REQUIRE(showsApplesoftPrompt(e));
+
+    SECTION("PR#1 sends what the machine prints out of the printer port") {
+        e.pasteText("PR#1\rPRINT \"HELLO SERIAL\"\rPR#0\r");
+        runFrames(e, 600);
+
+        // Everything the machine echoed while the port was hooked up went down
+        // the line, the typed line included — which is what a real //c does,
+        // because PR# redirects the character output hook rather than just the
+        // program's output.
+        REQUIRE(sent.find("HELLO SERIAL") != std::string::npos);
+    }
+
+    SECTION("IN#2 takes what arrives at the modem port") {
+        e.pasteText("IN#2\r");
+        runFrames(e, 120);
+
+        const std::string typed = "PRINT 2+2\r";
+        for (char c : typed) {
+            e.serialReceive(static_cast<uint8_t>(c | 0x80));
+            runFrames(e, 10);
+        }
+        runFrames(e, 240);
+
+        bool answered = false;
+        for (const auto &line : visibleLines(e)) {
+            if (line.find('4') != std::string::npos) answered = true;
+        }
+        INFO("screen: " << (visibleLines(e).empty() ? "" : visibleLines(e).back()));
+        REQUIRE(answered);
+    }
+}
+
+TEST_CASE("A //c's mouse is the IOU, and its own firmware tracks it",
+          "[machine][mouse]") {
+    // A //e's mouse is a card: a PIA in a slot, a ROM on the card, and a
+    // command protocol over the PIA's ports. A //c's plugs into the back and
+    // its quadrature lines go into the IOU, so there is no card and no
+    // protocol — just an interrupt per unit of travel and a firmware handler
+    // in the system ROM that counts them.
+    //
+    // Which makes this the only test that proves the thing works: everything
+    // between the host moving a mouse and a program reading a position is
+    // Apple's code, and the only way to know it is being fed what it expects
+    // is to run it.
+    if (!Emulator::isMachineRunnable(MachineId::AppleIIc)) {
+        WARN("//c ROMs not built in; skipping the mouse test");
+        return;
+    }
+
+    Emulator e(MachineId::AppleIIc);
+    e.init();
+
+    REQUIRE(e.getMouseIOU() != nullptr);
+    REQUIRE(e.getMouseCard() == nullptr); // not a card, and not in a slot
+    REQUIRE(std::string(e.getSlotCardName(4)) == "mouse");
+    REQUIRE(e.isMouseInstalled());
+
+    runFrames(e, 120);
+    e.warmReset();
+    runFrames(e, 120);
+    REQUIRE(showsApplesoftPrompt(e));
+
+    auto &mmu = e.getMMU();
+
+    // The firmware's entry points are found the way any program finds them:
+    // through the offset table in the slot's ROM space, which on this machine
+    // is part of the system ROM.
+    auto entry = [&](uint16_t offsetAddress) {
+        return static_cast<uint16_t>(0xC400 | mmu.read(offsetAddress));
+    };
+    const uint16_t initMouse = entry(0xC419);
+    const uint16_t setMouse = entry(0xC412);
+    const uint16_t readMouse = entry(0xC414);
+
+    auto poke = [&](uint16_t address, const std::vector<uint8_t> &bytes) {
+        uint16_t at = address;
+        for (uint8_t byte : bytes) mmu.writeRAM(at++, byte);
+    };
+    // X = $Cn and Y = $n0, which is how every Apple mouse firmware call is
+    // made, whichever machine the firmware is on.
+    auto jsr = [](uint16_t routine) {
+        return std::vector<uint8_t>{0xA2, 0xC4, 0xA0, 0x40, 0x20,
+                                    static_cast<uint8_t>(routine & 0xFF),
+                                    static_cast<uint8_t>(routine >> 8)};
+    };
+    auto concat = [](std::vector<uint8_t> a, const std::vector<uint8_t> &b) {
+        a.insert(a.end(), b.begin(), b.end());
+        return a;
+    };
+
+    // $300: initialise the mouse, ask for movement interrupts (mode 1), and
+    // let interrupts in. Then back to BASIC, which carries on with the
+    // firmware's handler running underneath it.
+    poke(0x300, concat(concat(jsr(initMouse),
+                              {0xA2, 0xC4, 0xA0, 0x40, 0xA9, 0x01, 0x20,
+                               static_cast<uint8_t>(setMouse & 0xFF),
+                               static_cast<uint8_t>(setMouse >> 8)}),
+                       {0x58, 0x60})); // CLI, RTS
+
+    // $320: read the mouse, which is what a program does before looking.
+    poke(0x320, concat(jsr(readMouse), {0x60}));
+
+    e.pasteText("CALL 768\r");
+    runFrames(e, 60);
+
+    // Mode 1 is movement interrupts, and the firmware keeps it in the slot's
+    // screen hole. If this is not set, nothing below means anything.
+    REQUIRE(mmu.read(0x7FC) == 0x01);
+    REQUIRE(e.getMouseIOU()->movementInterruptsEnabled());
+
+    auto travel = [&](int dx, int dy) {
+        e.mouseMove(dx, dy);
+        runFrames(e, 30); // long enough for every step to be serviced
+    };
+    auto position = [&]() {
+        e.pasteText("CALL 800\r");
+        runFrames(e, 60);
+        return std::pair<int, int>{mmu.read(0x47C) | (mmu.read(0x57C) << 8),
+                                   mmu.read(0x4FC) | (mmu.read(0x5FC) << 8)};
+    };
+
+    travel(10, 5);
+    {
+        auto [x, y] = position();
+        INFO("x " << x << " y " << y);
+        REQUIRE(x == 10);
+        REQUIRE(y == 5); // down the screen is up in the count
+    }
+
+    SECTION("and it goes back the other way") {
+        travel(-4, -2);
+        auto [x, y] = position();
+        REQUIRE(x == 6);
+        REQUIRE(y == 3);
+    }
+
+    SECTION("and stops at the clamp rather than wrapping") {
+        // InitMouse clamps both axes to 0-1023, and the handler compares
+        // against those before it counts. A mouse shoved off the left edge
+        // stays at zero rather than becoming 65535.
+        travel(-500, 0);
+        auto [x, y] = position();
+        REQUIRE(x == 0);
+        REQUIRE(y == 5);
+    }
+
+    SECTION("the button arrives in the status byte") {
+        // Which is a second thing being proved: the button is only sampled in
+        // the firmware's vertical blanking path, so this only works if VBL
+        // interrupts reach it as well as movement ones.
+        e.mouseButton(true);
+        runFrames(e, 30);
+        position();
+        REQUIRE((mmu.read(0x77C) & 0x80) != 0); // bit 7: button is down
+
+        e.mouseButton(false);
+        runFrames(e, 30);
+        position();
+        REQUIRE((mmu.read(0x77C) & 0x80) == 0);
     }
 }
 
