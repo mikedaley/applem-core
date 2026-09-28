@@ -615,9 +615,10 @@ private:
   /**
    * Copy a write in bank $00 or $01 to the Mega II side, if that region is
    * being shadowed. Called after the write itself: shadowing is a copy, not a
-   * redirection, and fast RAM holds the value either way.
+   * redirection, and fast RAM holds the value either way. Says whether it
+   * copied, because the copy is a Mega II cycle the caller has to pay for.
    */
-  void shadowWrite(uint8_t bank, uint16_t offset, uint8_t value);
+  bool shadowWrite(uint8_t bank, uint16_t offset, uint8_t value);
   bool isShadowed(uint8_t bank, uint16_t offset) const;
 
   /**

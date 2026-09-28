@@ -454,6 +454,33 @@ TEST_CASE("The slow clock ticks on the accesses that reach the Mega II",
   }
 }
 
+TEST_CASE("A shadowed write waits for the Mega II", "[iigs][timing]") {
+  // Shadowing copies the write to the slow side, and the processor waits for
+  // that copy: drawing to a shadowed screen runs at 1MHz whatever the speed
+  // register says. A write nothing is watching stays a fast cycle.
+  IIgsMemory memory;
+  memory.write(0x00C036, 0x80); // fast
+  memory.takeSlowAccesses();
+  const uint64_t start = memory.slowCycles();
+
+  memory.write(bankAddress(0x01, 0x2000), 0x11); // Super Hi-Res, shadowed
+  REQUIRE(memory.slowCycles() == start + 1);
+  memory.write(bankAddress(0x00, 0x0400), 0x22); // text page 1, shadowed
+  REQUIRE(memory.slowCycles() == start + 2);
+  REQUIRE(memory.takeSlowAccesses() == 2);
+
+  memory.write(bankAddress(0x00, 0x1000), 0x33); // not a display region
+  memory.write(bankAddress(0x02, 0x2000), 0x44); // not a shadowed bank
+  REQUIRE(memory.slowCycles() == start + 2);
+
+  // Turn Super Hi-Res shadowing off and its region is fast RAM again.
+  memory.write(0x00C035, IIgsMemory::SHADOW_SUPER_HIRES |
+                         IIgsMemory::SHADOW_AUX_HIRES);
+  const uint64_t off = memory.slowCycles();
+  memory.write(bankAddress(0x01, 0x2000), 0x55);
+  REQUIRE(memory.slowCycles() == off);
+}
+
 TEST_CASE("A IIgs has a register for its slots and one for its drives",
           "[iigs]") {
   IIgsMemory memory;

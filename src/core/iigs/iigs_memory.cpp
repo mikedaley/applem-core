@@ -255,7 +255,12 @@ void IIgsMemory::write(uint32_t address, uint8_t value) {
     fastRam_[static_cast<size_t>(at) * BANK_SIZE + offset] = value;
     // ...and then again on the other side of the machine, if anything is
     // watching that address — the side being the bank the write landed in.
-    shadowWrite(at, offset, value);
+    // That second write is a Mega II cycle, and the processor waits for it
+    // exactly as it waits for a soft switch: a shadowed write runs at 1MHz
+    // whatever the speed register says. Charging it as a fast cycle made
+    // anything that draws to a shadowed screen run up to a tenth faster than
+    // a real machine. GSSquared charges the same (megaiiWrite, a SYNC cycle).
+    if (shadowWrite(at, offset, value)) slowAccess();
     return;
   }
 
@@ -909,11 +914,12 @@ bool IIgsMemory::isShadowed(uint8_t bank, uint16_t offset) const {
   return false;
 }
 
-void IIgsMemory::shadowWrite(uint8_t bank, uint16_t offset, uint8_t value) {
-  if (!isShadowed(bank, offset)) return;
+bool IIgsMemory::shadowWrite(uint8_t bank, uint16_t offset, uint8_t value) {
+  if (!isShadowed(bank, offset)) return false;
   // Bank $00 shadows into $E0 and bank $01 into $E1: main to main, auxiliary
   // to auxiliary.
   megaII_->writeRAM(offset, value, bank == 0x01);
+  return true;
 }
 
 
