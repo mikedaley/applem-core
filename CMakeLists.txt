@@ -426,6 +426,7 @@ if(EMSCRIPTEN)
                 \"_clearBasicError\", \
                 \"_insertSmartPortImage\", \
                 \"_ejectSmartPortImage\", \
+                \"_isSmartPortROMPending\", \
                 \"_isSmartPortImageInserted\", \
                 \"_getSmartPortImageFilename\", \
                 \"_isSmartPortImageModified\", \

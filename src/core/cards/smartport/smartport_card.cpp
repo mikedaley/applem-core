@@ -161,6 +161,7 @@ bool SmartPortCard::hasAnyDevice() const {
 }
 
 void SmartPortCard::reset() {
+    latchROM();
     booted_ = false;
     activity_ = false;
     activityWrite_ = false;
@@ -227,14 +228,16 @@ void SmartPortCard::writeIO(uint8_t offset, uint8_t value) {
 uint8_t SmartPortCard::peekROM(uint8_t offset) {
     // What the CPU would fetch, minus the trap: a debugger looking at the
     // entry point sees the SEC/RTS that is really there.
-    if (!hasAnyDevice()) return 0;
+    if (!hasROM()) return 0;
     if (offset == 0xFE) return prodosStatusByte();
     return rom_[offset];
 }
 
 uint8_t SmartPortCard::readROM(uint8_t offset) {
     // When no devices are loaded, hide the ROM so ProDOS doesn't detect this slot
-    if (!hasAnyDevice()) return 0;
+    // Follows the ROM rather than the images: on a IIgs the ROM stays until
+    // reset after the last image is ejected, and its traps answer "no device".
+    if (!hasROM()) return 0;
 
     // The entry points are traps, so what matters is whether the CPU is
     // *executing* this byte rather than reading it as data — a ProDOS scan
@@ -692,6 +695,11 @@ size_t SmartPortCard::deserialize(const uint8_t* buffer, size_t size) {
         }
     }
 
+    // A state does not say whether the ROM was showing. It almost always was
+    // if an image was in, since a state is saved from a running machine, so
+    // the restored card shows it; one inserted and saved before any reset is
+    // the rare case this gets wrong.
+    latchROM();
     return offset;
 }
 

@@ -418,6 +418,9 @@ private:
   Joyport joyport_;
   // Cycle after which the Joyport may drive PB0/PB1 again following a reset.
   uint64_t joyportResetGuardCycle_ = 0;
+  // The slow clock at the last reset: equal to it now means the CPU has not
+  // run since, which insertBlockImage needs to know.
+  uint64_t resetSlowCycle_ = 0;
   DiskController *disk_ = nullptr;   // Owned by the Mega II's slot
   SmartPortCard *smartPort_ = nullptr; // ...and so is this
 

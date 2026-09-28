@@ -24,6 +24,7 @@
 #include "audio/audio.hpp"
 #include "cards/disk_controller.hpp"
 #include "iigs_video.hpp"
+#include "cards/smartport/smartport_card.hpp"
 #include "input/joyport.hpp"
 #include "machine/machine_profile.hpp"
 #include "video/video.hpp"
@@ -1327,4 +1328,86 @@ TEST_CASE("A IIgs still starts with a Joyport fitted", "[iigs][gameport][joyport
   INFO("screen:\n" << screen);
   REQUIRE(screen.find("Fatal") == std::string::npos);
   REQUIRE(screen.find("Check startup device") != std::string::npos);
+}
+
+TEST_CASE("An image inserted while the firmware runs slot 5 waits for reset",
+          "[iigs][boot][smartport]") {
+  // With nothing inserted the machine's own slot 5 firmware shows through, and
+  // at "Check startup device!" the firmware runs it over and over. Inserting
+  // an image used to put the SmartPort's ROM there at once, under a CPU part
+  // way through the old code, and the machine landed in the monitor at
+  // whatever byte of the new ROM its next instruction fell on. The ROM now
+  // changes at reset: the insert is held, and Ctrl+Reset boots from it.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the SmartPort insert test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the SmartPort insert test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  // Deep inside the slot 5 firmware on one of its later passes: the insert
+  // that sent the machine to the monitor with a BRK at $00/C51F.
+  int visits = 0;
+  bool inserted = false;
+  for (int i = 0; i < 40000000; i++) {
+    const uint32_t pc = machine.cpu().getPCFull();
+    if ((pc & 0xFFFF00) == 0x00C500 && ++visits == 10) {
+      REQUIRE(machine.insertBlockImage(0, image.data(), image.size(), "hd.po"));
+      inserted = true;
+      break;
+    }
+    machine.step();
+  }
+  REQUIRE(inserted);
+  REQUIRE(machine.smartPort().isROMPending());
+
+  for (int i = 0; i < 20000000; i++) machine.step();
+  std::string text = screenText(machine);
+  INFO("screen:\n" << text);
+  REQUIRE(text.find("BRK") == std::string::npos);
+  REQUIRE(text.find("Check startup device") != std::string::npos);
+
+  machine.warmReset();
+  REQUIRE_FALSE(machine.smartPort().isROMPending());
+  for (int i = 0; i < 60000000 && !machine.cpu().isStopped(); i++) machine.step();
+  text = screenText(machine);
+  INFO("after Ctrl+Reset:\n" << text);
+  REQUIRE(text.find("BITSY.BOOT") != std::string::npos);
+}
+
+TEST_CASE("Ejecting the last image leaves the SmartPort's ROM until reset",
+          "[iigs][smartport]") {
+  // The same rule the other way: a program that calls $C50D after the image
+  // went must find the SmartPort, answering that the device is gone, and not
+  // the machine's own firmware appearing under it.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the SmartPort eject test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the SmartPort eject test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  // Before the CPU has run, the ROM appears at once.
+  REQUIRE(machine.insertBlockImage(0, image.data(), image.size(), "hd.po"));
+  REQUIRE(machine.smartPort().hasROM());
+
+  for (int i = 0; i < 1000000; i++) machine.step();
+  machine.ejectBlockImage(0);
+  REQUIRE(machine.smartPort().hasROM());
+
+  machine.warmReset();
+  REQUIRE_FALSE(machine.smartPort().hasROM());
 }

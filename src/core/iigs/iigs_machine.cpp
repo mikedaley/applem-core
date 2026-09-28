@@ -143,6 +143,9 @@ IIgsMachine::IIgsMachine(size_t fastRamSize)
     // into a card laid out like a card found an RTS there, came back without
     // its inline parameters skipped, and executed them.
     smartPort->setProDOSEntry(0x0A);
+    // Its ROM replaces the machine's own slot 5 firmware, so it changes only
+    // at reset (see SmartPortCard::setROMFollowsReset).
+    smartPort->setROMFollowsReset(true);
     smartPort->setMemReadCallback(
         [this](uint16_t address) { return memory_->read(address); });
     smartPort->setMemWriteCallback([this](uint16_t address, uint8_t value) {
@@ -253,6 +256,7 @@ void IIgsMachine::reset() {
   // starts, and it is why the memory map has to be right before the CPU is
   // allowed to fetch anything.
   cpu_->reset();
+  resetSlowCycle_ = memory_->slowCycles();
 }
 
 // One refresh cycle, ten fast cycles long in all, for every fifty 14M ticks
@@ -561,11 +565,17 @@ void IIgsMachine::warmReset() {
 
   // Emulation mode, the vector from ROM, exactly as at power on.
   cpu_->reset();
+  resetSlowCycle_ = memory_->slowCycles();
 }
 
 bool IIgsMachine::insertBlockImage(int device, const uint8_t *data, size_t size,
                                    const std::string &filename) {
-  return smartPort_ && smartPort_->insertImage(device, data, size, filename);
+  if (!smartPort_ || !smartPort_->insertImage(device, data, size, filename)) return false;
+  // Nothing has run since the last reset, so nothing is part way through the
+  // slot 5 firmware and the SmartPort's ROM can take its place now. That is a
+  // machine inserted into before it is started, which then boots from it.
+  if (memory_->slowCycles() == resetSlowCycle_) smartPort_->latchROM();
+  return true;
 }
 
 void IIgsMachine::ejectBlockImage(int device) {

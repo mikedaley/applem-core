@@ -40,7 +40,9 @@ public:
 
     uint8_t readROM(uint8_t offset) override;
     uint8_t peekROM(uint8_t offset) override;
-    bool hasROM() const override { return hasAnyDevice(); }
+    bool hasROM() const override {
+        return romFollowsReset_ ? romLatched_ : hasAnyDevice();
+    }
 
     void reset() override;
     const char* getName() const override { return "SmartPort"; }
@@ -64,6 +66,29 @@ public:
      * has to answer where the firmware would.
      */
     void setProDOSEntry(uint8_t offset);
+
+    /**
+     * Whether the ROM appears with the first image or at the next reset.
+     *
+     * A card of its own has no ROM while it is empty, and gains one the moment
+     * an image goes in. On a IIgs that ROM stands in for the machine's own
+     * slot 5 firmware, which shows through while the SmartPort is empty; and
+     * the firmware runs that code over and over while it looks for something
+     * to start from. Replacing it underneath a CPU that is part way through it
+     * sent the machine into the monitor, at whatever byte of the new ROM the
+     * old code's next instruction landed on. Firmware does not change under a
+     * running processor on real hardware, so here it changes at reset: an
+     * image inserted while the machine runs can be read at once, and the ROM
+     * that boots from it takes over at the next Ctrl+Reset or power on.
+     */
+    void setROMFollowsReset(bool enabled) {
+        romFollowsReset_ = enabled;
+        latchROM();
+    }
+    /** Show the ROM now if an image is inserted: at reset, or before the CPU has run. */
+    void latchROM() { romLatched_ = hasAnyDevice(); }
+    /** An image is inserted whose ROM will only appear at the next reset. */
+    bool isROMPending() const { return romFollowsReset_ && hasAnyDevice() && !romLatched_; }
     uint8_t prodosEntry() const { return prodosEntry_; }
     uint8_t smartPortEntry() const { return static_cast<uint8_t>(prodosEntry_ + 3); }
     uint8_t getSlotNumber() const { return slotNum_; }
@@ -135,6 +160,9 @@ public:
     void clearActivity() { activity_ = false; }
 
 private:
+    bool romFollowsReset_ = false;
+    bool romLatched_ = false;
+
     void buildROM();
     bool hasAnyDevice() const;
     bool handleBoot();
