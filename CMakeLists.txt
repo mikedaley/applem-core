@@ -201,6 +201,14 @@ if(EMSCRIPTEN)
                 \"_enableBreakpoint\", \
                 \"_isBreakpointHit\", \
                 \"_getBreakpointAddress\", \
+                \"_addBreakpointRange\", \
+                \"_removeBreakpointRange\", \
+                \"_enableBreakpointRange\", \
+                \"_addStackBreakpoint\", \
+                \"_removeStackBreakpoint\", \
+                \"_enableStackBreakpoint\", \
+                \"_isStackBreakpointHit\", \
+                \"_getStackBreakpointHitLow\", \
                 \"_addBasicBreakpoint\", \
                 \"_removeBasicBreakpoint\", \
                 \"_clearBasicBreakpoints\", \
@@ -1241,6 +1249,12 @@ else()
     add_catch2_test(test_condition_evaluator
         tests/unit/test_condition_evaluator.cpp
         ${CORE_TEST_SOURCES}
+    )
+
+    # Execution ranges and stack pointer breakpoints (MachineDebug alone)
+    add_catch2_test(test_machine_debug
+        tests/unit/test_machine_debug.cpp
+        src/core/debug/machine_debug.cpp
     )
 
     # Debug log sink (only debug_log.cpp)

@@ -276,3 +276,26 @@ TEST_CASE("The beam is where the machine's own clock says",
   REQUIRE(timing.cyclesPerScanline == 65);
   REQUIRE(timing.scanlinesPerFrame == 262);
 }
+
+TEST_CASE("An execution range stops a IIgs in the bank it names",
+          "[iigs][debug][breakpoint][range]") {
+  Program program(0x02, 0x0300, NOPS);
+  program.debug().addBreakpointRange(bankAddress(0x02, 0x0308),
+                                     bankAddress(0x02, 0x03FF));
+  program.machine.runCycles(1000);
+  REQUIRE(program.machine.isPaused());
+  REQUIRE(program.debug().isBreakpointHit());
+  REQUIRE(program.pc() == bankAddress(0x02, 0x0308));
+}
+
+TEST_CASE("A stack pointer breakpoint on a IIgs is sixteen bits",
+          "[iigs][debug][breakpoint][stack]") {
+  // PHA with a sixteen-bit accumulator, round and round: SP falls two at a
+  // time from $01FF.
+  Program program(0x02, 0x0300, {0x48, 0x80, 0xFD}); // PHA; BRA -3
+  program.debug().addStackBreakpoint(0x0100, 0x01E0);
+  program.machine.runCycles(2000);
+  REQUIRE(program.machine.isPaused());
+  REQUIRE(program.debug().isStackBreakpointHit());
+  REQUIRE(program.machine.cpu().getSP() == 0x01DF);
+}

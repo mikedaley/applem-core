@@ -7,6 +7,8 @@
 
 #include "machine_debug.hpp"
 
+#include <utility>
+
 namespace a2e {
 
 // ============================================================================
@@ -37,7 +39,10 @@ void MachineDebug::enableBreakpoint(uint32_t address, bool enabled) {
 void MachineDebug::clearBreakpoints() {
   breakpoints_.clear();
   disabledBreakpoints_.clear();
+  pcRanges_.clear();
+  spRanges_.clear();
   breakpointHit_ = false;
+  stackHit_ = false;
 }
 
 void MachineDebug::setTempBreakpoint(uint32_t address) {
@@ -52,8 +57,79 @@ void MachineDebug::clearTempBreakpoint() {
   tempHit_ = false;
 }
 
-bool MachineDebug::shouldBreakBefore(uint32_t pc) {
+// ============================================================================
+// Ranges that fire on entry
+// ============================================================================
+
+namespace {
+template <typename Ranges>
+auto findRange(Ranges &ranges, uint32_t low) {
+  for (auto it = ranges.begin(); it != ranges.end(); ++it) {
+    if (it->low == low) return it;
+  }
+  return ranges.end();
+}
+} // namespace
+
+void MachineDebug::addBreakpointRange(uint32_t start, uint32_t end) {
+  start &= 0xFFFFFF;
+  end &= 0xFFFFFF;
+  if (end < start) std::swap(start, end);
+  removeBreakpointRange(start);
+  pcRanges_.push_back({start, end, true, false, false});
+}
+
+void MachineDebug::removeBreakpointRange(uint32_t start) {
+  auto it = findRange(pcRanges_, start & 0xFFFFFF);
+  if (it != pcRanges_.end()) pcRanges_.erase(it);
+}
+
+void MachineDebug::enableBreakpointRange(uint32_t start, bool enabled) {
+  auto it = findRange(pcRanges_, start & 0xFFFFFF);
+  if (it != pcRanges_.end()) it->enabled = enabled;
+}
+
+void MachineDebug::addStackBreakpoint(uint32_t low, uint32_t high) {
+  low &= 0xFFFF;
+  high &= 0xFFFF;
+  if (high < low) std::swap(low, high);
+  removeStackBreakpoint(low);
+  spRanges_.push_back({low, high, true, false, false});
+}
+
+void MachineDebug::removeStackBreakpoint(uint32_t low) {
+  auto it = findRange(spRanges_, low & 0xFFFF);
+  if (it != spRanges_.end()) spRanges_.erase(it);
+  if (stackHit_ && stackHitLow_ == (low & 0xFFFF)) stackHit_ = false;
+}
+
+void MachineDebug::enableStackBreakpoint(uint32_t low, bool enabled) {
+  auto it = findRange(spRanges_, low & 0xFFFF);
+  if (it != spRanges_.end()) it->enabled = enabled;
+}
+
+MachineDebug::EntryRange *
+MachineDebug::entered(std::vector<EntryRange> &ranges, uint32_t value) {
+  EntryRange *hit = nullptr;
+  for (EntryRange &range : ranges) {
+    const bool inside = value >= range.low && value <= range.high;
+    const bool entering = inside && !range.inside && range.primed;
+    range.inside = inside;
+    range.primed = true;
+    if (entering && range.enabled && !hit) hit = &range;
+  }
+  return hit;
+}
+
+bool MachineDebug::shouldBreakBefore(uint32_t pc, uint32_t sp) {
   pc &= 0xFFFFFF;
+  sp &= 0xFFFF;
+
+  // The ranges are measured on every instruction, whatever else stops the
+  // machine here, so that entering one is always relative to the instruction
+  // before rather than to whenever it was last asked.
+  EntryRange *pcRange = pcRanges_.empty() ? nullptr : entered(pcRanges_, pc);
+  EntryRange *spRange = spRanges_.empty() ? nullptr : entered(spRanges_, sp);
 
   if (tempActive_ && pc == tempAddress_) {
     // Disarm first, then record the hit: clearTempBreakpoint() resets the hit
@@ -63,6 +139,17 @@ bool MachineDebug::shouldBreakBefore(uint32_t pc) {
     tempHit_ = true;
     breakpointHit_ = true;
     breakpointAddress_ = pc;
+    return true;
+  }
+
+  if (pcRange) {
+    breakpointHit_ = true;
+    breakpointAddress_ = pc;
+    return true;
+  }
+  if (spRange) {
+    stackHit_ = true;
+    stackHitLow_ = spRange->low;
     return true;
   }
 
@@ -237,6 +324,7 @@ MachineDebug::TraceEntry *MachineDebug::beginTraceEntry() {
 
 void MachineDebug::clearHits() {
   breakpointHit_ = false;
+  stackHit_ = false;
   tempHit_ = false;
   watchpointHit_ = false;
   beamHit_ = false;

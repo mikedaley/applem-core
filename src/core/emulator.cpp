@@ -393,7 +393,7 @@ void Emulator::runCycles(int cycles) {
     }
 
     // Breakpoints, the temporary one behind step over and step out included
-    if (debug_.shouldBreakBefore(cpu_->getPC())) {
+    if (debug_.shouldBreakBefore(cpu_->getPC(), cpu_->getSP())) {
       paused_ = true;
       return;
     }

@@ -54,6 +54,32 @@ public:
   bool isBreakpointHit() const { return breakpointHit_; }
   uint32_t breakpointAddress() const { return breakpointAddress_; }
 
+  // ===== Execution ranges =====
+  //
+  // An execution breakpoint over [start, end]. It fires when the program
+  // counter *enters* the range, not on every instruction inside it: stopping
+  // on each one would make Run inside a range the same as Step. A hit reports
+  // through breakpointHit_ like a single address, with the PC that entered.
+  // Identified by start.
+
+  void addBreakpointRange(uint32_t start, uint32_t end);
+  void removeBreakpointRange(uint32_t start);
+  void enableBreakpointRange(uint32_t start, bool enabled);
+
+  // ===== Stack pointer breakpoints =====
+  //
+  // Fires when the stack pointer enters [low, high], checked before each
+  // instruction, so the machine stops just after the one that moved it. The
+  // value is the SP register as the processor holds it: eight bits on a
+  // 6502, sixteen on a 65816. Identified by low. Reported through its own hit,
+  // because the host looks a PC breakpoint up by address and this is not one.
+
+  void addStackBreakpoint(uint32_t low, uint32_t high);
+  void removeStackBreakpoint(uint32_t low);
+  void enableStackBreakpoint(uint32_t low, bool enabled);
+  bool isStackBreakpointHit() const { return stackHit_; }
+  uint32_t stackBreakpointHitLow() const { return stackHitLow_; }
+
   /**
    * Run on past the breakpoint the machine is already sitting on.
    *
@@ -77,7 +103,7 @@ public:
    * temporary breakpoint is tested first and disarms itself: a step over that
    * left it armed would stop again on the next loop round the same code.
    */
-  bool shouldBreakBefore(uint32_t pc);
+  bool shouldBreakBefore(uint32_t pc, uint32_t sp);
 
   // ===== Watchpoints =====
 
@@ -196,6 +222,25 @@ public:
 private:
   std::set<uint32_t> breakpoints_;
   std::set<uint32_t> disabledBreakpoints_;
+
+  // A range that fires on entry, for the PC or for the SP. `primed` is false
+  // until the first check after it is added, which only records where things
+  // are: a range added around the code the machine is paused in must not fire
+  // the moment it resumes, because nothing entered it.
+  struct EntryRange {
+    uint32_t low;
+    uint32_t high;
+    bool enabled;
+    bool inside;
+    bool primed;
+  };
+  std::vector<EntryRange> pcRanges_;
+  std::vector<EntryRange> spRanges_;
+  bool stackHit_ = false;
+  uint32_t stackHitLow_ = 0;
+  // True when this value enters a range in the list; updates every range's
+  // state whatever it returns, so entering is measured against the last check.
+  static EntryRange *entered(std::vector<EntryRange> &ranges, uint32_t value);
   bool breakpointHit_ = false;
   uint32_t breakpointAddress_ = 0;
   bool skipBreakpointOnce_ = false;

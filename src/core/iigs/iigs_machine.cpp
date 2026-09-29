@@ -366,8 +366,9 @@ void IIgsMachine::runCycles(int slowCyclesToRun) {
     }
 
     // A breakpoint is an address the program counter reaches, and on this
-    // machine that address has a bank in it.
-    if (debug_.shouldBreakBefore(cpu_->getPCFull())) {
+    // machine that address has a bank in it. The stack pointer is all sixteen
+    // bits, $01xx in emulation mode.
+    if (debug_.shouldBreakBefore(cpu_->getPCFull(), cpu_->getSP())) {
       paused_ = true;
       return;
     }
