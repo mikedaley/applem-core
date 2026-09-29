@@ -145,6 +145,26 @@ TEST_CASE("Emulator isSmartPortCardInstalled reflects slot configuration", "[emu
     REQUIRE(true);
 }
 
+TEST_CASE("Refitting a slot with the card it holds keeps that card",
+          "[emulator][disk][smartport]") {
+    // The host applies the saved slot layout at startup, after it may have
+    // restored a hard drive image. Each refit used to build a new, empty
+    // SmartPort, so a //e came back from a reload with no drive in it.
+    Emulator emu;
+    emu.init();
+    REQUIRE(emu.setSlotCard(7, "smartport"));
+    std::vector<uint8_t> hdv(512 * 280, 0x00);
+    REQUIRE(emu.insertSmartPortImage(0, hdv.data(), hdv.size(), "test.hdv"));
+
+    REQUIRE(emu.setSlotCard(7, "smartport"));
+    REQUIRE(emu.isSmartPortImageInserted(0));
+
+    // A different card is still a change, and takes the drive with it.
+    REQUIRE(emu.setSlotCard(7, "thunderclock"));
+    REQUIRE(std::string(emu.getSlotCardName(7)) == "thunderclock");
+    REQUIRE_FALSE(emu.isSmartPortCardInstalled());
+}
+
 TEST_CASE("A //e boots a SmartPort image with a watchpoint armed",
           "[emulator][disk][smartport][debug]") {
     // While a watchpoint is armed every read is peeked first, and the peek

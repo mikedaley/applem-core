@@ -1206,6 +1206,15 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     return false;
   }
 
+  // Asking for the card that is already there changes nothing, and must not:
+  // refitting builds a new, empty card, and a SmartPort's images are in the
+  // card. The host applies the saved slot layout at startup, after it may
+  // already have restored an image, and every refit threw that image away.
+  // Restoring a state skips a same-card refit for the same reason.
+  if (strcmp(getSlotCardName(slot), cardId) == 0) {
+    return true;
+  }
+
   // Before any slot change, clean up existing special card pointers.
   // insertCard() destroys the old card, so dangling pointers must be cleared.
   ExpansionCard* existing = mmu_->getCard(slot);
