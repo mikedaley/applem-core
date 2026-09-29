@@ -145,6 +145,45 @@ TEST_CASE("Emulator isSmartPortCardInstalled reflects slot configuration", "[emu
     REQUIRE(true);
 }
 
+TEST_CASE("A //e boots a SmartPort image with a watchpoint armed",
+          "[emulator][disk][smartport][debug]") {
+    // While a watchpoint is armed every read is peeked first, and the peek
+    // used to read the card's ROM: each SmartPort call ran twice and the boot
+    // ended at a BRK in the monitor. ProDOS writes the watched address, so the
+    // loop resumes after each stop the way the debugger's Run button does.
+    FILE* file = fopen("public/disks/ProDOS 2.4.3.po", "rb");
+    if (!file) {
+        WARN("ProDOS image not found; skipping the SmartPort watchpoint test");
+        return;
+    }
+    std::vector<uint8_t> image;
+    for (int c; (c = fgetc(file)) != EOF;) image.push_back(static_cast<uint8_t>(c));
+    fclose(file);
+
+    for (const bool armed : {false, true}) {
+        INFO("watchpoint armed: " << armed);
+        Emulator emu;
+        emu.init();
+        REQUIRE(emu.setSlotCard(7, "smartport"));
+        REQUIRE(emu.insertSmartPortImage(0, image.data(), image.size(), "prodos.po"));
+        if (armed) emu.addWatchpoint(0x03D0, 0x03D0, Emulator::WP_WRITE);
+        emu.reset();
+        int stops = 0;
+        for (int i = 0; i < 60; i++) {
+            emu.runCycles(100000);
+            if (emu.isPaused()) {
+                stops++;
+                emu.setPaused(false);
+            }
+        }
+
+        if (armed) REQUIRE(stops > 0);
+        const std::string screen = emu.readScreenText(0, 0, 23, 79);
+        INFO("screen:\n" << screen);
+        REQUIRE(screen.find("BITSY") != std::string::npos);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Invalid data
 // ---------------------------------------------------------------------------

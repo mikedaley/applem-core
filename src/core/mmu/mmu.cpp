@@ -454,7 +454,12 @@ uint8_t MMU::peek(uint16_t address) const {
       uint8_t slot = (address >> 8) & 0x07;
       uint8_t offset = address & 0xFF;
       if (slot >= 1 && slot <= 7 && slots_[slot]) {
-        return slots_[slot]->readROM(offset);
+        // peekROM, never readROM: a card's ROM read can do things. A
+        // SmartPort's entry points are traps that run a whole block call, and
+        // read() peeks every address first while a watchpoint is armed, so
+        // readROM here ran each call twice and a //e booting a SmartPort
+        // image with any watchpoint set landed in the monitor.
+        return slots_[slot]->peekROM(offset);
       }
       return 0xFF;
     }
