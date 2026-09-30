@@ -326,3 +326,238 @@ TEST_CASE("WozDiskImage is move-assignable", "[woz]") {
     img2 = std::move(img1);
     REQUIRE(img2.isLoaded());
 }
+
+// ---------------------------------------------------------------------------
+// WOZ 2.1 flux tracks
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void putChunk(std::vector<uint8_t> &file, const char *id,
+              const std::vector<uint8_t> &data) {
+    file.insert(file.end(), id, id + 4);
+    uint32_t size = static_cast<uint32_t>(data.size());
+    for (int i = 0; i < 4; ++i) file.push_back((size >> (8 * i)) & 0xFF);
+    file.insert(file.end(), data.begin(), data.end());
+}
+
+// A WOZ 2.1 image with one track: a bit track in TMAP entry 0 on quarter
+// tracks 0-1, and a flux track in entry 1 that the FLUX chunk puts on quarter
+// track 0 over it. The bit track is all zeros so reading it by mistake shows.
+std::vector<uint8_t> buildFluxWoz(const std::vector<uint8_t> &flux) {
+    std::vector<uint8_t> file = {'W', 'O', 'Z', '2', 0xFF, 0x0A, 0x0D, 0x0A,
+                                 0, 0, 0, 0};
+
+    std::vector<uint8_t> info(60, 0);
+    info[0] = 3;  // INFO version 3
+    info[1] = 1;  // 5.25"
+    info[37] = 1; // one side
+    info[39] = 32;
+    putChunk(file, "INFO", info);
+
+    std::vector<uint8_t> tmap(160, 0xFF);
+    tmap[0] = 0;
+    tmap[1] = 0;
+    putChunk(file, "TMAP", tmap);
+
+    // The chunks take up the first four blocks; track data follows them
+    const uint16_t firstBlock = 4;
+    const size_t bitBlocks = 1;
+    const size_t fluxBlocks = (flux.size() + 511) / 512;
+    std::vector<uint8_t> trks(160 * 8, 0);
+    auto entry = [&](int i, uint16_t start, uint16_t count, uint32_t n) {
+        trks[i * 8 + 0] = start & 0xFF;
+        trks[i * 8 + 1] = start >> 8;
+        trks[i * 8 + 2] = count & 0xFF;
+        trks[i * 8 + 3] = count >> 8;
+        for (int b = 0; b < 4; ++b) trks[i * 8 + 4 + b] = (n >> (8 * b)) & 0xFF;
+    };
+    entry(0, firstBlock, bitBlocks, 4096);
+    entry(1, firstBlock + bitBlocks, static_cast<uint16_t>(fluxBlocks),
+          static_cast<uint32_t>(flux.size()));
+    putChunk(file, "TRKS", trks);
+
+    std::vector<uint8_t> fluxMap(160, 0xFF);
+    fluxMap[0] = 1;
+    putChunk(file, "FLUX", fluxMap);
+
+    REQUIRE(file.size() <= firstBlock * 512u);
+    file.resize((firstBlock + bitBlocks) * 512, 0); // the zero bit track
+    std::vector<uint8_t> data = flux;
+    data.resize(fluxBlocks * 512, 0);
+    file.insert(file.end(), data.begin(), data.end());
+    return file;
+}
+
+// Flux bytes for a list of intervals in 125ns ticks, 255 carrying over
+std::vector<uint8_t> fluxBytes(const std::vector<int> &intervals) {
+    std::vector<uint8_t> flux;
+    for (int ticks : intervals) {
+        while (ticks >= 255) {
+            flux.push_back(255);
+            ticks -= 255;
+        }
+        flux.push_back(static_cast<uint8_t>(ticks));
+    }
+    return flux;
+}
+
+// The sequencer tick each transition should arrive on: a tick is 7 cycles of
+// the 14.31818MHz clock, which is 176/45 of the flux data's 125ns. The track
+// is one revolution, so the last transition is also tick 0 of the next.
+std::vector<uint32_t> expectedTicks(const std::vector<int> &intervals) {
+    std::vector<uint32_t> ticks = {0};
+    uint64_t now = 0;
+    for (size_t i = 0; i + 1 < intervals.size(); ++i) {
+        now += intervals[i];
+        ticks.push_back(static_cast<uint32_t>(now * 45 / 176));
+    }
+    return ticks;
+}
+
+uint32_t trackTicks(const std::vector<int> &intervals) {
+    uint64_t now = 0;
+    for (int interval : intervals) now += interval;
+    return static_cast<uint32_t>(now * 45 / 176);
+}
+
+std::vector<uint32_t> pulseTicks(WozDiskImage &img, uint32_t count) {
+    std::vector<uint32_t> ticks;
+    for (uint32_t t = 0; t < count; ++t) {
+        if (img.readTick()) ticks.push_back(t);
+    }
+    return ticks;
+}
+
+// Fifteen cells written fast (3.7us) then the same fifteen written slow
+// (4.1us), as parts of the Sirius loader's tracks are
+const std::vector<int> TWO_SPEEDS = {
+    30, 59, 30, 30, 59, 30, 30, 30, 59, 30, 30, 30,
+    33, 65, 33, 33, 65, 33, 33, 33, 65, 33, 33, 33};
+
+} // namespace
+
+TEST_CASE("WozDiskImage plays a flux track back at its recorded timing", "[woz][flux]") {
+    auto file = buildFluxWoz(fluxBytes(TWO_SPEEDS));
+    WozDiskImage img;
+    REQUIRE(img.load(file.data(), file.size(), "flux.woz"));
+    REQUIRE(img.getFormatName() == "WOZ 2.1 (flux)");
+
+    img.setQuarterTrack(0);
+    REQUIRE(img.hasData());
+    REQUIRE(img.isTickTimed());
+
+    // Every transition arrives on the tick its time falls in, so a cell in
+    // the fast half is under eight ticks and one in the slow half is over,
+    // which is the difference a timing check measures
+    auto expected = expectedTicks(TWO_SPEEDS);
+    auto ticks = pulseTicks(img, trackTicks(TWO_SPEEDS));
+    REQUIRE(ticks == expected);
+
+    // ...and the next revolution starts where this one did
+    REQUIRE(img.readTick() == 1);
+
+    uint32_t fast = expected[12] - expected[0];
+    uint32_t slow = trackTicks(TWO_SPEEDS) - expected[12];
+    REQUIRE(fast < 15 * 8 - 4);
+    REQUIRE(slow > 15 * 8 + 4);
+}
+
+TEST_CASE("WozDiskImage takes a FLUX quarter track over TMAP's", "[woz][flux]") {
+    auto file = buildFluxWoz(fluxBytes(TWO_SPEEDS));
+    WozDiskImage img;
+    REQUIRE(img.load(file.data(), file.size(), "flux.woz"));
+
+    // Quarter track 0 is in both maps and plays the flux
+    img.setQuarterTrack(0);
+    REQUIRE(img.isTickTimed());
+
+    // Quarter track 1 is only in TMAP, so it reads the (zero) bit track
+    img.setQuarterTrack(1);
+    REQUIRE_FALSE(img.isTickTimed());
+    for (int i = 0; i < 64; ++i) REQUIRE(img.readBit() == 0);
+}
+
+TEST_CASE("WozDiskImage carries a flux count across 255 bytes", "[woz][flux]") {
+    // A gap of twenty cells is 626 ticks: 255, 255, 116
+    std::vector<int> intervals = {31, 626, 31};
+    auto flux = fluxBytes(intervals);
+    REQUIRE(flux == std::vector<uint8_t>{31, 255, 255, 116, 31});
+
+    auto file = buildFluxWoz(flux);
+    WozDiskImage img;
+    REQUIRE(img.load(file.data(), file.size(), "flux.woz"));
+    REQUIRE(pulseTicks(img, trackTicks(intervals)) == expectedTicks(intervals));
+}
+
+TEST_CASE("WozDiskImage saves a flux track as flux", "[woz][flux]") {
+    auto file = buildFluxWoz(fluxBytes(TWO_SPEEDS));
+    WozDiskImage img;
+    REQUIRE(img.load(file.data(), file.size(), "flux.woz"));
+
+    size_t size = 0;
+    const uint8_t *saved = img.exportData(&size);
+    REQUIRE(saved != nullptr);
+    std::vector<uint8_t> copy(saved, saved + size);
+
+    // INFO names the block the FLUX chunk starts on, and TMAP gives the
+    // quarter track up to it
+    const size_t info = 12 + 8;
+    REQUIRE(copy[info] == 3);
+    uint16_t fluxBlock = copy[info + 46] | (copy[info + 47] << 8);
+    REQUIRE(fluxBlock > 0);
+    REQUIRE(std::memcmp(&copy[fluxBlock * 512], "FLUX", 4) == 0);
+    REQUIRE(copy[fluxBlock * 512 + 8] == 1);
+    REQUIRE(copy[info + 60 + 8] == 0xFF);
+
+    WozDiskImage reloaded;
+    REQUIRE(reloaded.load(copy.data(), copy.size(), "saved.woz"));
+    REQUIRE(reloaded.getFormatName() == "WOZ 2.1 (flux)");
+    REQUIRE(pulseTicks(reloaded, trackTicks(TWO_SPEEDS)) ==
+            expectedTicks(TWO_SPEEDS));
+
+    // The bit track that shared the quarter track is still there
+    reloaded.setQuarterTrack(1);
+    REQUIRE(reloaded.hasData());
+    REQUIRE_FALSE(reloaded.isTickTimed());
+}
+
+TEST_CASE("WozDiskImage turns a flux track into bits when written", "[woz][flux]") {
+    auto file = buildFluxWoz(fluxBytes(TWO_SPEEDS));
+    WozDiskImage img;
+    REQUIRE(img.load(file.data(), file.size(), "flux.woz"));
+
+    // The first cell holds a 1 already, so this changes the kind, not the data
+    img.writeBit(1);
+    REQUIRE(img.isModified());
+    REQUIRE_FALSE(img.isTickTimed());
+
+    size_t size = 0;
+    const uint8_t *saved = img.exportData(&size);
+    std::vector<uint8_t> copy(saved, saved + size);
+    REQUIRE((copy[12 + 8 + 46] | (copy[12 + 8 + 47] << 8)) == 0);
+
+    WozDiskImage reloaded;
+    REQUIRE(reloaded.load(copy.data(), copy.size(), "saved.woz"));
+    REQUIRE(reloaded.getFormatName() == "WOZ 2.0");
+    std::vector<uint8_t> bits;
+    for (int i = 0; i < 30; ++i) bits.push_back(reloaded.readBit());
+    // Both halves are 1 01 1 1 01 1 1 1 01 1 1 1: the same cells at two speeds
+    std::vector<uint8_t> half = {1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1};
+    std::vector<uint8_t> expected = half;
+    expected.insert(expected.end(), half.begin(), half.end());
+    REQUIRE(bits == expected);
+}
+
+TEST_CASE("WozDiskImage keeps the disk's angle between flux and bit tracks", "[woz][flux]") {
+    auto file = buildFluxWoz(fluxBytes(TWO_SPEEDS));
+    WozDiskImage img;
+    REQUIRE(img.load(file.data(), file.size(), "flux.woz"));
+
+    img.setQuarterTrack(0);
+    pulseTicks(img, 8 * 20);             // twenty cells of flux
+    REQUIRE(img.getCurrentNibblePosition() == 2);
+    img.setQuarterTrack(1);              // onto the bit track
+    for (int i = 0; i < 4; ++i) img.readBit();
+    REQUIRE(img.getCurrentNibblePosition() == 3);
+}

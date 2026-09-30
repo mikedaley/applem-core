@@ -1,5 +1,5 @@
 /*
- * woz_disk_image.cpp - WOZ 1.0/2.0 bit-accurate disk image implementation
+ * woz_disk_image.cpp - WOZ 1.0/2.0/2.1 bit-accurate disk image implementation
  *
  * Written by
  *  Mike Daley <michael_daley@icloud.com>
@@ -7,6 +7,8 @@
 
 #include "woz_disk_image.hpp"
 #include "gcr_encoding.hpp"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace a2e {
@@ -20,6 +22,7 @@ void WozDiskImage::reset() {
   std::memset(&info_, 0, sizeof(info_));
   tmap_.fill(NO_TRACK);
   tracks_.clear();
+  has_flux_ = false;
 
   // Reset head positioning state
   phase_states_ = 0;
@@ -73,6 +76,7 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
   // Store TRKS chunk info for later processing (needs TMAP first)
   const uint8_t *trks_data = nullptr;
   uint32_t trks_size = 0;
+  const uint8_t *flux_map = nullptr;
 
   while (offset + sizeof(ChunkHeader) <= size) {
     const auto *chunk =
@@ -105,6 +109,14 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
       has_trks = true;
       break;
 
+    case FLUX_CHUNK_ID:
+      // WOZ 2.1: a second quarter-track map, naming TRKS entries that hold
+      // flux timings rather than bits
+      if (chunk->size >= QUARTER_TRACK_COUNT) {
+        flux_map = chunk_data;
+      }
+      break;
+
     default:
       // Skip unknown chunks (META, WRIT, etc.)
       break;
@@ -123,7 +135,7 @@ bool WozDiskImage::load(const uint8_t *data, size_t size,
   if (format_ == Format::WOZ1) {
     trks_ok = parseTrksChunkWoz1(trks_data, trks_size);
   } else {
-    trks_ok = parseTrksChunkWoz2(data, size, trks_data, trks_size);
+    trks_ok = parseTrksChunkWoz2(data, size, trks_data, trks_size, flux_map);
   }
 
   if (!trks_ok) {
@@ -199,7 +211,8 @@ bool WozDiskImage::parseTrksChunkWoz1(const uint8_t *data, uint32_t size) {
 
 bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size,
                                        const uint8_t *trks_data,
-                                       uint32_t trks_size) {
+                                       uint32_t trks_size,
+                                       const uint8_t *flux_map) {
   // WOZ2 TRKS: 160 track entries (8 bytes each) = 1280 bytes
   // Track data follows at block offsets specified in entries
   static constexpr size_t WOZ2_TRK_TABLE_SIZE = 160 * sizeof(Woz2TrackEntry);
@@ -210,7 +223,20 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
 
   const auto *entries = reinterpret_cast<const Woz2TrackEntry *>(trks_data);
 
-  // Find max track index referenced by TMAP
+  // Which entries hold flux rather than bits. The spec has a quarter track
+  // in FLUX take precedence over TMAP, so the flux map is folded into TMAP
+  // here and from then on the drive cannot tell the two kinds apart.
+  std::array<bool, 256> is_flux{};
+  if (flux_map) {
+    for (int i = 0; i < QUARTER_TRACK_COUNT; i++) {
+      if (flux_map[i] != NO_TRACK) {
+        is_flux[flux_map[i]] = true;
+        tmap_[i] = flux_map[i];
+      }
+    }
+  }
+
+  // Find max track index referenced by the map
   int max_track_index = -1;
   for (int i = 0; i < QUARTER_TRACK_COUNT; i++) {
     if (tmap_[i] != NO_TRACK && tmap_[i] > max_track_index) {
@@ -222,6 +248,8 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
     return true; // No tracks - empty disk
   }
 
+  // TRKS has 160 entries; a map naming one past them names nothing
+  max_track_index = std::min(max_track_index, QUARTER_TRACK_COUNT - 1);
   tracks_.resize(max_track_index + 1);
 
   // Load each track referenced by TMAP
@@ -243,6 +271,14 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
       continue; // Track extends past end of file
     }
 
+    if (is_flux[i]) {
+      // For a flux track the "bit count" field is a byte count
+      size_t flux_size = std::min<size_t>(entry.bit_count, track_size);
+      fluxToPulses(file_data + track_offset, flux_size, tracks_[i]);
+      has_flux_ = has_flux_ || tracks_[i].valid;
+      continue;
+    }
+
     tracks_[i].bit_count = entry.bit_count;
     tracks_[i].bits.assign(file_data + track_offset,
                            file_data + track_offset + track_size);
@@ -250,6 +286,136 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
   }
 
   return true;
+}
+
+// The flux data counts 125ns; the sequencer ticks every 7 cycles of the
+// 14.31818MHz (315/22 MHz) master clock. One flux tick is therefore 45/176 of
+// a sequencer tick, and a bit cell of eight sequencer ticks is 31.29 flux
+// ticks rather than the nominal 32. Using the machine's own clock keeps a
+// flux track the same length as a bit track of the same disk, so a
+// revolution takes the same emulated time whichever way it was stored.
+static constexpr uint64_t FLUX_TO_TICK_NUM = 45;
+static constexpr uint64_t FLUX_TO_TICK_DEN = 176;
+
+void WozDiskImage::fluxToPulses(const uint8_t *flux, size_t size,
+                                TrackData &out) {
+  out.bits.clear();
+  out.bit_count = 0;
+  out.valid = false;
+  out.flux = false;
+  out.flux_source.clear();
+
+  // Where each transition falls, in flux ticks from the start of the track
+  std::vector<uint64_t> times;
+  times.reserve(size);
+  uint64_t now = 0;
+  for (size_t i = 0; i < size; i++) {
+    now += flux[i];
+    if (flux[i] != 0xFF) {
+      times.push_back(now);
+    }
+  }
+  // The track is one revolution: its length is the time to the last
+  // transition, and the first interval is measured from the one before it
+  uint64_t ticks = now * FLUX_TO_TICK_NUM / FLUX_TO_TICK_DEN;
+  if (times.empty() || ticks == 0) {
+    return;
+  }
+
+  out.bits.assign((ticks + 7) / 8, 0);
+  for (uint64_t t : times) {
+    uint64_t tick = (t * FLUX_TO_TICK_NUM / FLUX_TO_TICK_DEN) % ticks;
+    out.bits[tick / 8] |= static_cast<uint8_t>(0x80 >> (tick % 8));
+  }
+  out.bit_count = static_cast<uint32_t>(ticks);
+  out.flux_source.assign(flux, flux + size);
+  out.flux = true;
+  out.valid = true;
+}
+
+void WozDiskImage::fluxToBits(const uint8_t *flux, size_t size,
+                              TrackData &out) {
+  static constexpr double FLUX_TICKS_PER_CELL =
+      double(TICKS_PER_CELL) * FLUX_TO_TICK_DEN / FLUX_TO_TICK_NUM;
+
+  out.bits.clear();
+  out.bit_count = 0;
+  out.valid = false;
+  out.flux = false;
+  out.flux_source.clear();
+
+  std::vector<uint8_t> bits;
+  bits.reserve(size * 2 / 8 + 1);
+  uint32_t bit_count = 0;
+  auto push = [&](uint8_t bit) {
+    if ((bit_count & 7) == 0) {
+      bits.push_back(0);
+    }
+    if (bit) {
+      bits.back() |= static_cast<uint8_t>(0x80 >> (bit_count & 7));
+    }
+    bit_count++;
+  };
+
+  uint32_t ticks = 0;
+  for (size_t i = 0; i < size; i++) {
+    ticks += flux[i];
+    if (flux[i] == 0xFF) {
+      continue; // the count carries on into the next byte
+    }
+    // Rounded to the nearest whole cell, and never less than one: two
+    // transitions inside a cell still read as one pulse
+    long cells = std::lround(ticks / FLUX_TICKS_PER_CELL);
+    if (cells < 1) {
+      cells = 1;
+    }
+    for (long c = 1; c < cells; c++) {
+      push(0);
+    }
+    push(1);
+    ticks = 0;
+  }
+
+  if (bit_count == 0) {
+    return;
+  }
+  out.bits = std::move(bits);
+  out.bit_count = bit_count;
+  out.valid = true;
+}
+
+void WozDiskImage::convertFluxTrackToBits(TrackData &track) {
+  if (!track.flux) {
+    return;
+  }
+  const bool current = getCurrentTrackData() == &track;
+  const uint32_t ticks = track.bit_count;
+  std::vector<uint8_t> source = std::move(track.flux_source);
+  fluxToBits(source.data(), source.size(), track);
+  if (current && ticks > 0 && track.bit_count > 0) {
+    bit_position_ = static_cast<uint32_t>(
+        uint64_t(bit_position_ % ticks) * track.bit_count / ticks);
+  }
+}
+
+bool WozDiskImage::isFluxAt(int quarter_track) const {
+  if (quarter_track < 0 || quarter_track >= QUARTER_TRACK_COUNT) {
+    return false;
+  }
+  uint8_t index = tmap_[quarter_track];
+  return index != NO_TRACK && index < tracks_.size() &&
+         tracks_[index].valid && tracks_[index].flux;
+}
+
+void WozDiskImage::moveHeadTo(int quarter_track) {
+  const bool was_flux = isFluxAt(quarter_track_);
+  quarter_track_ = quarter_track;
+  const bool is_flux = isFluxAt(quarter_track_);
+  if (was_flux && !is_flux) {
+    bit_position_ /= TICKS_PER_CELL;
+  } else if (!was_flux && is_flux) {
+    bit_position_ *= TICKS_PER_CELL;
+  }
 }
 
 void WozDiskImage::createBlank() {
@@ -411,8 +577,8 @@ void WozDiskImage::updateHeadPosition() {
   }
 
   if (direction != 0) {
-    quarter_track_ = std::max(
-        0, std::min(QUARTER_TRACK_COUNT - 1, quarter_track_ + 2 * direction));
+    moveHeadTo(std::max(
+        0, std::min(QUARTER_TRACK_COUNT - 1, quarter_track_ + 2 * direction)));
   }
   // If both or neither neighbouring magnets are energised, the head is settled.
 }
@@ -422,7 +588,14 @@ int WozDiskImage::getQuarterTrack() const { return quarter_track_; }
 int WozDiskImage::getTrack() const { return quarter_track_ / 4; }
 
 void WozDiskImage::setQuarterTrack(int quarter_track) {
-  quarter_track_ = std::max(0, std::min(quarter_track, QUARTER_TRACK_COUNT - 1));
+  moveHeadTo(std::max(0, std::min(quarter_track, QUARTER_TRACK_COUNT - 1)));
+}
+
+size_t WozDiskImage::getCurrentNibblePosition() const {
+  const TrackData *track = getCurrentTrackData();
+  uint32_t cells = (track && track->flux) ? bit_position_ / TICKS_PER_CELL
+                                          : bit_position_;
+  return cells / 8;
 }
 
 bool WozDiskImage::hasData() const {
@@ -463,8 +636,10 @@ void WozDiskImage::advanceBitPosition(uint64_t elapsed_cycles) {
     return;
   }
 
-  // Calculate how many bits have passed
-  uint32_t bits_elapsed = static_cast<uint32_t>(elapsed_cycles / CYCLES_PER_BIT);
+  // Calculate how many bits have passed (two sequencer ticks to a cycle)
+  uint32_t bits_elapsed =
+      track->flux ? static_cast<uint32_t>(elapsed_cycles * 2)
+                  : static_cast<uint32_t>(elapsed_cycles / CYCLES_PER_BIT);
 
   // Advance bit position (wrapping around track)
   bit_position_ = (bit_position_ + bits_elapsed) % track->bit_count;
@@ -503,8 +678,7 @@ uint8_t WozDiskImage::readNibble() {
   static constexpr int MAX_BITS = 64; // Safety limit
 
   while (bits_read < MAX_BITS) {
-    uint8_t bit = readBitInternal();
-    bit_position_ = (bit_position_ + 1) % track->bit_count;
+    uint8_t bit = readBit();
     bits_read++;
 
     if (bit) {
@@ -535,7 +709,7 @@ std::string WozDiskImage::getFormatName() const {
   case Format::WOZ1:
     return "WOZ 1.0";
   case Format::WOZ2:
-    return "WOZ 2.0";
+    return has_flux_ ? "WOZ 2.1 (flux)" : "WOZ 2.0";
   default:
     return "Unknown";
   }
@@ -564,14 +738,37 @@ std::string WozDiskImage::getDiskTypeString() const {
 uint8_t WozDiskImage::readBit() {
   const TrackData *track = getCurrentTrackData();
   if (!track || track->bit_count == 0) return 0;
+  if (track->flux) {
+    // A cell's worth of ticks: a 1 if any transition arrived in it
+    uint8_t bit = 0;
+    for (uint32_t i = 0; i < TICKS_PER_CELL; i++) {
+      bit |= readTick();
+    }
+    return bit;
+  }
   uint8_t bit = readBitInternal();
   bit_position_ = (bit_position_ + 1) % track->bit_count;
   return bit;
 }
 
+bool WozDiskImage::isTickTimed() const {
+  const TrackData *track = getCurrentTrackData();
+  return track && track->flux;
+}
+
+uint8_t WozDiskImage::readTick() {
+  const TrackData *track = getCurrentTrackData();
+  if (!track || track->bit_count == 0) return 0;
+  // A flux track's bits are one per tick, so this is the bit-stream read
+  uint8_t pulse = readBitInternal();
+  bit_position_ = (bit_position_ + 1) % track->bit_count;
+  return pulse;
+}
+
 void WozDiskImage::writeBit(uint8_t bit) {
   TrackData *track = getMutableCurrentTrackData();
   if (!track || track->bit_count == 0) return;
+  convertFluxTrackToBits(*track);
   writeBitInternal(bit);
   bit_position_ = (bit_position_ + 1) % track->bit_count;
   modified_ = true;
@@ -628,6 +825,7 @@ void WozDiskImage::writeNibble(uint8_t nibble) {
   if (!track || track->bit_count == 0) {
     return;
   }
+  convertFluxTrackToBits(*track);
 
   // Write 8 bits, MSB first
   for (int i = 7; i >= 0; i--) {
@@ -677,120 +875,130 @@ const uint8_t *WozDiskImage::exportData(size_t *size) {
     return nullptr;
   }
 
-  // Calculate required size for WOZ2 format
-  // Header: 12 bytes
-  // INFO chunk: 8 (header) + 60 (data) = 68 bytes
-  // TMAP chunk: 8 (header) + 160 (data) = 168 bytes
-  // TRKS chunk: 8 (header) + 1280 (track table) = 1288 bytes
-  // Total header area: pad to block 3 (1536 bytes)
-  static constexpr size_t HEADER_SIZE = 12;
-  static constexpr size_t INFO_CHUNK_SIZE = 68;
-  static constexpr size_t TMAP_CHUNK_SIZE = 168;
-  static constexpr size_t TRKS_HEADER_SIZE = 8;
-  static constexpr size_t TRKS_TABLE_SIZE = 160 * 8;  // 1280 bytes
+  // WOZ2 layout: the header and the INFO, TMAP and TRKS chunk headers fill
+  // the first three blocks exactly, and the TRKS chunk runs on over the track
+  // data that follows them. A flux track is written back as the flux bytes it
+  // was loaded from, mapped by a FLUX chunk after the tracks (WOZ 2.1), which
+  // has to start on a block boundary because INFO names it by block.
+  static constexpr size_t TRKS_TABLE_SIZE = 160 * 8; // 1280 bytes
   static constexpr size_t TRACK_DATA_START_BLOCK = 3;
   static constexpr size_t BLOCK_SIZE = 512;
+  static constexpr size_t FLUX_CHUNK_SIZE = 8 + QUARTER_TRACK_COUNT;
 
-  // Count tracks and calculate total track data size
+  auto trackBytes = [](const TrackData &track) -> size_t {
+    if (!track.valid || track.bit_count == 0) return 0;
+    return track.flux ? track.flux_source.size() : (track.bit_count + 7) / 8;
+  };
+  auto blocksFor = [](size_t bytes) {
+    return (bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  };
+
   size_t total_track_blocks = 0;
-  for (size_t i = 0; i < tracks_.size(); i++) {
-    if (tracks_[i].valid && tracks_[i].bit_count > 0) {
-      size_t track_bytes = (tracks_[i].bit_count + 7) / 8;
-      size_t track_blocks = (track_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
-      total_track_blocks += track_blocks;
+  size_t largest_blocks = 0;
+  size_t largest_flux_blocks = 0;
+  bool any_flux = false;
+  size_t track_count = std::min<size_t>(tracks_.size(), 160);
+  for (size_t i = 0; i < track_count; i++) {
+    size_t blocks = blocksFor(trackBytes(tracks_[i]));
+    total_track_blocks += blocks;
+    if (tracks_[i].flux) {
+      any_flux = true;
+      largest_flux_blocks = std::max(largest_flux_blocks, blocks);
+    } else {
+      largest_blocks = std::max(largest_blocks, blocks);
     }
   }
 
-  size_t total_size = TRACK_DATA_START_BLOCK * BLOCK_SIZE + total_track_blocks * BLOCK_SIZE;
-  export_buffer_.resize(total_size);
-  std::fill(export_buffer_.begin(), export_buffer_.end(), 0);
+  const size_t flux_block = TRACK_DATA_START_BLOCK + total_track_blocks;
+  size_t total_size = flux_block * BLOCK_SIZE;
+  if (any_flux) {
+    total_size += FLUX_CHUNK_SIZE;
+  }
+  export_buffer_.assign(total_size, 0);
 
   size_t offset = 0;
+  auto u8 = [&](uint8_t v) { export_buffer_[offset++] = v; };
+  auto u32 = [&](uint32_t v) {
+    for (int i = 0; i < 4; i++) u8((v >> (8 * i)) & 0xFF);
+  };
+  auto id = [&](const char *name) {
+    for (int i = 0; i < 4; i++) u8(static_cast<uint8_t>(name[i]));
+  };
 
   // === WOZ2 Header (12 bytes) ===
-  export_buffer_[offset++] = 0x57;  // 'W'
-  export_buffer_[offset++] = 0x4F;  // 'O'
-  export_buffer_[offset++] = 0x5A;  // 'Z'
-  export_buffer_[offset++] = 0x32;  // '2'
-  export_buffer_[offset++] = 0xFF;  // High bit
-  export_buffer_[offset++] = 0x0A;  // LF
-  export_buffer_[offset++] = 0x0D;  // CR
-  export_buffer_[offset++] = 0x0A;  // LF
-  // CRC32 placeholder (not validated by loader)
-  export_buffer_[offset++] = 0x00;
-  export_buffer_[offset++] = 0x00;
-  export_buffer_[offset++] = 0x00;
-  export_buffer_[offset++] = 0x00;
+  id("WOZ2");
+  u8(0xFF);
+  u8(0x0A);
+  u8(0x0D);
+  u8(0x0A);
+  u32(0); // CRC32: zero means not computed, which the spec allows
 
   // === INFO Chunk ===
-  export_buffer_[offset++] = 0x49;  // 'I'
-  export_buffer_[offset++] = 0x4E;  // 'N'
-  export_buffer_[offset++] = 0x46;  // 'F'
-  export_buffer_[offset++] = 0x4F;  // 'O'
-  // Chunk size: 60 bytes
-  export_buffer_[offset++] = 60;
-  export_buffer_[offset++] = 0;
-  export_buffer_[offset++] = 0;
-  export_buffer_[offset++] = 0;
-  // Copy INFO data
-  std::memcpy(&export_buffer_[offset], &info_, sizeof(info_));
-  offset += 60;
+  InfoChunk info = info_;
+  if (any_flux) {
+    info.version = std::max<uint8_t>(info.version, 3);
+    info.flux_block = static_cast<uint16_t>(flux_block);
+    info.largest_flux_track = static_cast<uint16_t>(largest_flux_blocks);
+  } else {
+    info.flux_block = 0;
+    info.largest_flux_track = 0;
+  }
+  info.largest_track = static_cast<uint16_t>(largest_blocks);
+  id("INFO");
+  u32(sizeof(info));
+  std::memcpy(&export_buffer_[offset], &info, sizeof(info));
+  offset += sizeof(info);
 
-  // === TMAP Chunk ===
-  export_buffer_[offset++] = 0x54;  // 'T'
-  export_buffer_[offset++] = 0x4D;  // 'M'
-  export_buffer_[offset++] = 0x41;  // 'A'
-  export_buffer_[offset++] = 0x50;  // 'P'
-  // Chunk size: 160 bytes
-  export_buffer_[offset++] = 160;
-  export_buffer_[offset++] = 0;
-  export_buffer_[offset++] = 0;
-  export_buffer_[offset++] = 0;
-  // Copy TMAP data
-  std::memcpy(&export_buffer_[offset], tmap_.data(), QUARTER_TRACK_COUNT);
+  // === TMAP Chunk, and the FLUX map it hands flux tracks to ===
+  std::array<uint8_t, QUARTER_TRACK_COUNT> tmap = tmap_;
+  std::array<uint8_t, QUARTER_TRACK_COUNT> flux_map;
+  flux_map.fill(NO_TRACK);
+  for (int qt = 0; qt < QUARTER_TRACK_COUNT; qt++) {
+    if (isFluxAt(qt)) {
+      flux_map[qt] = tmap_[qt];
+      tmap[qt] = NO_TRACK;
+    }
+  }
+  id("TMAP");
+  u32(QUARTER_TRACK_COUNT);
+  std::memcpy(&export_buffer_[offset], tmap.data(), QUARTER_TRACK_COUNT);
   offset += QUARTER_TRACK_COUNT;
 
   // === TRKS Chunk ===
-  export_buffer_[offset++] = 0x54;  // 'T'
-  export_buffer_[offset++] = 0x52;  // 'R'
-  export_buffer_[offset++] = 0x4B;  // 'K'
-  export_buffer_[offset++] = 0x53;  // 'S'
-  // Chunk size: track table only (1280 bytes)
-  export_buffer_[offset++] = TRKS_TABLE_SIZE & 0xFF;
-  export_buffer_[offset++] = (TRKS_TABLE_SIZE >> 8) & 0xFF;
-  export_buffer_[offset++] = (TRKS_TABLE_SIZE >> 16) & 0xFF;
-  export_buffer_[offset++] = (TRKS_TABLE_SIZE >> 24) & 0xFF;
+  id("TRKS");
+  u32(static_cast<uint32_t>(TRKS_TABLE_SIZE + total_track_blocks * BLOCK_SIZE));
 
-  // Build track entries and copy track data
   size_t current_block = TRACK_DATA_START_BLOCK;
-  size_t track_table_offset = offset;
-
   for (size_t i = 0; i < 160; i++) {
-    if (i < tracks_.size() && tracks_[i].valid && tracks_[i].bit_count > 0) {
-      const TrackData &track = tracks_[i];
-      size_t track_bytes = (track.bit_count + 7) / 8;
-      size_t block_count = (track_bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-      // Write track entry
-      export_buffer_[track_table_offset + i * 8 + 0] = current_block & 0xFF;
-      export_buffer_[track_table_offset + i * 8 + 1] = (current_block >> 8) & 0xFF;
-      export_buffer_[track_table_offset + i * 8 + 2] = block_count & 0xFF;
-      export_buffer_[track_table_offset + i * 8 + 3] = (block_count >> 8) & 0xFF;
-      export_buffer_[track_table_offset + i * 8 + 4] = track.bit_count & 0xFF;
-      export_buffer_[track_table_offset + i * 8 + 5] = (track.bit_count >> 8) & 0xFF;
-      export_buffer_[track_table_offset + i * 8 + 6] = (track.bit_count >> 16) & 0xFF;
-      export_buffer_[track_table_offset + i * 8 + 7] = (track.bit_count >> 24) & 0xFF;
-
-      // Copy track data
-      size_t data_offset = current_block * BLOCK_SIZE;
-      size_t copy_size = std::min(track.bits.size(), block_count * BLOCK_SIZE);
-      std::memcpy(&export_buffer_[data_offset], track.bits.data(), copy_size);
-
-      current_block += block_count;
-    } else {
-      // Empty track entry
-      std::memset(&export_buffer_[track_table_offset + i * 8], 0, 8);
+    size_t bytes = i < track_count ? trackBytes(tracks_[i]) : 0;
+    if (bytes == 0) {
+      offset += 8; // empty entry, already zero
+      continue;
     }
+    const TrackData &track = tracks_[i];
+    size_t block_count = blocksFor(bytes);
+    // A flux track's count is of bytes, a bit track's of bits
+    uint32_t count = track.flux ? static_cast<uint32_t>(bytes) : track.bit_count;
+
+    u8(current_block & 0xFF);
+    u8((current_block >> 8) & 0xFF);
+    u8(block_count & 0xFF);
+    u8((block_count >> 8) & 0xFF);
+    u32(count);
+
+    const uint8_t *data = track.flux ? track.flux_source.data() : track.bits.data();
+    std::memcpy(&export_buffer_[current_block * BLOCK_SIZE], data,
+                std::min(bytes, track.flux ? track.flux_source.size()
+                                           : track.bits.size()));
+    current_block += block_count;
+  }
+
+  // === FLUX Chunk ===
+  if (any_flux) {
+    offset = flux_block * BLOCK_SIZE;
+    id("FLUX");
+    u32(QUARTER_TRACK_COUNT);
+    std::memcpy(&export_buffer_[offset], flux_map.data(), QUARTER_TRACK_COUNT);
   }
 
   *size = export_buffer_.size();
@@ -806,7 +1014,13 @@ std::vector<uint8_t> WozDiskImage::readTrackNibbles(size_t track_index) const {
     return nibbles;
   }
 
-  const TrackData &track = tracks_[track_index];
+  // A flux track is read as the cells a drive would see in it
+  TrackData cells;
+  if (tracks_[track_index].flux) {
+    const auto &source = tracks_[track_index].flux_source;
+    fluxToBits(source.data(), source.size(), cells);
+  }
+  const TrackData &track = tracks_[track_index].flux ? cells : tracks_[track_index];
   if (track.bit_count == 0) {
     return nibbles;
   }

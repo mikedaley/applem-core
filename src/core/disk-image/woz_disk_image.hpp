@@ -1,5 +1,5 @@
 /*
- * woz_disk_image.hpp - WOZ 1.0/2.0 bit-accurate disk image format support
+ * woz_disk_image.hpp - WOZ 1.0/2.0/2.1 bit-accurate disk image format support
  *
  * Written by
  *  Mike Daley <michael_daley@icloud.com>
@@ -30,7 +30,10 @@ namespace a2e {
  *
  * File format reference: https://applesaucefdc.com/woz/
  *
- * This implementation supports both WOZ 1.0 and WOZ 2.0 formats.
+ * This implementation supports WOZ 1.0, 2.0 and 2.1. A 2.1 image may hold
+ * some tracks as flux timings (the FLUX chunk) rather than bits; those are
+ * converted to a bit stream when the image is loaded, so the drive reads
+ * every track the same way. See fluxToBits().
  */
 class WozDiskImage : public DiskImage {
 public:
@@ -71,6 +74,8 @@ public:
   // Bit-level access (for LSS)
   uint8_t readBit() override;
   void writeBit(uint8_t bit) override;
+  bool isTickTimed() const override;
+  uint8_t readTick() override;
 
   bool isWriteProtected() const override;
   bool isModified() const override { return modified_; }
@@ -81,7 +86,7 @@ public:
   // ===== Debug Methods =====
   uint8_t getNibbleAt(int track, int position) const override;
   int getTrackNibbleCount(int track) const override;
-  size_t getCurrentNibblePosition() const override { return bit_position_ / 8; }
+  size_t getCurrentNibblePosition() const override;
 
   // ===== WOZ-specific methods =====
 
@@ -137,6 +142,7 @@ private:
   static constexpr uint32_t INFO_CHUNK_ID = 0x4F464E49;  // "INFO"
   static constexpr uint32_t TMAP_CHUNK_ID = 0x50414D54;  // "TMAP"
   static constexpr uint32_t TRKS_CHUNK_ID = 0x534B5254;  // "TRKS"
+  static constexpr uint32_t FLUX_CHUNK_ID = 0x58554C46;  // "FLUX"
 
   // Quarter-track mapping
   static constexpr int QUARTER_TRACK_COUNT = 160;
@@ -180,8 +186,11 @@ private:
     uint16_t compatible_hardware; // Bit field of compatible hardware
     uint16_t required_ram;        // Minimum RAM in KB
     uint16_t largest_track;       // Block count of largest track
+    uint16_t flux_block;          // INFO v3: block of the FLUX chunk (0 = none)
+    uint16_t largest_flux_track;  // INFO v3: block count of largest flux track
     uint8_t reserved[10];         // Padding to 60 bytes
   };
+  static_assert(sizeof(InfoChunk) == 60, "INFO chunk is 60 bytes");
 
   /**
    * WOZ2 TRKS chunk entry (8 bytes per track)
@@ -195,12 +204,22 @@ private:
 
   /**
    * Internal track data storage
+   *
+   * A flux track keeps the bytes it was loaded from, which are what it is
+   * saved as, and plays them back as a pulse stream with one bit per tick of
+   * the sequencer's clock (eight to a cell) in `bits`. Writing to it turns it
+   * into an ordinary bit track: what the drive lays down is bits.
    */
   struct TrackData {
-    std::vector<uint8_t> bits; // Raw bit data
-    uint32_t bit_count = 0;    // Number of valid bits
+    std::vector<uint8_t> bits; // Raw bit data, or pulses per tick if flux
+    uint32_t bit_count = 0;    // Number of valid bits (ticks if flux)
     bool valid = false;        // Track has data
+    bool flux = false;         // Loaded from the FLUX chunk and not written
+    std::vector<uint8_t> flux_source; // The FLUX bytes, when flux
   };
+
+  // Ticks of the sequencer's clock (14.31818MHz / 7) per bit cell
+  static constexpr uint32_t TICKS_PER_CELL = 8;
 
   // Loaded file info
   Format format_ = Format::Unknown;
@@ -222,6 +241,9 @@ private:
 
   // Track data storage (indexed by TMAP values, not quarter-track)
   std::vector<TrackData> tracks_;
+
+  // Whether any track was loaded from flux timings
+  bool has_flux_ = false;
 
   // ===== Head positioning state =====
   uint8_t phase_states_ = 0; // Bit field for phase magnet states (bits 0-3)
@@ -270,10 +292,59 @@ private:
    * @param file_size File size
    * @param trks_data TRKS chunk data
    * @param trks_size TRKS chunk size
+   * @param flux_map  The FLUX chunk's 160 quarter-track entries, or nullptr.
+   *                  A quarter track it maps takes its data from the flux
+   *                  track named there, in place of whatever TMAP says
    * @return true on success
    */
   bool parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size,
-                          const uint8_t *trks_data, uint32_t trks_size);
+                          const uint8_t *trks_data, uint32_t trks_size,
+                          const uint8_t *flux_map);
+
+  /**
+   * Turn one revolution of flux timings into a pulse stream: bit n is set if
+   * a transition reaches the head during tick n of the sequencer's clock.
+   * A tick is 7 cycles of the 14.31818MHz master clock, 45/176 of the flux
+   * data's 125ns, so the arithmetic is exact.
+   *
+   * @param flux Flux timing bytes
+   * @param size Number of bytes
+   * @param out  Receives the pulse stream, its length, and the flux bytes
+   */
+  static void fluxToPulses(const uint8_t *flux, size_t size, TrackData &out);
+
+  /**
+   * Replace a flux track with the bit stream it reads as, keeping the head
+   * at the same angle. Called before the drive writes to it.
+   */
+  void convertFluxTrackToBits(TrackData &track);
+
+  /**
+   * Whether the track at a quarter-track position is a flux track
+   */
+  bool isFluxAt(int quarter_track) const;
+
+  /**
+   * Move the head, rescaling the position within the track when it crosses
+   * between a flux track (counted in ticks) and a bit track (in cells), so
+   * the disk keeps its angle.
+   */
+  void moveHeadTo(int quarter_track);
+
+  /**
+   * Convert one revolution of flux timings to a bit stream.
+   *
+   * Each byte is the time since the previous transition in 125ns ticks, with
+   * 255 meaning "add 255 and keep counting". The Disk II has no data
+   * separator: its sequencer restarts its bit-cell count at every pulse, so
+   * each interval is rounded to a whole number of cells on its own rather
+   * than against a clock running from the start of the track.
+   *
+   * @param flux Flux timing bytes
+   * @param size Number of bytes
+   * @param out  Receives the packed bits (MSB first) and bit count
+   */
+  static void fluxToBits(const uint8_t *flux, size_t size, TrackData &out);
 
   /**
    * Get track data at current head position

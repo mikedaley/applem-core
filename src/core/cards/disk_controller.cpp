@@ -380,8 +380,15 @@ void DiskController::clockLSS() {
     // On all other phases, pulse is 0 (inverted -> 1 in address).
     // When Q7=1 (write mode), pulse never affects P6 ROM output,
     // so we skip the read and let writeBit handle head advance.
+    //
+    // A flux track is the exception: it says when each transition arrives,
+    // not which cell it belongs to, so the head moves on every tick and a
+    // pulse lands on whichever tick it falls in. That is what the real
+    // sequencer sees, and what a track written at more than one speed needs.
     uint8_t readPulse = 0;
-    if (lssClock_ == 4 && !q7_) {
+    if (!q7_ && trackHasData && disk->isTickTimed()) {
+        readPulse = disk->readTick();
+    } else if (lssClock_ == 4 && !q7_) {
         readPulse = trackHasData ? disk->readBit()  // reads and advances head
                                  : nextWeakBit();    // empty track -> noise
     }

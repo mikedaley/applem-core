@@ -175,6 +175,28 @@ public:
    */
   virtual void writeBit(uint8_t bit) = 0;
 
+  /**
+   * Whether the track under the head is timed by the sequencer's clock
+   * rather than by bit cells.
+   *
+   * A flux track records when each transition happened, not how many cells
+   * apart they were, and a copy protection can depend on the difference: a
+   * track written partly fast and partly slow has the same bits either way
+   * but not the same timing. The Logic State Sequencer then takes a pulse on
+   * whichever of its eight ticks per cell it arrives, through readTick(),
+   * instead of one bit per cell through readBit().
+   *
+   * @return true to be clocked through readTick()
+   */
+  virtual bool isTickTimed() const { return false; }
+
+  /**
+   * Advance one tick of the sequencer's 2.045MHz clock
+   *
+   * @return 1 if a flux transition reaches the head during this tick
+   */
+  virtual uint8_t readTick() { return 0; }
+
   // ===== Status =====
 
   /**
