@@ -14,6 +14,7 @@
 #include "audio/audio.hpp"
 #include "cards/thunderclock/thunderclock_card.hpp"
 #include "emulator.hpp"
+#include "iigs/iigs_spec.hpp"
 #include "machine/machine_profile.hpp"
 #include "mmu/mmu.hpp"
 #include "video/video.hpp"
@@ -247,6 +248,101 @@ TEST_CASE("The //c profile describes an Apple //c", "[machine]") {
     }
 }
 
+TEST_CASE("The IIgs profile describes a machine of a different family",
+          "[machine][iigs]") {
+    // The IIgs is described before it can be built, exactly as the //c was:
+    // the registry, the menu and the window title can all talk about a machine
+    // whose parts do not exist yet, and the emulator says honestly that it
+    // cannot start it.
+    const auto &m = machineProfile(MachineId::AppleIIgs);
+    const auto &iie = machineProfile(MachineId::AppleIIe);
+
+    SECTION("it is what it says it is") {
+        REQUIRE(m.id == MachineId::AppleIIgs);
+        REQUIRE(std::string(m.key) == "apple2gs");
+        REQUIRE(std::string(m.name) == "Apple IIgs");
+        REQUIRE(m.cpu == CPUVariant::CMOS_65C816);
+        REQUIRE(m.family == MachineFamily::AppleIIgs);
+    }
+
+    SECTION("and it is the only one not built from the Apple II's parts") {
+        for (int i = 0; i < MACHINE_COUNT; i++) {
+            const auto &other = machineProfileAt(i);
+            INFO("machine: " << other.key);
+            REQUIRE((other.family == MachineFamily::AppleIIgs) ==
+                    (other.id == MachineId::AppleIIgs));
+        }
+    }
+
+    SECTION("its video timing is the Mega II's, which is the //e's") {
+        // A IIgs contains a //e. The same 65 cycles a scanline, the same 262
+        // lines, the same 40 columns of one byte — because it is the same
+        // chip, and it is why the machine can run //e software at all.
+        REQUIRE(m.timing.cyclesPerScanline == iie.timing.cyclesPerScanline);
+        REQUIRE(m.timing.scanlinesPerFrame == iie.timing.scanlinesPerFrame);
+        REQUIRE(m.timing.visibleColumns == iie.timing.visibleColumns);
+        REQUIRE(m.timing.cpuClockHz == iie.timing.cpuClockHz);
+    }
+
+    SECTION("but its picture is Super Hi-Res, and does not follow from that") {
+        // The frame is the raster a monitor sees: 53 cycles of 16 Super Hi-Res
+        // pixels — 6 of border, 40 of picture, 7 of border — by 240 lines
+        // doubled, where a //e's 40 columns clock out 14 dots each to make 560
+        // and nothing else. The one place two answers to the same question are
+        // both right, and why the "14 dots a column" rule is asked only of the
+        // family it belongs to.
+        REQUIRE(m.display.pixelWidth == 736);
+        REQUIRE(m.display.pixelHeight == 448);
+        REQUIRE(m.timing.visibleColumns * 14 != m.display.dotsPerLine);
+        REQUIRE(iie.timing.visibleColumns * 14 == iie.display.dotsPerLine);
+
+        // The text screen sits inside the border, stretched to the picture's
+        // width, and the raster is shown at a monitor's 4:3; a //e's frame is
+        // its text screen and is shown at its own ratio.
+        REQUIRE(m.display.textLeft == 48);
+        REQUIRE(m.display.textTop == 32); // centred in the 200-line picture
+        REQUIRE(m.display.textWidth == 640);
+        REQUIRE(m.display.textHeight == 384);
+        REQUIRE(m.display.aspectWidth * 3 == m.display.aspectHeight * 4);
+        REQUIRE(iie.display.textLeft == 0);
+        REQUIRE(iie.display.textWidth == iie.display.pixelWidth);
+        REQUIRE(iie.display.aspectWidth == iie.display.pixelWidth);
+    }
+
+    SECTION("its own numbers are not in the shared description") {
+        // What a IIgs has and no other machine here does — a second clock, fast
+        // RAM, shadowing, palettes, sound RAM — lives in iigs_spec.hpp with the
+        // code that reads it. What is in the profile is only the vocabulary
+        // every machine shares.
+        REQUIRE(iigs::FAST_CLOCK_HZ > m.timing.cpuClockHz);
+        REQUIRE(iigs::SLOW_CLOCK_HZ == m.timing.cpuClockHz);
+        REQUIRE(iigs::SLOW_RAM_SIZE ==
+                m.memory.mainRamSize + m.memory.auxRamSize);
+        REQUIRE(iigs::FAST_RAM_SIZE_ROM01 > iigs::SLOW_RAM_SIZE);
+        REQUIRE(iigs::ROM_SIZE_ROM01 == 128 * 1024);
+        REQUIRE(iigs::ROM_SIZE_ROM3 == 2 * iigs::ROM_SIZE_ROM01);
+    }
+
+    SECTION("and it is runnable when its ROM is in the build") {
+        // It is not built from Emulator's parts — the host constructs an
+        // IIgsMachine instead — but what decides whether it can be started is
+        // the same thing that decides for every other machine: whether its ROM
+        // is here. This was false for the whole family while there was nothing
+        // that could run one.
+        REQUIRE(Emulator::isMachineRunnable(MachineId::AppleIIgs) ==
+                (roms::ROM_SYSTEM_IIGS_SIZE >= iigs::ROM_SIZE_ROM01));
+    }
+
+    SECTION("and its ROM can be asked for without building the machine") {
+        size_t size = 0;
+        const uint8_t *rom = Emulator::systemROMFor(MachineId::AppleIIgs, size);
+        if (Emulator::isMachineRunnable(MachineId::AppleIIgs)) {
+            REQUIRE(rom != nullptr);
+            REQUIRE(size >= iigs::ROM_SIZE_ROM01);
+        }
+    }
+}
+
 TEST_CASE("Every registered profile is internally consistent", "[machine]") {
     // profileIsSelfConsistent and profileFitsCompiledStorage run as
     // static_asserts at build time, so a broken profile cannot compile. This
@@ -255,7 +351,15 @@ TEST_CASE("Every registered profile is internally consistent", "[machine]") {
         const auto &m = machineProfileAt(i);
         INFO("machine: " << m.key);
         REQUIRE(profileIsSelfConsistent(m));
-        REQUIRE(profileFitsCompiledStorage(m));
+
+        // The compiled arrays belong to the Apple II subsystems, so they are
+        // the ceiling for the machines built from them and mean nothing to a
+        // machine that brings its own storage.
+        if (m.family == MachineFamily::AppleII) {
+            REQUIRE(profileFitsCompiledStorage(m));
+        } else {
+            REQUIRE_FALSE(profileFitsCompiledStorage(m));
+        }
     }
 }
 
@@ -276,7 +380,8 @@ TEST_CASE("The registry finds machines by key", "[machine]") {
     }
 
     SECTION("an unknown key is reported as unknown, not silently a //e") {
-        REQUIRE(findMachineProfile("apple2gs") == nullptr);
+        REQUIRE(findMachineProfile("apple3") == nullptr);
+        REQUIRE(findMachineProfile("apple2gs2") == nullptr);
         REQUIRE(findMachineProfile("") == nullptr);
         REQUIRE(findMachineProfile(nullptr) == nullptr);
     }
@@ -1198,4 +1303,13 @@ TEST_CASE("The legacy constants still agree with the profile", "[machine]") {
     REQUIRE(m.timing.cyclesPerFrame() == CYCLES_PER_FRAME);
     REQUIRE(m.timing.cyclesPerScanline == CYCLES_PER_SCANLINE);
     REQUIRE(m.timing.scanlinesPerFrame == SCANLINES_PER_FRAME);
+}
+
+TEST_CASE("The machines carry the years they were sold, in the order they were", "[machine]") {
+    // The host lists the machines by this, so it has to say what it means: the
+    // II Plus first, then the IIe that replaced it, the IIc, and the IIgs.
+    REQUIRE(APPLE_II_PLUS_PROFILE.released == 1979);
+    REQUIRE(APPLE_IIE_PROFILE.released == 1983);
+    REQUIRE(APPLE_IIC_PROFILE.released == 1984);
+    REQUIRE(APPLE_IIGS_PROFILE.released == 1986);
 }

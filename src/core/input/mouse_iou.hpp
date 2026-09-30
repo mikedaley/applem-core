@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "../emulator/state_stream.hpp"
+
 #include <cstdint>
 #include <functional>
 
@@ -36,7 +38,8 @@ namespace a2e {
  *   $C017           bit 7: the same for Y0
  *   $C048-$C04F     resets both movement interrupt flags
  *   $C066 / $C067   bit 7: the X1 and Y1 lines — which way the mouse moved
- *   $C063           bit 7: the button, 0 when pressed
+ *   $C063           bit 7: the button, 0 when pressed; Shift is on the same
+ *                   line (the //c Technical Reference: "0 if it is pressed")
  *
  * The $C058-$C05F group is shared with the annunciators and with double
  * hi-res, and IOUDIS is what decides: with IOUDIS off those eight addresses
@@ -80,6 +83,9 @@ public:
     void addDelta(int dx, int dy);
     void setButton(bool pressed) { button_ = pressed; }
     bool isButtonPressed() const { return button_; }
+    /** The keyboard's Shift key, which a //c wires to the same PB2 line. */
+    void setShiftKey(bool held) { shiftKey_ = held; }
+    bool isShiftKeyHeld() const { return shiftKey_; }
 
     // ===== Soft switches =====
 
@@ -122,6 +128,14 @@ public:
 
     // ===== State, for tests and the debugger =====
 
+    /**
+     * The IOU's mouse in a save state: what is enabled, what is pending, and
+     * the steps banked but not yet released — a mouse mid-move must finish
+     * the move after a restore, or the pointer lands short.
+     */
+    void serialize(StateWriter &w) const;
+    void deserialize(StateReader &r);
+
     bool movementInterruptsEnabled() const { return xyEnabled_; }
     bool vblInterruptsEnabled() const { return vblEnabled_; }
     bool xInterruptPending() const { return xInt_; }
@@ -154,6 +168,8 @@ private:
     bool x1_ = false; // Direction of the last step released
     bool y1_ = false;
     bool button_ = false;
+    // Host state, like the button: deliberately not serialized.
+    bool shiftKey_ = false;
 
     int pendingX_ = 0;
     int pendingY_ = 0;

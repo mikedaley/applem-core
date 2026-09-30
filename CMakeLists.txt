@@ -11,6 +11,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Source files
 set(CORE_SOURCES
     src/core/emulator.cpp
+    src/core/debug/machine_debug.cpp
     src/core/emulator/emulator_state.cpp
     src/core/emulator/emulator_debug.cpp
     src/core/cpu/6502/cpu6502.cpp
@@ -26,10 +27,22 @@ set(CORE_SOURCES
     src/core/input/mouse_iou.cpp
     src/core/input/keyboard.cpp
     src/core/disassembler/disassembler.cpp
+    src/core/disassembler/disassembler65816.cpp
     src/core/cards/mockingboard/ay8910.cpp
     src/core/debug/debug_log.cpp
     src/core/cards/mockingboard/via6522.cpp
     src/core/cards/mockingboard/mockingboard_card.cpp
+    src/core/iigs/iigs_memory.cpp
+    src/core/iigs/iigs_clock.cpp
+    src/core/iigs/iigs_machine.cpp
+    src/core/iigs/iigs_state.cpp
+    src/core/disassembler/disassembler65816.cpp
+    src/core/iigs/iigs_sound.cpp
+    src/core/iigs/iigs_video.cpp
+    src/core/iigs/iigs_adb.cpp
+    src/core/iigs/iigs_scc.cpp
+    src/core/cpu/65816/cpu65816.cpp
+    src/core/cpu/65816/cpu65816_dispatch.cpp
     src/core/cards/disk_controller.cpp
     src/core/cards/disk2/disk2_card.cpp
     src/core/cards/iwm/iwm.cpp
@@ -124,12 +137,20 @@ if(EMSCRIPTEN)
     target_include_directories(a2e PRIVATE
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
+        ${CMAKE_SOURCE_DIR}/src/core/cpu/65816
         ${CMAKE_SOURCE_DIR}/src/core/cards
         ${CMAKE_SOURCE_DIR}/src/core/disk-image
         ${CMAKE_BINARY_DIR}/generated
     )
 
     # Emscripten-specific flags
+    # MAXIMUM_MEMORY is 512MB. The ceiling only has to hold the largest machine
+    # anyone can configure, and that is a IIgs with 8MB of fast RAM and two 32MB
+    # SmartPort volumes: about 72MB live, and a save state is a second copy of
+    # the images on top. At 256MB that aborted the module outright — and an
+    # aborted module answers nothing afterwards, so the symptom was every
+    # control in the app going dead rather than one save failing. Growth is
+    # still on, so the ceiling costs nothing until it is needed.
     set_target_properties(a2e PROPERTIES
         SUFFIX ".js"
         LINK_FLAGS "\
@@ -153,6 +174,8 @@ if(EMSCRIPTEN)
                 \"_hasSystemROM\", \
                 \"_isMachineRunnable\", \
                 \"_setMachine\", \
+                \"_getIIgsMemoryKB\", \
+                \"_setIIgsMemoryKB\", \
                 \"_forceRenderFrame\", \
                 \"_isFrameReady\", \
                 \"_keyDown\", \
@@ -178,6 +201,14 @@ if(EMSCRIPTEN)
                 \"_enableBreakpoint\", \
                 \"_isBreakpointHit\", \
                 \"_getBreakpointAddress\", \
+                \"_addBreakpointRange\", \
+                \"_removeBreakpointRange\", \
+                \"_enableBreakpointRange\", \
+                \"_addStackBreakpoint\", \
+                \"_removeStackBreakpoint\", \
+                \"_enableStackBreakpoint\", \
+                \"_isStackBreakpointHit\", \
+                \"_getStackBreakpointHitLow\", \
                 \"_addBasicBreakpoint\", \
                 \"_removeBasicBreakpoint\", \
                 \"_clearBasicBreakpoints\", \
@@ -202,6 +233,22 @@ if(EMSCRIPTEN)
                 \"_getBasicHeatMapData\", \
                 \"_getBasicLineBytes\", \
                 \"_getPC\", \
+                \"_getPBR\", \
+                \"_getDBR\", \
+                \"_getDirectPage\", \
+                \"_getCpuWidths\", \
+                \"_setRegPBR\", \
+                \"_setRegDBR\", \
+                \"_setRegDirectPage\", \
+                \"_getTraceEntrySize\", \
+                \"_formatTraceRange\", \
+                \"_getMemoryBanksJSON\", \
+                \"_getBatteryRam\", \
+                \"_getBatteryRamSize\", \
+                \"_setBatteryRam\", \
+                \"_batteryRamChanged\", \
+                \"_setIIgsLoopbackCable\", \
+                \"_hasIIgsLoopbackCable\", \
                 \"_getSP\", \
                 \"_getA\", \
                 \"_getX\", \
@@ -241,6 +288,8 @@ if(EMSCRIPTEN)
                 \"_free\", \
                 \"_getSlotCard\", \
                 \"_setSlotCard\", \
+                \"_isSlotInternal\", \
+                \"_setSlotInternal\", \
                 \"_isSlotEmpty\", \
                 \"_getMockingboardWaveform\", \
                 \"_setMockingboardChannelMute\", \
@@ -385,6 +434,7 @@ if(EMSCRIPTEN)
                 \"_clearBasicError\", \
                 \"_insertSmartPortImage\", \
                 \"_ejectSmartPortImage\", \
+                \"_isSmartPortROMPending\", \
                 \"_isSmartPortImageInserted\", \
                 \"_getSmartPortImageFilename\", \
                 \"_isSmartPortImageModified\", \
@@ -463,7 +513,7 @@ if(EMSCRIPTEN)
             -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
             -s INITIAL_MEMORY=33554432 \
-            -s MAXIMUM_MEMORY=268435456 \
+            -s MAXIMUM_MEMORY=536870912 \
             -s NO_EXIT_RUNTIME=1 \
             -s ASYNCIFY=0 \
             --no-entry \
@@ -497,7 +547,9 @@ else()
     set(ALL_CORE_INCLUDES
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
+        ${CMAKE_SOURCE_DIR}/src/core/cpu/65816
         ${CMAKE_SOURCE_DIR}/src/core/machine
+        ${CMAKE_SOURCE_DIR}/src/core/iigs
         ${CMAKE_SOURCE_DIR}/src/core/mmu
         ${CMAKE_SOURCE_DIR}/src/core/video
         ${CMAKE_SOURCE_DIR}/src/core/audio
@@ -525,6 +577,7 @@ else()
     # All core source files (excluding wasm_interface.cpp)
     set(CORE_TEST_SOURCES
         src/core/emulator.cpp
+        src/core/debug/machine_debug.cpp
         src/core/emulator/emulator_state.cpp
         src/core/emulator/emulator_debug.cpp
         src/core/cpu/6502/cpu6502.cpp
@@ -544,6 +597,30 @@ else()
         src/core/debug/debug_log.cpp
         src/core/cards/mockingboard/via6522.cpp
         src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/iigs/iigs_memory.cpp
+        src/core/iigs/iigs_clock.cpp
+        src/core/iigs/iigs_machine.cpp
+        src/core/iigs/iigs_state.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/audio/audio.cpp
+        src/core/disk-image/disk_converter.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/smartport/block_device.cpp
+        src/core/cards/disk_controller.cpp
+        src/core/cards/iwm/iwm.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+        src/core/iigs/iigs_sound.cpp
+        src/core/iigs/iigs_video.cpp
+        src/core/iigs/iigs_adb.cpp
+        src/core/iigs/iigs_scc.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
         src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
         src/core/cards/iwm/iwm.cpp
@@ -613,6 +690,217 @@ else()
     # Catch2 Unit Tests - Pure (no ROM dependencies)
     # ==========================================================================
 
+    # Super Hi-Res, drawn and then looked at.
+    add_catch2_test(test_iigs_video
+        tests/unit/test_iigs_video.cpp
+        src/core/iigs/iigs_machine.cpp
+        src/core/cards/mouse/mouse_card.cpp
+        src/core/cards/parallel/parallel_card.cpp
+        src/core/cards/ssc/ssc_card.cpp
+        src/core/cards/ssc/acia6551.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
+        src/core/iigs/iigs_state.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/debug/machine_debug.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/audio/audio.cpp
+        src/core/disk-image/disk_converter.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/smartport/block_device.cpp
+        src/core/cards/disk_controller.cpp
+        src/core/cards/iwm/iwm.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+        src/core/iigs/iigs_memory.cpp
+        src/core/iigs/iigs_clock.cpp
+        src/core/input/keyboard.cpp
+        src/core/input/joyport.cpp
+        src/core/iigs/iigs_video.cpp
+        src/core/iigs/iigs_sound.cpp
+        src/core/iigs/iigs_adb.cpp
+        src/core/iigs/iigs_scc.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
+        src/core/mmu/mmu.cpp
+        src/core/video/video.cpp
+        src/core/video/ntsc.cpp
+        src/core/input/mouse_iou.cpp
+        src/core/noslot_clock.cpp
+    )
+
+    # The two devices a IIgs will not boot without.
+    # Debugging a IIgs: breakpoints with banks, watchpoints on the processor's
+    # own bus, a step over that knows a long call, a trace entry twice as wide.
+    add_catch2_test(test_iigs_debug
+        tests/unit/test_iigs_debug.cpp
+        src/core/iigs/iigs_machine.cpp
+        src/core/cards/mouse/mouse_card.cpp
+        src/core/cards/parallel/parallel_card.cpp
+        src/core/cards/ssc/ssc_card.cpp
+        src/core/cards/ssc/acia6551.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
+        src/core/iigs/iigs_state.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/debug/machine_debug.cpp
+        src/core/iigs/iigs_memory.cpp
+        src/core/iigs/iigs_clock.cpp
+        src/core/iigs/iigs_scc.cpp
+        src/core/iigs/iigs_sound.cpp
+        src/core/iigs/iigs_video.cpp
+        src/core/iigs/iigs_adb.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
+        src/core/mmu/mmu.cpp
+        src/core/video/video.cpp
+        src/core/video/ntsc.cpp
+        src/core/audio/audio.cpp
+        src/core/input/keyboard.cpp
+        src/core/input/joyport.cpp
+        src/core/input/mouse_iou.cpp
+        src/core/noslot_clock.cpp
+        src/core/debug/debug_log.cpp
+        src/core/cards/disk_controller.cpp
+        src/core/cards/iwm/iwm.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/smartport/block_device.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+        src/core/disk-image/disk_converter.cpp
+    )
+
+    add_catch2_test(test_iigs_devices
+        tests/unit/test_iigs_devices.cpp
+        src/core/iigs/iigs_adb.cpp
+        src/core/iigs/iigs_scc.cpp
+        src/core/iigs/iigs_sound.cpp
+        src/core/iigs/iigs_clock.cpp
+    )
+
+    # A IIgs running its own ROM, which is every part of it at once.
+    add_catch2_test(test_iigs_boot
+        tests/integration/test_iigs_boot.cpp
+        src/core/iigs/iigs_machine.cpp
+        src/core/cards/mouse/mouse_card.cpp
+        src/core/cards/parallel/parallel_card.cpp
+        src/core/cards/ssc/ssc_card.cpp
+        src/core/cards/ssc/acia6551.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
+        src/core/iigs/iigs_state.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/debug/machine_debug.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/audio/audio.cpp
+        src/core/disk-image/disk_converter.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/smartport/block_device.cpp
+        src/core/cards/disk_controller.cpp
+        src/core/cards/iwm/iwm.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+        src/core/iigs/iigs_memory.cpp
+        src/core/iigs/iigs_clock.cpp
+        src/core/input/keyboard.cpp
+        src/core/input/joyport.cpp
+        src/core/iigs/iigs_sound.cpp
+        src/core/iigs/iigs_video.cpp
+        src/core/iigs/iigs_adb.cpp
+        src/core/iigs/iigs_scc.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
+        src/core/mmu/mmu.cpp
+        src/core/video/video.cpp
+        src/core/video/ntsc.cpp
+        src/core/input/mouse_iou.cpp
+        src/core/noslot_clock.cpp
+    )
+
+    # A IIgs saved and restored: the processor, both kinds of RAM, the devices.
+    add_catch2_test(test_iigs_state
+        tests/integration/test_iigs_state.cpp
+        src/core/iigs/iigs_machine.cpp
+        src/core/cards/mouse/mouse_card.cpp
+        src/core/cards/parallel/parallel_card.cpp
+        src/core/cards/ssc/ssc_card.cpp
+        src/core/cards/ssc/acia6551.cpp
+        src/core/cards/thunderclock/thunderclock_card.cpp
+        src/core/iigs/iigs_state.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/debug/machine_debug.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/audio/audio.cpp
+        src/core/disk-image/disk_converter.cpp
+        src/core/cards/mockingboard/mockingboard_card.cpp
+        src/core/cards/mockingboard/via6522.cpp
+        src/core/cards/mockingboard/ay8910.cpp
+        src/core/debug/debug_log.cpp
+        src/core/cards/smartport/smartport_card.cpp
+        src/core/cards/smartport/block_device.cpp
+        src/core/cards/disk_controller.cpp
+        src/core/cards/iwm/iwm.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+        src/core/iigs/iigs_memory.cpp
+        src/core/iigs/iigs_clock.cpp
+        src/core/input/keyboard.cpp
+        src/core/input/joyport.cpp
+        src/core/iigs/iigs_sound.cpp
+        src/core/iigs/iigs_video.cpp
+        src/core/iigs/iigs_adb.cpp
+        src/core/iigs/iigs_scc.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
+        src/core/mmu/mmu.cpp
+        src/core/video/video.cpp
+        src/core/video/ntsc.cpp
+        src/core/input/mouse_iou.cpp
+        src/core/noslot_clock.cpp
+    )
+
+    # A IIgs's address space, which needs no CPU to test: banks, shadowing,
+    # and the Mega II underneath it.
+    add_catch2_test(test_iigs_memory
+        tests/unit/test_iigs_memory.cpp
+        src/core/iigs/iigs_memory.cpp
+        src/core/iigs/iigs_clock.cpp
+        src/core/iigs/iigs_sound.cpp
+        src/core/iigs/iigs_adb.cpp
+        src/core/iigs/iigs_scc.cpp
+        src/core/mmu/mmu.cpp
+        src/core/input/mouse_iou.cpp
+        src/core/noslot_clock.cpp
+    )
+
+    # The 65816 against 5.1 million recorded states from a real one. Skips
+    # unless A2E_65816_VECTORS points at the vector files, which are 3GB and
+    # are not in the repository.
+    add_catch2_test(test_65816_vectors
+        tests/conformance/test_65816_vectors.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
+    )
+
+    # The 65816, which needs nothing but itself: no machine, no MMU, no IIgs.
+    add_catch2_test(test_cpu65816
+        tests/unit/test_cpu65816.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
+    )
+
     # CPU tests (only need cpu6502.cpp)
     add_catch2_test(test_cpu6502
         tests/unit/test_cpu6502.cpp
@@ -645,6 +933,14 @@ else()
     add_catch2_test(test_disassembler
         tests/unit/test_disassembler.cpp
         src/core/disassembler/disassembler.cpp
+    )
+
+    # The 65816 disassembler, checked against the 65816 itself.
+    add_catch2_test(test_disassembler65816
+        tests/unit/test_disassembler65816.cpp
+        src/core/disassembler/disassembler65816.cpp
+        src/core/cpu/65816/cpu65816.cpp
+        src/core/cpu/65816/cpu65816_dispatch.cpp
     )
 
     # Assembler (only assembler.cpp + disassembler for opcode table)
@@ -953,6 +1249,12 @@ else()
     add_catch2_test(test_condition_evaluator
         tests/unit/test_condition_evaluator.cpp
         ${CORE_TEST_SOURCES}
+    )
+
+    # Execution ranges and stack pointer breakpoints (MachineDebug alone)
+    add_catch2_test(test_machine_debug
+        tests/unit/test_machine_debug.cpp
+        src/core/debug/machine_debug.cpp
     )
 
     # Debug log sink (only debug_log.cpp)

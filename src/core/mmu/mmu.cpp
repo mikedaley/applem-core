@@ -13,12 +13,151 @@
 
 namespace a2e {
 
+uint64_t packSoftSwitchState(const SoftSwitches &sw, bool button0,
+                             bool button1, bool button2,
+                             bool keyAvailable) {
+  uint64_t state = 0;
+
+  // Pack soft switch state into a 64-bit value
+  // Display switches (bits 0-5)
+  if (sw.text)
+    state |= (1ULL << 0);
+  if (sw.mixed)
+    state |= (1ULL << 1);
+  if (sw.page2)
+    state |= (1ULL << 2);
+  if (sw.hires)
+    state |= (1ULL << 3);
+  if (sw.col80)
+    state |= (1ULL << 4);
+  if (sw.altCharSet)
+    state |= (1ULL << 5);
+
+  // Memory switches (bits 6-12)
+  if (sw.store80)
+    state |= (1ULL << 6);
+  if (sw.ramrd)
+    state |= (1ULL << 7);
+  if (sw.ramwrt)
+    state |= (1ULL << 8);
+  if (sw.intcxrom)
+    state |= (1ULL << 9);
+  if (sw.altzp)
+    state |= (1ULL << 10);
+  if (sw.slotc3rom)
+    state |= (1ULL << 11);
+  if (sw.intc8rom)
+    state |= (1ULL << 12);
+
+  // Language card (bits 13-16)
+  if (sw.lcram)
+    state |= (1ULL << 13);
+  if (sw.lcram2)
+    state |= (1ULL << 14);
+  if (sw.lcwrite)
+    state |= (1ULL << 15);
+  if (sw.lcprewrite)
+    state |= (1ULL << 16);
+
+  // Annunciators (bits 17-20)
+  if (sw.an0)
+    state |= (1ULL << 17);
+  if (sw.an1)
+    state |= (1ULL << 18);
+  if (sw.an2)
+    state |= (1ULL << 19);
+  if (sw.an3)
+    state |= (1ULL << 20);
+
+  // I/O state (bits 21-23)
+  if (sw.vblBar)
+    state |= (1ULL << 21);
+  if (sw.cassetteOut)
+    state |= (1ULL << 22);
+  if (sw.cassetteIn)
+    state |= (1ULL << 23);
+
+  // Buttons (bits 24-26)
+  if (button0)
+    state |= (1ULL << 24);
+  if (button1)
+    state |= (1ULL << 25);
+  if (button2)
+    state |= (1ULL << 26);
+
+  // Keyboard (bit 27)
+  if (keyAvailable)
+    state |= (1ULL << 27);
+
+  // DHIRES (bit 28) - computed from AN3 off + 80COL + HIRES
+  bool dhires = !sw.an3 && sw.col80 && sw.hires;
+  if (dhires)
+    state |= (1ULL << 28);
+
+  // IOUDIS (bit 29)
+  if (sw.ioudis)
+    state |= (1ULL << 29);
+
+  return state;
+}
+
+
 MMU::MMU(const MachineProfile &machine)
     : machine_(&machine), noSlotClock_(std::make_unique<NoSlotClock>()) {
   reset();
 }
 
 MMU::~MMU() = default;
+
+uint32_t MMU::packSwitchesForState() const {
+  const auto &sw = switches_;
+  uint32_t packed = 0;
+  const bool bits[] = {sw.text,     sw.mixed,    sw.page2,   sw.hires,
+                       sw.col80,    sw.altCharSet, sw.store80, sw.ramrd,
+                       sw.ramwrt,   sw.intcxrom, sw.altzp,   sw.slotc3rom,
+                       sw.intc8rom, sw.lcram,    sw.lcram2,  sw.lcwrite,
+                       sw.lcprewrite, sw.an0,    sw.an1,     sw.an2,
+                       sw.an3,      sw.ioudis};
+  for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++) {
+    if (bits[i]) packed |= (1u << i);
+  }
+  return packed;
+}
+
+void MMU::restoreSwitchesFromState(uint32_t packed) {
+  auto bit = [packed](int n) { return (packed & (1u << n)) != 0; };
+
+  write(bit(0) ? 0xC051 : 0xC050, 0);  // TEXT
+  write(bit(1) ? 0xC053 : 0xC052, 0);  // MIXED
+  write(bit(2) ? 0xC055 : 0xC054, 0);  // PAGE2
+  write(bit(3) ? 0xC057 : 0xC056, 0);  // HIRES
+  write(bit(4) ? 0xC00D : 0xC00C, 0);  // 80COL
+  write(bit(5) ? 0xC00F : 0xC00E, 0);  // ALTCHARSET
+  write(bit(6) ? 0xC001 : 0xC000, 0);  // 80STORE
+  write(bit(7) ? 0xC003 : 0xC002, 0);  // RAMRD
+  write(bit(8) ? 0xC005 : 0xC004, 0);  // RAMWRT
+  write(bit(9) ? 0xC007 : 0xC006, 0);  // INTCXROM
+  write(bit(10) ? 0xC009 : 0xC008, 0); // ALTZP
+  write(bit(11) ? 0xC00B : 0xC00A, 0); // SLOTC3ROM
+  // INTC8ROM follows from slot access and is not written directly.
+  write(bit(17) ? 0xC059 : 0xC058, 0); // AN0
+  write(bit(18) ? 0xC05B : 0xC05A, 0); // AN1
+  write(bit(19) ? 0xC05D : 0xC05C, 0); // AN2
+  write(bit(20) ? 0xC05F : 0xC05E, 0); // AN3
+
+  // The language card: which bank, RAM or ROM for reads, and whether writes
+  // reach it. $C080-$C08B are read to select; the write latch needs two reads.
+  const bool lcram = bit(13), lcram2 = bit(14), lcwrite = bit(15);
+  if (lcram) {
+    if (lcram2) {
+      if (lcwrite) { read(0xC083); read(0xC083); } else { read(0xC080); }
+    } else {
+      if (lcwrite) { read(0xC08B); read(0xC08B); } else { read(0xC088); }
+    }
+  } else {
+    read(lcram2 ? 0xC082 : 0xC08A);
+  }
+}
 
 void MMU::reset() {
   // Clear RAM
@@ -315,7 +454,12 @@ uint8_t MMU::peek(uint16_t address) const {
       uint8_t slot = (address >> 8) & 0x07;
       uint8_t offset = address & 0xFF;
       if (slot >= 1 && slot <= 7 && slots_[slot]) {
-        return slots_[slot]->readROM(offset);
+        // peekROM, never readROM: a card's ROM read can do things. A
+        // SmartPort's entry points are traps that run a whole block call, and
+        // read() peeks every address first while a watchpoint is armed, so
+        // readROM here ran each call twice and a //e booting a SmartPort
+        // image with any watchpoint set landed in the monitor.
+        return slots_[slot]->peekROM(offset);
       }
       return 0xFF;
     }
@@ -1111,7 +1255,7 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
       return (buttonCallback_(1) & 0x80) | (getFloatingBusValue() & 0x7F);
     }
     return getFloatingBusValue() & 0x7F;
-  case 0x63: // PB2 / Shift key modifier
+  case 0x63: // PB2 (the game port's third button; a //c's IOU answers first)
     if (buttonCallback_) {
       return (buttonCallback_(2) & 0x80) | (getFloatingBusValue() & 0x7F);
     }
@@ -1518,62 +1662,52 @@ void MMU::handleLanguageCardSwitchWrite(uint8_t reg) {
   switches_.lcram2 = bank2;
 }
 
-uint8_t MMU::readLanguageCard(uint16_t address) {
-  if (switches_.lcram) {
-    // Read from RAM
-    bool useAux = switches_.altzp;
-
-    if (address < 0xE000) {
-      // $D000-$DFFF
-      uint16_t offset = address - 0xD000;
-      if (switches_.lcram2) {
-        return useAux ? auxLcBank2_[offset] : lcBank2_[offset];
-      } else {
-        return useAux ? auxLcBank1_[offset] : lcBank1_[offset];
-      }
-    } else {
-      // $E000-$FFFF
-      uint16_t offset = address - 0xE000;
-      return useAux ? auxLcHighRAM_[offset] : lcHighRAM_[offset];
+uint8_t MMU::readLanguageCardRAM(uint16_t address, bool aux) const {
+  if (address < 0xE000) {
+    // $D000-$DFFF, whichever of the two banks is switched in
+    const uint16_t offset = address - 0xD000;
+    if (switches_.lcram2) {
+      return aux ? auxLcBank2_[offset] : lcBank2_[offset];
     }
-  } else {
-    // Read from ROM
-    return systemROM_[address - 0xC000];
+    return aux ? auxLcBank1_[offset] : lcBank1_[offset];
   }
+  // $E000-$FFFF, which is not bank switched
+  const uint16_t offset = address - 0xE000;
+  return aux ? auxLcHighRAM_[offset] : lcHighRAM_[offset];
 }
 
-void MMU::writeLanguageCard(uint16_t address, uint8_t value) {
+uint8_t MMU::readLanguageCard(uint16_t address) {
+  if (switches_.lcram) {
+    // ALTZP is how a program in the map names the half it wants.
+    return readLanguageCardRAM(address, switches_.altzp);
+  }
+  return systemROM_[address - 0xC000];
+}
+
+void MMU::writeLanguageCardRAM(uint16_t address, uint8_t value, bool aux) {
   if (!switches_.lcwrite) {
     return; // Write not enabled
   }
 
-  bool useAux = switches_.altzp;
-
   if (address < 0xE000) {
-    // $D000-$DFFF
-    uint16_t offset = address - 0xD000;
+    // $D000-$DFFF, whichever of the two banks is switched in
+    const uint16_t offset = address - 0xD000;
     if (switches_.lcram2) {
-      if (useAux) {
-        auxLcBank2_[offset] = value;
-      } else {
-        lcBank2_[offset] = value;
-      }
+      (aux ? auxLcBank2_ : lcBank2_)[offset] = value;
     } else {
-      if (useAux) {
-        auxLcBank1_[offset] = value;
-      } else {
-        lcBank1_[offset] = value;
-      }
+      (aux ? auxLcBank1_ : lcBank1_)[offset] = value;
     }
-  } else {
-    // $E000-$FFFF
-    uint16_t offset = address - 0xE000;
-    if (useAux) {
-      auxLcHighRAM_[offset] = value;
-    } else {
-      lcHighRAM_[offset] = value;
-    }
+    return;
   }
+
+  // $E000-$FFFF, which is not bank switched
+  const uint16_t offset = address - 0xE000;
+  (aux ? auxLcHighRAM_ : lcHighRAM_)[offset] = value;
+}
+
+void MMU::writeLanguageCard(uint16_t address, uint8_t value) {
+  // ALTZP is how a program in the map names the half it wants.
+  writeLanguageCardRAM(address, value, switches_.altzp);
 }
 
 } // namespace a2e

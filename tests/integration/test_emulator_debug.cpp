@@ -342,3 +342,56 @@ TEST_CASE("stepOut sets temp breakpoint at return address from stack", "[emulato
     // stepOut reads stack: (PCL,PCH) = ($FF,$04) -> $04FF + 1 = $0500
     REQUIRE(tempBp == 0x0500);
 }
+
+// ---------------------------------------------------------------------------
+// Execution ranges and stack pointer breakpoints
+// ---------------------------------------------------------------------------
+
+TEST_CASE("An execution range stops a //e where the program enters it",
+          "[emulator][debug][breakpoint][range]") {
+    Emulator emu;
+    emu.init();
+    // $0300: JMP $0410, into the middle of the range. $0410: JMP $0410.
+    const uint8_t code[] = {0x4C, 0x10, 0x04};
+    for (int i = 0; i < 3; i++) emu.writeMemory(0x0300 + i, code[i]);
+    emu.writeMemory(0x0410, 0x4C);
+    emu.writeMemory(0x0411, 0x10);
+    emu.writeMemory(0x0412, 0x04);
+    emu.setPC(0x0300);
+    emu.debug().addBreakpointRange(0x0400, 0x04FF);
+
+    emu.runCycles(100);
+    REQUIRE(emu.isPaused());
+    REQUIRE(emu.isBreakpointHit());
+    REQUIRE(emu.getBreakpointAddress() == 0x0410);
+    REQUIRE(emu.getPC() == 0x0410);
+
+    // Resumed inside the range, the loop runs on rather than stopping at once.
+    emu.setPaused(false);
+    emu.runCycles(1000);
+    REQUIRE_FALSE(emu.isPaused());
+}
+
+TEST_CASE("A stack pointer breakpoint stops a //e as the stack runs away",
+          "[emulator][debug][breakpoint][stack]") {
+    Emulator emu;
+    emu.init();
+    // $0300: LDX #$FF, TXS, then PHA and JMP back to it for ever.
+    const uint8_t code[] = {0xA2, 0xFF, 0x9A, 0x48, 0x4C, 0x03, 0x03};
+    for (int i = 0; i < 7; i++) emu.writeMemory(0x0300 + i, code[i]);
+    emu.setPC(0x0300);
+    emu.debug().addStackBreakpoint(0x00, 0x3F);
+
+    emu.runCycles(10000);
+    REQUIRE(emu.isPaused());
+    REQUIRE(emu.debug().isStackBreakpointHit());
+    REQUIRE(emu.getSP() == 0x3F);
+    // Stopped after the PHA that moved it, before whatever comes next.
+    REQUIRE(emu.getPC() == 0x0304);
+    REQUIRE_FALSE(emu.isBreakpointHit());
+
+    // Running on, it stays inside and does not stop again.
+    emu.setPaused(false);
+    emu.runCycles(200);
+    REQUIRE_FALSE(emu.isPaused());
+}

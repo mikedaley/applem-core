@@ -240,6 +240,14 @@ void Video::emitCharacterDots(int dotX, int charLine, uint8_t ch, bool inverse,
 
 namespace {
 constexpr int DOUBLE_RES_DELAY = 1;
+
+// The colour a value carries once it has been through the double-resolution
+// path's extra dot of delay: dot x carries bit ((x - 1) & 3), which is the
+// value rotated one place to the left. This is what a steady double lo-res
+// nibble decodes to on every decoder in this file, and so what SOLID paints.
+constexpr uint8_t rotatedByDelay(uint8_t v) {
+  return static_cast<uint8_t>(((v << 1) | (v >> 3)) & 0x0F);
+}
 } // namespace
 
 void Video::emitText40Scanline(int scanline, int startCol, int endCol,
@@ -317,6 +325,7 @@ void Video::emitLoResScanline(int scanline, int startCol, int endCol,
     // three and a half subcarrier cycles long.
     int base = col * 14;
     setKind(base, base + 14, ntsc::IdealKind::CELL);
+    setCell(base, base + 14, nibble);
     for (int px = 0; px < 14; px++) {
       int x = base + px;
       setDot(x, (nibble >> (x & 3)) & 1);
@@ -327,6 +336,12 @@ void Video::emitLoResScanline(int scanline, int startCol, int endCol,
 void Video::emitHiResScanline(int scanline, int startCol, int endCol,
                               const VideoSwitchState &vs) {
   if (scanline >= machine_->timing.visibleScanlines) return;
+
+  // The scanline in PIXELS, for the SOLID pass at the end. 280 of them, three
+  // bytes each, on the stack of a function that is called once a line.
+  std::array<uint8_t, 280> lit{};
+  std::array<uint8_t, 280> high{};
+  std::array<int16_t, 280> firstDot{};
 
   for (int col = startCol; col < endCol; col++) {
     uint16_t addr = getHiResAddress(scanline, col);
@@ -339,7 +354,8 @@ void Video::emitHiResScanline(int scanline, int startCol, int endCol,
     }
 
     const int base = col * 14;
-    setKind(base, base + 14, ntsc::IdealKind::DOT_GATED);
+    // Dot-gated to every receiver, a cell to SOLID — see IdealKind.
+    setKind(base, base + 14, ntsc::IdealKind::DOT_GATED_CELL);
 
     // The high bit is not data. It delays the whole byte through an extra flop,
     // pushing its seven pixels one 14 MHz dot to the right — half a HIRES pixel.
@@ -356,6 +372,65 @@ void Video::emitHiResScanline(int scanline, int startCol, int endCol,
       const int x = base + delay + bit * 2;
       setDot(x, on);
       setDot(x + 1, on);
+
+      // Kept for the SOLID pass below, which works in pixels and not in
+      // bytes because a byte holds seven of them and a colour is a PAIR.
+      const int px = col * 7 + bit;
+      lit[px] = on;
+      high[px] = static_cast<uint8_t>(delay); // bit 7, as the palette sees it
+      firstDot[px] = static_cast<int16_t>(x);
+    }
+  }
+
+  // THE COLOURS, FOR SOLID
+  //
+  // A HIRES colour is a property of a PAIR of pixels and of which columns
+  // they sit in - an even pixel lit on its own is violet, or blue if its
+  // byte's high bit is set; an odd one green, or orange - and white is a
+  // property of NEIGHBOURS: a lit pixel next to a lit pixel is white, which
+  // is how every white shape in a HIRES picture is drawn. So:
+  //
+  //   lit, beside a lit pixel     white, over its own two dots
+  //   lit, on its own             its colour, over its whole PAIR: the
+  //                               unlit partner is painted too, which is
+  //                               what makes a $55/$2A field one colour
+  //                               with no stripes in it
+  //   unlit, otherwise            black
+  //
+  // Deciding white per pixel and colour per pair is what keeps both true at
+  // once. A pair rule alone leaves a coloured fringe on the end of every
+  // odd-width white stroke; a pixel rule alone paints stripes through every
+  // colour field. Neither is what was drawn.
+  //
+  // This has to be done here rather than in the decoder because only the
+  // emitter knows which BYTE a pixel came from, and it is that byte's high
+  // bit that chooses between violet/green and blue/orange. By the time the
+  // dots reach ntsc.cpp the high bit has become a half-dot shift and the
+  // byte boundaries are gone.
+  //
+  // Pairs are counted in pixels from the start of the line, so they cross
+  // byte boundaries - a byte holds seven pixels, which is odd.
+  const int first = startCol * 7, last = endCol * 7; // [first, last)
+  const auto litAt = [&](int p) {
+    return p >= first && p < last && lit[static_cast<size_t>(p)];
+  };
+  for (int p = first; p < last; p++) {
+    if (!lit[static_cast<size_t>(p)]) {
+      continue;                  // black unless a lone partner paints it
+    }
+    const int at = firstDot[static_cast<size_t>(p)];
+    if (litAt(p - 1) || litAt(p + 1)) {
+      setCell(at, at + 2, 15);   // white, and only these two dots
+      continue;
+    }
+    const bool hb = high[static_cast<size_t>(p)] != 0;
+    const uint8_t v = (p & 1) ? (hb ? 9 : 12)   // orange : green
+                              : (hb ? 6 : 3);   // medium blue : violet
+    setCell(at, at + 2, v);
+    const int q = p ^ 1;         // the other pixel of the pair
+    if (q >= first && q < last && !lit[static_cast<size_t>(q)]) {
+      const int qat = firstDot[static_cast<size_t>(q)];
+      setCell(qat, qat + 2, v);
     }
   }
 }
@@ -382,6 +457,11 @@ void Video::emitDoubleLoResScanline(int scanline, int startCol, int endCol,
     // first seven dots of the cell, the main half the second seven.
     int base = col * 14 + DOUBLE_RES_DELAY;
     setKind(col * 14, col * 14 + 14, ntsc::IdealKind::CELL);
+    // The cells' colours, for SOLID, over the seven dots each cell owns —
+    // counted from the delayed base, so that the colour sits on the dots
+    // the cell actually lights rather than on the byte boundary.
+    setCell(base, base + 7, rotatedByDelay(auxNibble));
+    setCell(base + 7, base + 14, rotatedByDelay(mainNibble));
     for (int px = 0; px < 7; px++) {
       int x = base + px;
       setDot(x, (auxNibble >> ((x - DOUBLE_RES_DELAY) & 3)) & 1);
@@ -415,6 +495,19 @@ void Video::emitDoubleHiResScanline(int scanline, int startCol, int endCol,
       setDot(base + 7 + bit, (mainByte >> bit) & 1);
     }
   }
+
+  // The pixels' colours, for SOLID. A double hi-res pixel is four consecutive
+  // bits of the 560-bit stream, first bit least significant, and the stream
+  // runs across byte and column boundaries without a seam — so this pass is
+  // over the dots, not the bytes. With the delay, bit 4n lands on dot 4n + 1.
+  for (int n = (startCol * 14) / 4; n * 4 < endCol * 14; n++) {
+    const int at = n * 4 + DOUBLE_RES_DELAY;
+    uint8_t v = 0;
+    for (int bit = 0; bit < 4; bit++) {
+      if (getDot(at + bit)) v |= static_cast<uint8_t>(1 << bit);
+    }
+    setCell(at, at + 4, rotatedByDelay(v));
+  }
 }
 
 // ============================================================================
@@ -429,6 +522,12 @@ void Video::beginScanline() {
   dots_.fill(0);
   // Anything no emitter covers is unlit, and an unlit dot-gated dot is black.
   idealKind_.fill(ntsc::IdealKind::DOT_GATED);
+  cellColour_.fill(0);
+}
+
+bool Video::isTextScanline(int scanline, const VideoSwitchState &vs) const {
+  return vs.text ||
+         (vs.mixed && scanline >= machine_->timing.mixedModeTextScanline);
 }
 
 bool Video::burstForScanline(int scanline, const VideoSwitchState &vs) const {
@@ -436,10 +535,7 @@ bool Video::burstForScanline(int scanline, const VideoSwitchState &vs) const {
   // line, which is why its text fringes green and violet in every mode.
   if (!machine_->caps.inhibitsBurstInText) return true;
 
-  const bool textLine =
-      vs.text ||
-      (vs.mixed && scanline >= machine_->timing.mixedModeTextScanline);
-  return !textLine;
+  return !isTextScanline(scanline, vs);
 }
 
 void Video::endScanline(int scanline) {
@@ -447,25 +543,53 @@ void Video::endScanline(int scanline) {
 
   uint32_t line[ntsc::VISIBLE_DOTS];
 
-  // Note this passes chromaEnabled_, not burst_. The burst decides whether the
-  // machine sends a reference on this line; the killer decides whether the
-  // receiver is decoding colour at all, and it works a field at a time.
-  switch (colorMode_) {
-  case VideoColorMode::MONOCHROME:
-    ntsc::decodeMonochrome(dots_.data(), getMonochromeColor(true),
-                           getMonochromeColor(false), line);
-    break;
-  case VideoColorMode::PIXEL_EXACT:
-    ntsc::decodeIdeal(dots_.data(), idealKind_.data(), chromaEnabled_, false,
-                      line);
-    break;
-  case VideoColorMode::RGB_MONITOR:
-    ntsc::decodeIdeal(dots_.data(), idealKind_.data(), chromaEnabled_, true,
-                      line);
-    break;
-  case VideoColorMode::COMPOSITE:
-    ntsc::decodeComposite(dots_.data(), chromaEnabled_, line);
-    break;
+  // A machine with a VGC draws its text rather than transmitting it, so a text
+  // line is two colours and no decoder at all. Everything else on the screen,
+  // including the graphics half of a mixed screen, goes the usual way — and so
+  // does all of it on a monochrome monitor, which has one phosphor and no
+  // opinion about what the machine sent it.
+  if (textColoursSet_ && textLine_ &&
+      colorMode_ != VideoColorMode::MONOCHROME) {
+    ntsc::decodeMonochrome(dots_.data(), textForeground_, textBackground_,
+                           line);
+  } else if (doubleHiResMono_ && doubleHiResLine_ &&
+             colorMode_ != VideoColorMode::MONOCHROME) {
+    // A IIgs with $C029's monochrome bit set: the VGC shows the dots of a
+    // double hi-res line as they are, white on black, with no colour made
+    // from them. See setDoubleHiResMonochrome.
+    ntsc::decodeMonochrome(dots_.data(), 0xFFFFFFFFu, 0xFF000000u, line);
+  } else {
+    // Note this passes chromaEnabled_, not burst_. The burst decides whether the
+    // machine sends a reference on this line; the killer decides whether the
+    // receiver is decoding colour at all, and it works a field at a time.
+    switch (colorMode_) {
+    case VideoColorMode::MONOCHROME:
+      ntsc::decodeMonochrome(dots_.data(), getMonochromeColor(true),
+                             getMonochromeColor(false), line);
+      break;
+    case VideoColorMode::PIXEL_EXACT:
+      ntsc::decodeIdeal(dots_.data(), idealKind_.data(), chromaEnabled_, false,
+                        line);
+      break;
+    case VideoColorMode::RGB_MONITOR:
+      ntsc::decodeIdeal(dots_.data(), idealKind_.data(), chromaEnabled_, true,
+                        line);
+      break;
+    case VideoColorMode::COMPOSITE:
+      ntsc::decodeComposite(dots_.data(), chromaEnabled_, line);
+      break;
+    case VideoColorMode::SOLID:
+      // Not a receiver, so the colour killer has no say: a text line is
+      // white on black on every machine, a II+ included — its fringed text
+      // is a fact about its monitor, and this mode has none.
+      if (textLine_) {
+        ntsc::decodeMonochrome(dots_.data(), 0xFFFFFFFFu, 0xFF000000u, line);
+      } else {
+        ntsc::decodeSolid(dots_.data(), idealKind_.data(), cellColour_.data(),
+                          line);
+      }
+      break;
+    }
   }
 
   // A scanline occupies `lineDoubling` framebuffer rows (192 lines doubled to
@@ -516,6 +640,7 @@ void Video::renderScanlineSegment(int scanline, int startCol, int endCol,
     }
   } else if (vs.hires) {
     if (vs.col80 && !vs.an3) {
+      doubleHiResLine_ = true;
       emitDoubleHiResScanline(scanline, startCol, endCol, vs);
     } else {
       emitHiResScanline(scanline, startCol, endCol, vs);
@@ -557,6 +682,8 @@ void Video::renderScanlineWithChanges(int scanline) {
   // The colour burst is generated during horizontal blanking, so whether this
   // line carries one is settled by the state at the end of hblank — before any
   // mid-line switch change can take effect.
+  textLine_ = isTextScanline(scanline, currentRenderState_);
+  doubleHiResLine_ = false;
   burst_ = burstForScanline(scanline, currentRenderState_);
   if (burst_) {
     burstSeenThisFrame_ = true;
@@ -654,6 +781,8 @@ void Video::forceRenderFrame() {
 
   for (int scanline = 0; scanline < visibleScanlines; scanline++) {
     beginScanline();
+    textLine_ = isTextScanline(scanline, vs);
+    doubleHiResLine_ = false;
     burst_ = burstForScanline(scanline, vs);
     renderScanlineSegment(scanline, 0, visibleColumns, vs);
     endScanline(scanline);

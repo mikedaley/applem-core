@@ -71,6 +71,41 @@ public:
   void setMonochrome(bool mono);
   bool isMonochrome() const { return colorMode_ == VideoColorMode::MONOCHROME; }
 
+  /**
+   * Draw text lines in two fixed colours instead of decoding them.
+   *
+   * A //e has no say in what colour its text comes out: the dots go down a
+   * composite lead and the receiver makes of them what it will. A IIgs does —
+   * its VGC generates the picture digitally and substitutes a foreground and a
+   * background colour of the Control Panel's choosing for lit and unlit text
+   * dots, which is why a IIgs's text is crisp and can be white on blue.
+   *
+   * That is a pair of colours, not a second video generator, so it lives here
+   * as one: a machine that never calls this decodes text exactly as before.
+   * It applies to text lines only — the text rows of a mixed screen included —
+   * because graphics dots carry a colour of their own and the VGC leaves them
+   * alone.
+   */
+  void setTextColours(uint32_t foreground, uint32_t background) {
+    textForeground_ = foreground;
+    textBackground_ = background;
+    textColoursSet_ = true;
+  }
+  void clearTextColours() { textColoursSet_ = false; }
+
+  /**
+   * Show double hi-res in black and white rather than decoding it.
+   *
+   * A IIgs's $C029 has a bit for this (bit 5): the VGC drops the colour from
+   * a double hi-res picture and shows its 560 dots as they are, which is how
+   * the early Finder and every 80-column desktop program got a crisp screen
+   * out of a mode that is otherwise a colour trick. It applies to double
+   * hi-res lines only — the rest of the screen decodes as before — and a
+   * monochrome monitor still has the last word.
+   */
+  void setDoubleHiResMonochrome(bool mono) { doubleHiResMono_ = mono; }
+  bool isDoubleHiResMonochrome() const { return doubleHiResMono_; }
+
   void setGreenPhosphor(bool green) { greenPhosphor_ = green; }
   bool isGreenPhosphor() const { return greenPhosphor_; }
 
@@ -124,6 +159,10 @@ private:
   // in colour — see chromaEnabled_.
   bool burstForScanline(int scanline, const VideoSwitchState& vs) const;
 
+  // Whether this line draws text — a full text screen, or the bottom rows of a
+  // mixed one. Both the colour burst and the VGC's text colours turn on it.
+  bool isTextScanline(int scanline, const VideoSwitchState& vs) const;
+
   // Character rendering — emit one ROM line's dots for a single character
   void emitCharacterDots(int dotX, int charLine, uint8_t ch, bool inverse,
                          bool flash, const VideoSwitchState& vs, bool is80col);
@@ -136,6 +175,20 @@ private:
     if (to > ntsc::VISIBLE_DOTS) to = ntsc::VISIBLE_DOTS;
     for (int x = from; x < to; x++) {
       idealKind_[static_cast<size_t>(x)] = k;
+    }
+  }
+
+  // Say which palette entry a run of CELL dots carries. Only the SOLID mode
+  // reads it: every other mode makes the colour from the dots. The emitters
+  // know the answer for nothing — a LORES cell is its nibble, a double lo-res
+  // cell or a double hi-res pixel is its value rotated one place to the left,
+  // which is the one dot of delay the 80-column path adds (DOUBLE_RES_DELAY)
+  // expressed as the colour it turns into.
+  void setCell(int from, int to, uint8_t palette) {
+    if (from < 0) from = 0;
+    if (to > ntsc::VISIBLE_DOTS) to = ntsc::VISIBLE_DOTS;
+    for (int x = from; x < to; x++) {
+      cellColour_[static_cast<size_t>(x)] = palette;
     }
   }
 
@@ -187,6 +240,8 @@ private:
   // side so the demodulation window never runs off the ends.
   std::array<uint8_t, ntsc::DOT_BUFFER> dots_{};
   std::array<ntsc::IdealKind, ntsc::VISIBLE_DOTS> idealKind_{};
+  std::array<uint8_t, ntsc::VISIBLE_DOTS> cellColour_{}; // see setCell
+
 
   // Not owned: profiles are static constexpr objects with program lifetime.
   const MachineProfile *machine_ = &defaultMachineProfile();
@@ -213,6 +268,17 @@ private:
   VideoColorMode preMonochromeMode_ = VideoColorMode::COMPOSITE;
   bool greenPhosphor_ = false;
   bool ukCharSet_ = false;  // UK character set switch
+
+  // The VGC's text colours, when a machine has a VGC. See setTextColours.
+  bool textColoursSet_ = false;
+  uint32_t textForeground_ = 0xFFFFFFFF;
+  uint32_t textBackground_ = 0xFF000000;
+
+  // Whether the line being finished is a text line, settled at the end of
+  // horizontal blanking alongside the burst.
+  bool textLine_ = false;
+  bool doubleHiResLine_ = false; // this line was emitted as double hi-res
+  bool doubleHiResMono_ = false;
 
   // Cycle callback for position calculation
   CycleCallback cycleCallback_;

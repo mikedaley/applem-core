@@ -1,0 +1,1413 @@
+/*
+ * test_iigs_boot.cpp - A IIgs running its own firmware
+ *
+ * Everything else about this machine is tested a part at a time. This runs the
+ * whole of it: the real ROM, the 65816, the memory map, shadowing, the Mega
+ * II's video, the ADB controller and the Ensoniq's RAM, with nothing standing
+ * in for anything — and asks the machine what is on its screen.
+ *
+ * A IIgs will not draw a single character until it has been through its power-
+ * on diagnostics, so the screen is the proof: if the map is wrong, or the
+ * decimal flags, or the ADB's status register, the machine stops and says so
+ * rather than starting.
+ */
+
+#define CATCH_CONFIG_MAIN
+#include "catch.hpp"
+
+#include "cpu65816.hpp"
+#include "iigs_machine.hpp"
+#include "iigs_adb.hpp"
+#include "iigs_clock.hpp"
+#include "iigs_memory.hpp"
+#include "mmu/mmu.hpp"
+#include "audio/audio.hpp"
+#include "cards/disk_controller.hpp"
+#include "iigs_video.hpp"
+#include "cards/smartport/smartport_card.hpp"
+#include "input/joyport.hpp"
+#include "machine/machine_profile.hpp"
+#include "video/video.hpp"
+#include "roms.cpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+using namespace a2e;
+using namespace a2e::iigs;
+
+namespace {
+bool romAvailable() {
+  return roms::ROM_SYSTEM_IIGS_SIZE >= ROM_SIZE_ROM01;
+}
+
+// Long enough for the diagnostics, the splash and the boot attempt: about
+// seven seconds of the machine's own time, which is what a IIgs takes over its
+// power-on tests. Counted in instructions rather than cycles because that is
+// what the test can drive directly.
+void runToPrompt(IIgsMachine &machine) {
+  for (int i = 0; i < 5000000 && !machine.cpu().isStopped(); i++) {
+    machine.step();
+  }
+}
+} // namespace
+
+TEST_CASE("A IIgs boots its own firmware", "[iigs][boot]") {
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the boot test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE, roms::ROM_CHAR,
+               roms::ROM_CHAR_SIZE);
+
+  SECTION("the reset vector comes out of the ROM, not out of nothing") {
+    // $00:FFFC is the language card's space, and a machine that has just been
+    // powered on reads ROM there — so this is the ROM's own vector, and if the
+    // memory map were wrong it would be $0000.
+    REQUIRE(machine.cpu().getPC() != 0x0000);
+    REQUIRE(machine.cpu().getEmulation()); // as every 65816 starts
+  }
+
+  SECTION("and gets through its diagnostics to the startup screen") {
+    runToPrompt(machine);
+    const std::string screen = machine.screenText();
+    INFO("screen:\n" << screen);
+
+    // What a real IIgs with no disk in it says, in this order: its own name,
+    // and then a complaint about the drive.
+    REQUIRE(screen.find("Fatal") == std::string::npos);
+    REQUIRE(screen.find("Check startup device") != std::string::npos);
+  }
+
+  SECTION("the text it drew is on the Mega II's side of the machine") {
+    // The firmware runs in fast RAM and writes through bank $00; the video
+    // only ever looks at $E0. Every character on that screen got there by
+    // being shadowed across, so this is shadowing tested by the machine
+    // itself rather than by a unit test's expectations.
+    runToPrompt(machine);
+    bool anyText = false;
+    for (uint16_t at = 0x0400; at < 0x0800; at++) {
+      if (machine.memory().megaII().readRAM(at, false) > 0xA0) anyText = true;
+    }
+    REQUIRE(anyText);
+  }
+}
+
+TEST_CASE("A IIgs notices somebody typing", "[iigs][boot][adb]") {
+  // The whole path in one: a browser key event, translated the //e's way,
+  // handed to the ADB controller, put by the controller into the register the
+  // Mega II reads, and taken from there by firmware that has no idea any of
+  // that happened. What proves the last step is the strobe: only the machine
+  // can clear it, by reading $C010.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the keyboard test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE, roms::ROM_CHAR,
+               roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+
+  machine.keyDown('A');
+  REQUIRE(machine.memory().adb().keyboardLatch() == ('A' | 0x80));
+
+  for (int i = 0; i < 50000; i++) machine.step();
+  REQUIRE((machine.memory().adb().keyboardLatch() & 0x80) == 0);
+  REQUIRE((machine.memory().adb().keyboardLatch() & 0x7F) == 'A');
+}
+
+TEST_CASE("A IIgs writes its settings into battery RAM", "[iigs][boot][clock]") {
+  // The first Apple II that remembers anything. A machine whose battery RAM is
+  // nonsense spends its startup putting the defaults back, and that is what
+  // this sees: 256 bytes that were zero before the firmware ran and hold a
+  // configuration afterwards.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the battery RAM test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE, roms::ROM_CHAR,
+               roms::ROM_CHAR_SIZE);
+
+  int before = 0;
+  for (int i = 0; i < 256; i++) {
+    if (machine.memory().clock().batteryRam(static_cast<uint8_t>(i))) before++;
+  }
+  REQUIRE(before == 0);
+
+  runToPrompt(machine);
+
+  int after = 0;
+  for (int i = 0; i < 256; i++) {
+    if (machine.memory().clock().batteryRam(static_cast<uint8_t>(i))) after++;
+  }
+  INFO("non-zero battery RAM bytes after boot: " << after);
+  REQUIRE(after > 32);
+}
+
+TEST_CASE("A IIgs without a ROM says so rather than running", "[iigs][boot]") {
+  IIgsMachine machine;
+  REQUIRE_FALSE(machine.hasROM());
+
+  // Nothing to run: the reset vector reads as zero and the CPU goes to $0000,
+  // which is why the machine is offered as unavailable rather than started.
+  machine.reset();
+  REQUIRE(machine.cpu().getPC() == 0x0000);
+}
+
+// ---------------------------------------------------------------------------
+// Booting a disk, which is the drive, the two clocks and the firmware at once
+// ---------------------------------------------------------------------------
+
+namespace {
+// The DOS 3.3 System Master that ships in public/disks, or an empty vector if
+// it is not where the test expects it. Tests run from the source directory.
+std::vector<uint8_t> loadSystemMaster() {
+  FILE *file = fopen("public/disks/Apple DOS 3.3 January 1983.dsk", "rb");
+  if (!file) return {};
+  std::vector<uint8_t> image(143360);
+  const size_t read = fread(image.data(), 1, image.size(), file);
+  fclose(file);
+  if (read != image.size()) return {};
+  return image;
+}
+
+// What the Mega II's text page says, row by row, as one string.
+std::string screenText(IIgsMachine &machine) {
+  static const uint16_t rowBase[24] = {
+      0x400, 0x480, 0x500, 0x580, 0x600, 0x680, 0x700, 0x780,
+      0x428, 0x4A8, 0x528, 0x5A8, 0x628, 0x6A8, 0x728, 0x7A8,
+      0x450, 0x4D0, 0x550, 0x5D0, 0x650, 0x6D0, 0x750, 0x7D0};
+  std::string text;
+  for (int row = 0; row < 24; row++) {
+    for (int column = 0; column < 40; column++) {
+      const uint8_t cell =
+          machine.memory().megaII().readRAM(rowBase[row] + column, false);
+      const char ch = static_cast<char>(cell & 0x7F);
+      text += (ch >= 0x20 && ch <= 0x7E) ? ch : ' ';
+    }
+    text += '\n';
+  }
+  return text;
+}
+// The 80-column screen: even columns from the auxiliary text page, odd from
+// the main one, which is how the //e's 80-column firmware lays a line out.
+std::string screenText80(IIgsMachine &machine) {
+  static const uint16_t rowBase[24] = {
+      0x400, 0x480, 0x500, 0x580, 0x600, 0x680, 0x700, 0x780,
+      0x428, 0x4A8, 0x528, 0x5A8, 0x628, 0x6A8, 0x728, 0x7A8,
+      0x450, 0x4D0, 0x550, 0x5D0, 0x650, 0x6D0, 0x750, 0x7D0};
+  std::string text;
+  for (int row = 0; row < 24; row++) {
+    for (int column = 0; column < 80; column++) {
+      const uint8_t cell = machine.memory().megaII().readRAM(
+          rowBase[row] + column / 2, (column % 2) == 0);
+      const char ch = static_cast<char>(cell & 0x7F);
+      text += (ch >= 0x20 && ch <= 0x7E) ? ch : ' ';
+    }
+    text += '\n';
+  }
+  return text;
+}
+} // namespace
+
+TEST_CASE("A IIgs boots DOS 3.3 through its own IWM", "[iigs][boot][disk]") {
+  // The other machines each boot this image in test_emulator_disk; this is the
+  // same claim for the one that reads it with a 65816, out of its own firmware
+  // rather than a card's, on a clock that changes speed while it does it.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the disk boot test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadSystemMaster();
+  if (image.empty()) {
+    WARN("DOS 3.3 System Master not found; skipping the disk boot test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insertDisk(0, image.data(), image.size(), "dos33.dsk"));
+
+  // The diagnostics take about ten seconds of the machine's own time before it
+  // so much as looks at a drive, and DOS and Applesoft load behind that.
+  for (int i = 0; i < 40000000 && !machine.cpu().isStopped(); i++) {
+    machine.step();
+  }
+
+  const std::string text = screenText(machine);
+  INFO("screen:\n" << text);
+  REQUIRE(text.find("DOS VERSION 3.3") != std::string::npos);
+  REQUIRE(text.find(']') != std::string::npos);
+}
+
+TEST_CASE("A IIgs leaves the disk it boots from alone", "[iigs][boot][disk]") {
+  // The firmware writes the IWM's mode register the instruction after it
+  // switches the drive off, and $C0EF is both that register and Q7 — so a
+  // machine that lets a coasting drive write erases track zero and then reads
+  // nothing. The image is the witness: boot it, and every byte must still be
+  // where it started.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the disk integrity test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadSystemMaster();
+  if (image.empty()) {
+    WARN("DOS 3.3 System Master not found; skipping the disk integrity test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insertDisk(0, image.data(), image.size(), "dos33.dsk"));
+
+  for (int i = 0; i < 40000000 && !machine.cpu().isStopped(); i++) {
+    machine.step();
+  }
+
+  size_t size = 0;
+  const uint8_t *after = machine.disk().getDiskData(0, &size);
+  REQUIRE(after != nullptr);
+  REQUIRE(size == image.size());
+  REQUIRE(std::equal(image.begin(), image.end(), after));
+}
+
+TEST_CASE("A IIgs has a speaker as well as an Ensoniq", "[iigs][boot][audio]") {
+  // $C030 is a Mega II address and behind it is the one-bit speaker every
+  // Apple II has. The synthesiser is a different chip on different addresses,
+  // and a machine given only that one is silent through every beep, every
+  // click and every game written before 1986 — which is most of what it runs.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the speaker test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  auto peakOf = [&machine](std::vector<float> &buffer) {
+    std::fill(buffer.begin(), buffer.end(), 0.0f);
+    machine.generateStereoAudioSamples(buffer.data(),
+                                       static_cast<int>(buffer.size() / 2));
+    float peak = 0.0f;
+    for (float sample : buffer) peak = std::max(peak, std::fabs(sample));
+    return peak;
+  };
+
+  // The firmware beeps on the way up, which is itself the speaker working —
+  // so let that finish and take the quiet afterwards as the control.
+  std::vector<float> buffer(1024, 0.0f);
+  float quietPeak = 1.0f;
+  for (int attempt = 0; attempt < 200 && quietPeak > 0.01f; attempt++) {
+    quietPeak = peakOf(buffer);
+  }
+  INFO("the machine never went quiet; peak " << quietPeak);
+  REQUIRE(quietPeak <= 0.01f);
+
+  // Then toggle it at something like a musical rate. The machine is run by
+  // asking it for audio, so the toggles go between short buffers rather than
+  // in a loop of their own: that is how a program on it makes a sound, and it
+  // keeps each buffer's span of time the length the mixer expects.
+  // The speaker and the synthesiser share an amplifier whose volume is the
+  // bottom nibble of $C03C, and the firmware sets it from battery RAM on the
+  // way up — this machine has not got that far, so turn it up by hand.
+  machine.memory().write(0x00C03C, 0x0F);
+  std::vector<float> chunk(64, 0.0f);
+  float tonePeak = 0.0f;
+  for (int round = 0; round < 40; round++) {
+    machine.memory().read(0x00C030); // the speaker, at the Mega II's address
+    tonePeak = std::max(tonePeak, peakOf(chunk));
+  }
+
+  INFO("quiet peak " << quietPeak << ", tone peak " << tonePeak);
+  REQUIRE(tonePeak > 0.1f);
+}
+
+TEST_CASE("A IIgs comes up white on blue, with a blue border",
+          "[iigs][boot][video][colour]") {
+  // The firmware writes $F6 to $C022 and $06 to $C034 on the way up: white
+  // text on medium blue, in a medium blue border. That is the screen everyone
+  // remembers, and it is not something the //e's video could produce — its
+  // text is whatever a receiver makes of the dots.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the colour test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+
+  REQUIRE(machine.memory().textColourRegister() == 0xF6);
+  REQUIRE(machine.memory().borderColour() == 0x06);
+
+  uint8_t red = 0, green = 0, blue = 0;
+  IIgsVideo::paletteColour(IIgsVideo::vgcColour(0x06), red, green, blue);
+
+  const uint8_t *frame = machine.screen().render();
+  const auto &display = machineProfile(MachineId::AppleIIgs).display;
+  const int width = display.pixelWidth;
+
+  auto isBorderBlue = [&](int x, int y) {
+    const size_t at = (static_cast<size_t>(y) * width + x) * 4;
+    return frame[at] == red && frame[at + 1] == green && frame[at + 2] == blue;
+  };
+
+  // The corner is border, and the middle of the picture is a blank text cell,
+  // which is background — the same blue in both places.
+  REQUIRE(isBorderBlue(1, 1));
+  REQUIRE(isBorderBlue(width - 2, display.pixelHeight - 2));
+
+  // And the screen is only ever those two colours, or — where the //e's 560
+  // dots are stretched to the 640-wide picture — a mix of the two at a
+  // glyph's edge: no decoder ran on it. Medium blue is $22,$22,$FF and white
+  // is $FF,$FF,$FF, so every pixel has red equal to green and blue full; a
+  // decoder's fringes would not.
+  REQUIRE(red == green);
+  REQUIRE(blue == 0xFF);
+  size_t other = 0;
+  for (int y = 0; y < display.pixelHeight; y++) {
+    for (int x = 0; x < width; x++) {
+      const size_t at = (static_cast<size_t>(y) * width + x) * 4;
+      const bool onTheLine = frame[at] == frame[at + 1] && frame[at + 2] == 0xFF &&
+                             frame[at] >= red;
+      if (!onTheLine) other++;
+    }
+  }
+  INFO("pixels that are not between white and the border blue: " << other);
+  REQUIRE(other == 0);
+}
+
+// ---------------------------------------------------------------------------
+// The SmartPort, which is the machine's own rather than a card in a slot
+// ---------------------------------------------------------------------------
+
+namespace {
+std::vector<uint8_t> loadFile(const char *path) {
+  FILE *file = fopen(path, "rb");
+  if (!file) return {};
+  fseek(file, 0, SEEK_END);
+  const long size = ftell(file);
+  fseek(file, 0, SEEK_SET);
+  std::vector<uint8_t> image(static_cast<size_t>(size));
+  const size_t read = fread(image.data(), 1, image.size(), file);
+  fclose(file);
+  if (read != image.size()) return {};
+  return image;
+}
+} // namespace
+
+TEST_CASE("A IIgs boots ProDOS from its own SmartPort", "[iigs][boot][smartport]") {
+  // Slot 5 is where a IIgs keeps its SmartPort, and it is part of the machine:
+  // no card to fit, no Control Panel setting to change. $C02D stays exactly as
+  // the firmware wrote it — every slot internal — because a part the machine
+  // has is on the internal side of that switch.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the SmartPort boot test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the SmartPort boot test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insertBlockImage(0, image.data(), image.size(), "hd.po"));
+
+  for (int i = 0; i < 60000000 && !machine.cpu().isStopped(); i++) {
+    machine.step();
+  }
+
+  // All the way to Bitsy Bye's catalog. It used to stop at the splash with
+  // "Unable to load ATInit file", because the loader keeps that file in
+  // auxiliary memory and bank $00 did not yet follow the //e's switches into
+  // bank $01.
+  const std::string text = screenText(machine);
+  INFO("screen:\n" << text);
+  REQUIRE(text.find("PRODOS.2.4.3") != std::string::npos);
+  REQUIRE(text.find("BITSY.BOOT") != std::string::npos);
+
+  // The Control Panel was not touched to make that happen: $C02D is whatever
+  // the firmware itself wrote from battery RAM on the way up, with no slot
+  // overridden. Bits 0 and 3 are reserved and stay clear.
+  const uint8_t slotRegister = machine.memory().peek(0x00C02D);
+  INFO("slot register: $" << std::hex << (int)slotRegister);
+  REQUIRE((slotRegister & 0x09) == 0);
+}
+
+TEST_CASE("A IIgs SmartPort traps execution, not reads",
+          "[iigs][boot][smartport]") {
+  // The entry point at $C50A is a trap: the card services a driver call when
+  // the CPU *executes* there, and hands back a ROM byte when something reads
+  // it as data. Which of those is happening depends on what the processor has
+  // done to the program counter by the time the read arrives, and a 65816 has
+  // not done what a 6502 has — it reads the opcode and then advances. Guessing
+  // the 6502's answer here boots the volume by luck and then fails every
+  // driver call after it, which is exactly what "UNABLE TO LOAD PRODOS" is.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the SmartPort trap test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the SmartPort trap test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insertBlockImage(0, image.data(), image.size(), "hd.po"));
+
+  // Reading the slot's bytes is what a ProDOS driver scan does, and it must
+  // see the ROM: the signature that says "a block device lives here", and the
+  // SEC that a call would have been answered with.
+  const uint32_t entry = 0x00C500 + 0x0A; // the machine's own ProDOS entry
+  REQUIRE(machine.memory().read(0x00C501) == 0x20);
+  REQUIRE(machine.memory().read(0x00C503) == 0x00);
+  REQUIRE(machine.memory().read(0x00C505) == 0x03);
+  REQUIRE(machine.memory().read(0x00C5FF) == 0x0A); // the machine's own layout
+  REQUIRE(machine.memory().read(entry) == 0x38); // SEC, untouched
+}
+
+TEST_CASE("A IIgs with no SmartPort image keeps its own slot 5 firmware",
+          "[iigs][boot][smartport]") {
+  // With nothing inserted the SmartPort has no ROM, so $C500 is the machine's
+  // own SmartPort firmware — the real one, which drives the IWM looking for a
+  // 3.5" drive. Its signature says SmartPort rather than Disk II: $Cn07 is $00
+  // where slot 6's is $3C.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the slot 5 firmware test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  REQUIRE(machine.memory().read(0x00C501) == 0x20);
+  REQUIRE(machine.memory().read(0x00C503) == 0x00);
+  REQUIRE(machine.memory().read(0x00C505) == 0x03);
+  REQUIRE(machine.memory().read(0x00C507) == 0x00); // SmartPort, not a Disk II
+  REQUIRE(machine.memory().read(0x00C500) == 0xA2); // the firmware's own code
+}
+
+TEST_CASE("A IIgs's interrupt vectors point at firmware in the I/O page",
+          "[iigs][boot][interrupt]") {
+  // The ROM's IRQ and BRK vectors name $C071 and $C074, and on a real IIgs
+  // those addresses read firmware — a few bytes of 8-bit code whose whole job
+  // is to set V or not and JML into the 16-bit interrupt manager. A //e reads
+  // the bus there. A IIgs that did the same took every BRK straight into a
+  // page of zeros and sat executing BRK after BRK where its handler should be.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the vector test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  const uint16_t irqVector = static_cast<uint16_t>(
+      machine.memory().read(0xFFFFFE) | (machine.memory().read(0xFFFFFF) << 8));
+  REQUIRE(irqVector >= 0xC071);
+  REQUIRE(irqVector <= 0xC07F);
+
+  for (uint16_t at = 0xC071; at < 0xC080; at++) {
+    const uint8_t fromROM = machine.memory().read(0xFF0000u | at);
+    REQUIRE(machine.memory().read(0x000000u | at) == fromROM);
+    REQUIRE(machine.memory().read(0x00E00000u | at) == fromROM);
+    REQUIRE(machine.memory().peek(0x000000u | at) == fromROM);
+  }
+  // ...and what is there is code that reaches the interrupt manager, not
+  // whatever the bus happened to hold.
+  REQUIRE(machine.memory().read(0x000000u | 0xC075) == 0x5C); // JML
+}
+
+TEST_CASE("A IIgs pulls its interrupt vectors from ROM whatever the language card holds",
+          "[iigs][boot][interrupt]") {
+  // The 65816 says on its VPB line when it is fetching a vector, and the FPI
+  // answers from ROM regardless of the map. Nothing on a IIgs writes a vector
+  // into bank zero's RAM — GS/OS's kernel image ends before $FFFA and holds
+  // nothing at $FFEE — and GS/OS copies that kernel over $D000-$FFFF with
+  // interrupts enabled. A machine that read the vector out of the RAM took the
+  // first interrupt of that copy to $0000.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the vector-pull test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+  IIgsMemory &memory = machine.memory();
+
+  // Language card RAM in, and garbage where the emulation-mode IRQ vector
+  // would be read from if the map were consulted.
+  memory.read(0x00C083);
+  memory.read(0x00C083);
+  memory.write(0x00FFFE, 0x00);
+  memory.write(0x00FFFF, 0x00);
+  REQUIRE(memory.read(0x00FFFE) == 0x00); // the RAM really is in the map
+
+  // Now an interrupt: the mouse, with its interrupt enabled.
+  memory.write(0x00C027, IIgsADB::STATUS_MOUSE_INTERRUPT);
+  machine.mouseMove(3, 0);
+  REQUIRE(memory.interruptPending());
+
+  // Whatever the CPU was doing at the prompt, its next instruction after
+  // taking the interrupt is the firmware's vector target in the I/O page,
+  // and not page zero.
+  machine.cpu().setP(static_cast<uint8_t>(machine.cpu().getP() & ~0x04)); // I clear
+  machine.step();
+  const uint32_t pc = (static_cast<uint32_t>(machine.cpu().getPBR()) << 16) | machine.cpu().getPC();
+  const uint16_t romVector = static_cast<uint16_t>(memory.read(0xFFFFFE) | (memory.read(0xFFFFFF) << 8));
+  REQUIRE(pc == (0x000000u | romVector));
+  REQUIRE(pc >= 0x00C071);
+  REQUIRE(pc <= 0x00C07F);
+}
+
+TEST_CASE("The firmware services a vertical-blanking interrupt and comes back",
+          "[iigs][boot][interrupt]") {
+  // Enable the Mega II's VBL interrupt the way GS/OS does, let a frame end,
+  // and the ROM's interrupt manager must take it, acknowledge it through
+  // $C047, and return to what it was doing — rather than get lost in the
+  // serial check, the sound check, or a vector that was not there.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the VBL service test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+  IIgsMemory &memory = machine.memory();
+
+  memory.write(0x00C041, IIgsMemory::INT_VBL);
+  machine.cpu().setP(static_cast<uint8_t>(machine.cpu().getP() & ~0x04)); // I clear
+  memory.signalVerticalBlank();
+  REQUIRE(memory.interruptPending());
+
+  // Give the manager a few thousand instructions.
+  for (int i = 0; i < 20000; i++) machine.step();
+
+  REQUIRE_FALSE(memory.interruptPending());          // acknowledged
+  // The flag itself may well be set again by now: several frames have gone
+  // by with VBL enabled, and $C046 reports every one until $C047 clears it.
+  // What matters is that nothing is still asking.
+  const uint32_t pc = (static_cast<uint32_t>(machine.cpu().getPBR()) << 16) | machine.cpu().getPC();
+  REQUIRE(pc >= 0x000100);                            // not in page zero
+  REQUIRE(machine.cpu().getPBR() == 0xFF);            // back in the firmware's prompt loop
+}
+
+TEST_CASE("The VGC interrupts once the beam has drawn a marked Super Hi-Res line",
+          "[iigs][boot][interrupt]") {
+  // Bit 6 of a line's control byte asks for an interrupt when that line has
+  // been drawn, which is how QuickDraw II knows it is safe to redraw the
+  // pointer. It has to come every frame, not once a second. The handler is
+  // the program's to install, so the processor is kept masked here and the
+  // test acknowledges each one itself, through $C032, as QuickDraw's would.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the scan-line interrupt test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+  IIgsMemory &memory = machine.memory();
+  const auto &timing = machineProfile(MachineId::AppleIIgs).timing;
+  machine.cpu().setP(static_cast<uint8_t>(machine.cpu().getP() | 0x04)); // I set
+
+  const int frames = 10;
+  auto countRaises = [&]() {
+    const uint64_t start = machine.slowCycles();
+    int raised = 0;
+    while (machine.slowCycles() - start <
+           static_cast<uint64_t>(timing.cyclesPerFrame()) * frames) {
+      machine.step();
+      if (memory.peek(0x00C023) & IIgsMemory::VGC_SCANLINE_PENDING) {
+        raised++;
+        memory.write(0x00C032, 0xDF); // bit 5 low: acknowledged, as QuickDraw does
+      }
+    }
+    return raised;
+  };
+
+  // Mark line 100 and enable the interrupt, but leave Super Hi-Res off: the
+  // control bytes mean nothing to the VGC in the //e's modes.
+  memory.write(0x00E19D00 + 100, IIgsVideo::SCB_INTERRUPT);
+  memory.write(0x00C023, IIgsMemory::VGC_SCANLINE_ENABLE);
+  REQUIRE(countRaises() == 0);
+
+  // With the picture on, once a frame.
+  memory.write(0x00C029, IIgsMemory::NEW_VIDEO_SHR);
+  const int raised = countRaises();
+  REQUIRE(raised >= frames - 1);
+  REQUIRE(raised <= frames + 1);
+
+  // A line that no longer asks is left alone.
+  memory.write(0x00E19D00 + 100, 0x00);
+  REQUIRE(countRaises() == 0);
+}
+
+TEST_CASE("A IIgs's 80-column text puts its even columns in the auxiliary bank",
+          "[iigs][boot][memory]") {
+  // The //e's 80-column firmware writes a line's even columns to the auxiliary
+  // text page through 80STORE and PAGE2, and on a IIgs "auxiliary" is bank
+  // $01, shadowed into $E1. A machine that left those writes in bank $00 drew
+  // every other column blank.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the 80-column test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadSystemMaster();
+  if (image.empty()) {
+    WARN("DOS 3.3 System Master not found; skipping the 80-column test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insertDisk(0, image.data(), image.size(), "dos33.dsk"));
+  for (int i = 0; i < 40000000 && !machine.cpu().isStopped(); i++) machine.step();
+  REQUIRE(screenText(machine).find(']') != std::string::npos);
+
+  auto type = [&](const char *line) {
+    for (const char *c = line; *c; c++) {
+      machine.keyDown(*c);
+      for (int i = 0; i < 60000; i++) machine.step();
+    }
+    machine.keyDown(0x0D);
+    for (int i = 0; i < 1500000; i++) machine.step();
+  };
+  type("PR#3");
+  type("PRINT \"ABCDEFGH\"");
+
+  const std::string text = screenText80(machine);
+  INFO("80-column screen:\n" << text);
+  REQUIRE(text.find("ABCDEFGH") != std::string::npos);
+}
+
+TEST_CASE("The firmware services an oscillator interrupt and comes back",
+          "[iigs][boot][interrupt][sound]") {
+  // Play a one-shot through the Ensoniq with its interrupt bit set, from the
+  // firmware's prompt. When the oscillator reaches the end of its table it
+  // interrupts; the ROM's interrupt manager must find the chip asking in $E0,
+  // dispatch it, clear it, and get back to what it was doing — rather than
+  // take it for something else or take it for ever.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the oscillator interrupt test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+  IIgsMemory &memory = machine.memory();
+  IIgsSound &sound = memory.sound();
+
+  // A short sound in the chip's RAM, through the window as a program would.
+  memory.write(0x00C03C, 0x6F); // RAM, auto-increment, full volume
+  memory.write(0x00C03F, 0x01);
+  memory.write(0x00C03E, 0x00);
+  for (int i = 0; i < 255; i++) memory.write(0x00C03D, (i % 2) ? 0xC0 : 0x40);
+  memory.write(0x00C03D, 0x00);
+
+  // One oscillator, one-shot, interrupting, on the wave at $0100.
+  auto reg = [&](uint8_t r, uint8_t v) {
+    memory.write(0x00C03C, 0x0F); // registers
+    memory.write(0x00C03E, r);
+    memory.write(0x00C03D, v);
+  };
+  reg(IIgsSound::DOC_OSCILLATOR_ENABLE, 0);
+  reg(IIgsSound::DOC_WAVE_POINTER, 0x01);
+  reg(IIgsSound::DOC_WAVE_SIZE, 0x00);
+  reg(IIgsSound::DOC_VOLUME, 0xFF);
+  reg(IIgsSound::DOC_FREQUENCY_LOW, 0x00);
+  reg(IIgsSound::DOC_FREQUENCY_HIGH, 0x04);
+  reg(IIgsSound::DOC_CONTROL, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_INTERRUPT_ENABLE);
+  REQUIRE_FALSE(sound.oscillatorHalted(0));
+  machine.cpu().setP(static_cast<uint8_t>(machine.cpu().getP() & ~0x04)); // I clear
+
+  bool interrupted = false;
+  for (int i = 0; i < 400000; i++) {
+    machine.step();
+    if (sound.interruptPending()) interrupted = true;
+  }
+  REQUIRE(sound.oscillatorHalted(0));
+  REQUIRE(interrupted);                         // it asked
+  REQUIRE_FALSE(sound.interruptPending());      // and was answered
+  REQUIRE_FALSE(memory.interruptPending());
+  REQUIRE(machine.cpu().getPBR() == 0xFF);      // back in the firmware's prompt loop
+}
+
+TEST_CASE("The firmware accepts battery RAM that was kept for it",
+          "[iigs][boot][battery]") {
+  // The point of keeping the 256 bytes is that the machine believes them. The
+  // firmware validates a checksum before trusting the contents and writes its
+  // own defaults over the lot if it does not — which is what a machine with a
+  // dead battery does on every start, and what this machine did before the
+  // host kept them.
+  //
+  // Nothing here computes that checksum, and nothing needs to: the bytes go
+  // out and come back exactly as the firmware wrote them, so the checksum
+  // that comes back is the one that went out. What the test proves is that
+  // the firmware then leaves them alone.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the battery RAM test");
+    return;
+  }
+
+  constexpr int SAMPLES = 2048;
+  std::vector<float> buffer(SAMPLES * 2);
+  std::vector<uint8_t> kept(IIgsClock::batteryRamSize());
+
+  // A machine with a flat battery: the firmware writes its defaults.
+  {
+    IIgsMachine machine;
+    machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+                 roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+    for (int i = 0; i < 500; i++) {
+      machine.generateStereoAudioSamples(buffer.data(), SAMPLES);
+    }
+    REQUIRE(machine.memory().clock().takeBatteryRamChanged());
+    const uint8_t *bytes = machine.memory().clock().batteryRamBytes();
+    for (size_t i = 0; i < kept.size(); i++) kept[i] = bytes[i];
+    // The volume is in there, which is the setting that sent us looking.
+    REQUIRE(kept[0x1E] == machine.memory().sound().volume());
+  }
+
+  // A machine handed those bytes back before it runs.
+  {
+    IIgsMachine machine;
+    machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+                 roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+    machine.memory().clock().loadBatteryRam(kept.data(), kept.size());
+    for (int i = 0; i < 500; i++) {
+      machine.generateStereoAudioSamples(buffer.data(), SAMPLES);
+    }
+    // Not one byte written: the firmware read the checksum, believed it, and
+    // left the settings where they were.
+    REQUIRE_FALSE(machine.memory().clock().takeBatteryRamChanged());
+    for (size_t i = 0; i < kept.size(); i++) {
+      INFO("battery RAM byte $" << std::hex << i);
+      REQUIRE(machine.memory().clock().batteryRam(static_cast<uint8_t>(i)) ==
+              kept[i]);
+    }
+  }
+}
+
+TEST_CASE("The speaker is as loud as the other machines at the machine's own "
+          "volume",
+          "[iigs][boot][audio]") {
+  // A IIgs comes up with the amplifier's volume nibble at 5 of 15, which is
+  // the ROM's own default, and there is no way to turn it up from inside: the
+  // Control Panel hotkey is not implemented, and the firmware rewrites
+  // battery RAM's volume byte whenever its checksum does not match. So the
+  // level at that setting is the level the machine has, and it used to be
+  // 0.150 peak against a //e's 0.450 for the same speaker loop — nine and a
+  // half decibels, which is a laptop's volume control's worth of difference.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the speaker level test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  constexpr int SAMPLES = 4096;
+  std::vector<float> buffer(SAMPLES * 2);
+  for (int i = 0; i < 400; i++) {
+    machine.generateStereoAudioSamples(buffer.data(), SAMPLES);
+  }
+  REQUIRE(machine.memory().sound().volume() == 5); // what the firmware chose
+
+  // LDA $C030 / JMP back: the speaker toggled as fast as a program can.
+  static const uint8_t loop[] = {0xAD, 0x30, 0xC0, 0x4C, 0x00, 0x03};
+  for (size_t i = 0; i < sizeof loop; i++) {
+    machine.memory().write(0x000300 + i, loop[i]);
+  }
+  machine.cpu().setPBR(0x00);
+  machine.cpu().setPC(0x0300);
+  machine.cpu().setP(static_cast<uint8_t>(machine.cpu().getP() | FLAG816_I));
+
+  std::fill(buffer.begin(), buffer.end(), 0.0f);
+  machine.generateStereoAudioSamples(buffer.data(), SAMPLES);
+  float peak = 0.0f;
+  for (float sample : buffer) peak = std::max(peak, std::fabs(sample));
+
+  INFO("speaker peak at the firmware's volume: " << peak);
+  // A //e's peak for the same loop is 0.450. Within about 3dB of it.
+  REQUIRE(peak > 0.28f);
+
+  SECTION("and full volume is the full output, not more") {
+    machine.memory().write(0x00C03C, 0x0F);
+    for (int i = 0; i < 40; i++) {
+      machine.generateStereoAudioSamples(buffer.data(), SAMPLES);
+    }
+    std::fill(buffer.begin(), buffer.end(), 0.0f);
+    machine.generateStereoAudioSamples(buffer.data(), SAMPLES);
+    float loud = 0.0f;
+    for (float sample : buffer) loud = std::max(loud, std::fabs(sample));
+    INFO("speaker peak at full volume: " << loud);
+    REQUIRE(loud > 0.40f);
+    REQUIRE(loud < 1.0f);
+  }
+}
+
+TEST_CASE("The bell fades out and ends quiet", "[iigs][boot][audio]") {
+  // The ROM's bell toggles the speaker while ramping the $C03C volume nibble
+  // down, then puts the nibble back. The gain follows the nibble as it
+  // happened, after the coupling stage and through a slew, so the fade is
+  // continuous and putting the volume back does not bring the speaker's
+  // decaying tail back as a thump — which was heard as a note after the bell.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the bell test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadSystemMaster();
+  if (image.empty()) {
+    WARN("DOS 3.3 System Master not found; skipping the bell test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE, roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insertDisk(0, image.data(), image.size(), "dos33.dsk"));
+  for (int i = 0; i < 40000000 && !machine.cpu().isStopped(); i++) machine.step();
+  REQUIRE(screenText(machine).find(']') != std::string::npos);
+
+  for (const char *c = "PRINT CHR$(7)"; *c; c++) { machine.keyDown(*c); for (int i = 0; i < 60000; i++) machine.step(); }
+  machine.keyDown(0x0D);
+
+  // The envelope in ten-millisecond windows, with the nibble at each.
+  std::vector<float> buffer(480 * 2);
+  std::vector<float> peaks; std::vector<int> nibbles;
+  for (int n = 0; n < 100; n++) {
+    machine.generateStereoAudioSamples(buffer.data(), 480);
+    float peak = 0; for (int i = 0; i < 480; i++) peak = std::max(peak, std::fabs(buffer[i * 2]));
+    peaks.push_back(peak); nibbles.push_back(machine.memory().sound().volume());
+  }
+  // Find the bell: the loudest window, and the window where the nibble goes
+  // back up after having been ramped to zero.
+  int loudest = 0; for (int n = 0; n < 100; n++) if (peaks[n] > peaks[loudest]) loudest = n;
+  int restored = -1;
+  for (int n = loudest; n < 99; n++) if (nibbles[n] == 0 && nibbles[n + 1] > 0) { restored = n + 1; break; }
+  REQUIRE(loudest > 2);
+  REQUIRE(restored > loudest);
+  INFO("tone peak " << peaks[loudest] << ", after restore " << peaks[restored] << " " << peaks[restored + 1]);
+  // Rang, faded well down, and stayed quiet once the volume came back.
+  REQUIRE(peaks[loudest] > 0.1f);
+  // A third of the way down or better by the time the volume is restored.
+  // This was a quarter when the volume nibble was applied as a straight
+  // amplitude ratio; the taper that replaced it (see amplifierGain) is
+  // concave, so the low settings the fade walks through are proportionally
+  // less attenuated and the tail of the fade is not as deep. What the test is
+  // here for is unaffected: it still rings, still slopes down about ten
+  // decibels, and still does not thump when the volume comes back.
+  REQUIRE(peaks[restored - 1] < peaks[loudest] * 0.4f);
+  // And no thump as the volume comes back: a tail brought back at full level
+  // would be near the tone's own peak, not a fifth of it. This and the line
+  // above were a quarter and a seventh under the old ratio, and both moved by
+  // the same factor the taper changed the low settings by.
+  REQUIRE(peaks[restored] < peaks[loudest] * 0.25f);
+  REQUIRE(peaks[restored + 2] < peaks[loudest] * 0.05f);
+  // And the fade was a slope, not steps: no window louder than the one before it.
+  for (int n = loudest + 1; n < restored; n++) REQUIRE(peaks[n] <= peaks[n - 1] + 0.005f);
+}
+
+TEST_CASE("A IIgs's SmartPort answers where its own firmware does",
+          "[iigs][boot][smartport]") {
+  // The machine's slot 5 firmware has its ProDOS entry at $C50A and its
+  // SmartPort entry at $C50D, and software written for a IIgs hard-codes those
+  // rather than reading $C5FF. A boot loader that did `JSR $C50D` into a card
+  // laid out like a card found an RTS there, came back without its inline
+  // parameters skipped, and executed them into a BRK.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the SmartPort layout test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the SmartPort layout test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insertBlockImage(0, image.data(), image.size(), "hd.po"));
+  IIgsMemory &memory = machine.memory();
+  REQUIRE(memory.peek(0x00C5FF) == 0x0A);
+  REQUIRE(memory.peek(0x00C50A) == 0x38);
+  REQUIRE(memory.peek(0x00C50D) == 0x38);
+  REQUIRE(memory.peek(0x00C501) == 0x20);
+}
+
+TEST_CASE("The IIgs Diagnostic's speed loop counts what the disk expects",
+          "[iigs][boot][timing]") {
+  // The Apple IIgs Diagnostic measures the processor's speed by counting
+  // iterations of a nine-cycle loop between two changes of $C02E, the
+  // vertical counter, which moves every two scan lines. It accepts 25 or 26
+  // at fast speed and 14 or 15 at slow, and those numbers are the sum of
+  // three things the machine models: 2.8MHz with one refresh cycle in every
+  // ten for fast RAM, a Mega II access that waits for the slow clock's edge
+  // and then takes a whole slow cycle, and a slow speed that is exactly the
+  // Mega II's. The same loop, run here, has to count the same.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the speed loop test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+  IIgsMemory &memory = machine.memory();
+
+  // The diagnostic's loop, verbatim, with a STP after it:
+  //   LDX #0 / LDA $C02E / CMP $C02E / BEQ -3
+  //   LDA $C02E / INX / CMP $C02E / BEQ -3 / NOP  (run until the NOP is reached)
+  static const uint8_t loop[] = {0xA2, 0x00, 0xAD, 0x2E, 0xC0, 0xCD, 0x2E, 0xC0, 0xF0, 0xFB,
+                                 0xAD, 0x2E, 0xC0, 0xE8, 0xCD, 0x2E, 0xC0, 0xF0, 0xFA, 0xEA};
+  auto count = [&](uint8_t speed) {
+    memory.write(0x00C036, speed);
+    for (size_t i = 0; i < sizeof loop; i++) memory.write(0x000300 + i, loop[i]);
+    machine.cpu().setPBR(0x00);
+    machine.cpu().setPC(0x0300);
+    machine.cpu().setP(static_cast<uint8_t>(machine.cpu().getP() | 0x04)); // no interrupts in the way
+    int steps = 0;
+    while (steps++ < 100000 && !(machine.cpu().getPBR() == 0 && machine.cpu().getPC() == 0x0313)) machine.step();
+    REQUIRE(machine.cpu().getPC() == 0x0313);
+    return machine.cpu().getX() & 0xFF;
+  };
+  const int fast = count(0x80);
+  const int slow = count(0x00);
+  INFO("fast " << fast << ", slow " << slow);
+  REQUIRE((fast == 25 || fast == 26));
+  REQUIRE((slow == 14 || slow == 15));
+}
+
+TEST_CASE("A IIgs prints through the port on the back of it",
+          "[iigs][boot][serial]") {
+  // The whole path, through the machine's own firmware: point the output hook
+  // at slot 1 the way PR#1 does, print through COUT, and the characters come
+  // out of the printer port as the host's printer sees them.
+  //
+  // Two things in this were measured rather than reasoned about, and the test
+  // exists because each of them silently printed nothing.
+  //
+  // The port is SCC channel A. Both the address order and the port numbering
+  // suggest channel B — it is the lower pair of addresses — and both are
+  // wrong: slot 1's firmware programs $C039/$C03B and slot 2's $C038/$C03A.
+  //
+  // And the firmware waits on the handshake lines before every character, so
+  // an unplugged port has to answer as a device that is present and ready
+  // (see IIgsSCC::statusRegister). It waits for DCD as well as CTS.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the printer port test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  std::vector<std::pair<int, uint8_t>> sent;
+  machine.setSerialTxCallback([&sent](int port, uint8_t byte) {
+    sent.emplace_back(port, byte);
+  });
+
+  constexpr int SAMPLES = 2048;
+  std::vector<float> buffer(SAMPLES * 2);
+  for (int i = 0; i < 500; i++) {
+    machine.generateStereoAudioSamples(buffer.data(), SAMPLES);
+  }
+  REQUIRE_FALSE(machine.memory().scc().hasLoopbackCable());
+
+  // LDA #$00 / STA $36 / LDA #$C1 / STA $37 — the output hook at $C100, which
+  // is what PR#1 writes; then two characters and a return through COUT.
+  const std::vector<uint8_t> program = {
+      0xA9, 0x00, 0x85, 0x36, 0xA9, 0xC1, 0x85, 0x37,
+      0xA9, 0xC8, 0x20, 0xED, 0xFD, // LDA #'H' / JSR COUT
+      0xA9, 0xC9, 0x20, 0xED, 0xFD, // LDA #'I'
+      0xA9, 0x8D, 0x20, 0xED, 0xFD, // LDA #CR
+      0x4C, 0x17, 0x03,             // JMP *
+  };
+  for (size_t i = 0; i < program.size(); i++) {
+    machine.memory().write(0x000300 + static_cast<uint32_t>(i), program[i]);
+  }
+  machine.cpu().setEmulation(true);
+  machine.cpu().setPBR(0x00);
+  machine.cpu().setPC(0x0300);
+  machine.cpu().setSP(0x01F0);
+
+  // Long enough for three characters at the port's own baud rate.
+  for (int i = 0; i < 6000000; i++) machine.step();
+
+  REQUIRE(sent.size() >= 3);
+  for (const auto &byte : sent) {
+    REQUIRE(byte.first == IIgsMachine::PRINTER_PORT);
+  }
+  REQUIRE(sent[0].second == 0xC8);
+  REQUIRE(sent[1].second == 0xC9);
+  REQUIRE(sent[2].second == 0x8D);
+  // The firmware adds the line feed a printer needs after a return, which is
+  // its own setting rather than anything this test asked for.
+  if (sent.size() > 3) REQUIRE(sent[3].second == 0x8A);
+}
+
+TEST_CASE("Control-Reset keeps a IIgs's memory and the power switch does not", "[iigs][boot][reset]") {
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the reset test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+  REQUIRE(machine.screenText().find("Check startup device") != std::string::npos);
+
+  // A mark in fast RAM, in a bank nothing shadows, and one in the Mega II.
+  machine.memory().write(0x020123, 0xA5);
+  machine.memory().megaII().writeRAM(0x0300, 0x5A, false);
+
+  SECTION("the RESET line leaves both where they were, and the firmware runs again") {
+    machine.warmReset();
+    REQUIRE(machine.cpu().getEmulation());
+    REQUIRE(machine.memory().read(0x020123) == 0xA5);
+    REQUIRE(machine.memory().megaII().readRAM(0x0300, false) == 0x5A);
+    runToPrompt(machine);
+    REQUIRE(machine.screenText().find("Check startup device") != std::string::npos);
+  }
+
+  SECTION("power off and on clears them") {
+    machine.reset();
+    REQUIRE(machine.memory().read(0x020123) == 0x00);
+    REQUIRE(machine.memory().megaII().readRAM(0x0300, false) == 0x00);
+  }
+}
+
+// ============================================================================
+// The seven sockets
+// ============================================================================
+
+TEST_CASE("A card in a socket answers only when the Slot register says so",
+          "[iigs][slots]") {
+  // Chapter 8 of the Hardware Reference: a IIgs has seven real slots, and each
+  // one also has a built-in device assigned to it. "Only one device (either
+  // the built-in device or the peripheral device) can be selected at a time
+  // for each slot", and $C02D is the switch — the Control Panel's setting, in
+  // a register.
+  IIgsMachine machine(1024 * 1024);
+  machine.init(nullptr, 0);
+
+  REQUIRE(machine.getSlotCardName(4) == "empty");
+  REQUIRE(machine.setSlotCard(4, "mockingboard"));
+  REQUIRE(machine.getSlotCardName(4) == "mockingboard");
+
+  // Slot 4's I/O is always the card's: "I/O space for slots 3 ($C0B0-$C0BF)
+  // and 4 ($C0C0-$C0CF) is always enabled."
+  REQUIRE(machine.isSlotInternal(4));
+  machine.memory().write(0x00C0C0, 0x00); // reaches the card either way
+
+  // Its ROM is not, and slot 4's bit does move that.
+  machine.setSlotInternal(4, false);
+  REQUIRE_FALSE(machine.isSlotInternal(4));
+  machine.setSlotInternal(4, true);
+  REQUIRE(machine.isSlotInternal(4));
+
+  REQUIRE(machine.setSlotCard(4, "empty"));
+  REQUIRE(machine.getSlotCardName(4) == "empty");
+}
+
+TEST_CASE("Slot 3 is not in the Slot register", "[iigs][slots]") {
+  // Bit 3 is reserved, and slot 3's ROM follows the //e's own SLOTC3ROM "to
+  // maintain compatibility with existing Apple II products". So the Control
+  // Panel has nothing to say about it.
+  IIgsMachine machine(1024 * 1024);
+  machine.init(nullptr, 0);
+
+  REQUIRE(machine.isSlotInternal(3));
+  machine.setSlotInternal(3, false);
+  REQUIRE(machine.isSlotInternal(3)); // unchanged: there is no bit to set
+  REQUIRE((machine.memory().slotRegister() & 0x09) == 0); // reserved bits stay clear
+}
+
+TEST_CASE("An empty socket switched to Your Card does not let the machine's "
+          "own device answer", "[iigs][slots]") {
+  // The register moves the I/O as well as the ROM for slots 1, 2, 5, 6 and 7.
+  // Slot 6 internal is the 5.25" drive at $C0E0-$C0EF; switched to a card that
+  // is not there, those addresses are the bus, not the IWM.
+  IIgsMachine machine(1024 * 1024);
+  machine.init(nullptr, 0);
+
+  machine.setSlotInternal(6, false);
+  REQUIRE_FALSE(machine.isSlotInternal(6));
+  // Reading the drive's own addresses must not reach the drive.
+  const uint8_t before = machine.disk().isMotorOn() ? 1 : 0;
+  machine.memory().read(0x00C0E9); // motor on, were the IWM listening
+  REQUIRE((machine.disk().isMotorOn() ? 1 : 0) == before);
+
+  machine.setSlotInternal(6, true);
+  machine.memory().read(0x00C0E9);
+  REQUIRE(machine.disk().isMotorOn());
+}
+
+TEST_CASE("The Control Panel's slot setting outlasts the firmware",
+          "[iigs][slots]") {
+  // On a real machine this setting lives in battery RAM and the firmware
+  // copies it into $C02D on every start. We cannot write that battery RAM —
+  // the firmware validates a checksum whose algorithm is not known here, and
+  // writes its own defaults over anything it does not like — so the emulator
+  // stands in for the Control Panel and holds the bits the user chose against
+  // the firmware's own writes. Without that, a choice made before booting is
+  // wiped by the next boot and the card in the socket never answers.
+  IIgsMachine machine(1024 * 1024);
+  machine.init(nullptr, 0);
+
+  machine.setSlotInternal(4, false);
+  REQUIRE_FALSE(machine.isSlotInternal(4));
+
+  // The firmware writing the whole register must not take it back.
+  machine.memory().write(0x00C02D, 0x00);
+  REQUIRE_FALSE(machine.isSlotInternal(4));
+
+  // A slot nobody has touched is still entirely the firmware's.
+  machine.memory().write(0x00C02D, 0x80);
+  REQUIRE_FALSE(machine.isSlotInternal(7));
+  machine.memory().write(0x00C02D, 0x00);
+  REQUIRE(machine.isSlotInternal(7));
+
+  // ...and the choice can be given back.
+  machine.setSlotInternal(4, true);
+  REQUIRE(machine.isSlotInternal(4));
+}
+
+TEST_CASE("A IIgs has a game port, and the host can drive it", "[iigs][gameport]") {
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the game port test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  SECTION("a paddle's timer runs for as long as the value says") {
+    // $C070 starts the timers and $C064 reads one: bit 7 stays high while the
+    // timer is running, so software counts the loops until it drops. A machine
+    // that never received the value read the same number whatever the stick
+    // was doing, which is a joystick that does not move.
+    machine.setPaddleValue(0, 255);
+    REQUIRE(machine.getPaddleValue(0) == 255);
+
+    machine.memory().read(0x00C070); // PTRIG
+    REQUIRE((machine.memory().read(0x00C064) & 0x80) != 0);
+
+    // Let the timer expire. It is counted on the Mega II's clock, which runs
+    // as the machine does.
+    for (int i = 0; i < 4000 && (machine.memory().read(0x00C064) & 0x80); i++) {
+      machine.step();
+    }
+    REQUIRE((machine.memory().read(0x00C064) & 0x80) == 0);
+
+    // A centred stick's timer expires sooner than a stick pushed to the stop.
+    machine.setPaddleValue(0, 0);
+    machine.memory().read(0x00C070);
+    REQUIRE((machine.memory().read(0x00C064) & 0x80) == 0);
+  }
+
+  SECTION("and its buttons are the Apple keys' own lines") {
+    REQUIRE((machine.memory().read(0x00C061) & 0x80) == 0);
+    machine.setButton(0, true);
+    REQUIRE((machine.memory().read(0x00C061) & 0x80) != 0);
+    machine.setButton(0, false);
+    REQUIRE((machine.memory().read(0x00C061) & 0x80) == 0);
+
+    machine.setButton(1, true);
+    REQUIRE((machine.memory().read(0x00C062) & 0x80) != 0);
+    machine.setButton(1, false);
+
+    machine.setButton(2, true);
+    REQUIRE((machine.memory().read(0x00C063) & 0x80) != 0);
+    machine.setButton(2, false);
+  }
+}
+
+TEST_CASE("A Joyport fits a IIgs's game port too", "[iigs][gameport][joyport]") {
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the Joyport test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  machine.setGamePortDevice(GamePortDevice::SiriusJoyport);
+  REQUIRE(machine.gamePortDevice() == GamePortDevice::SiriusJoyport);
+
+  // Past the window where the Joyport lets go of PB0/PB1 for the startup
+  // firmware's benefit. Measured from the reset inside init(), so this runs
+  // past its length from wherever the clock has got to rather than assuming
+  // it started at zero.
+  const uint64_t past = machine.memory().slowCycles() +
+                        IIgsMachine::JOYPORT_RESET_GUARD_CYCLES + 1000;
+  while (machine.memory().slowCycles() < past) machine.step();
+
+  SECTION("the annunciators choose the stick and the axis pair") {
+    machine.memory().read(0xE0C058); // AN0 off — stick 1
+    machine.memory().read(0xE0C05A); // AN1 off — horizontal
+
+    // Active low: nothing held reads high, the opposite of an Apple button.
+    REQUIRE((machine.memory().read(0xE0C061) & 0x80) == 0x80);
+    REQUIRE((machine.memory().read(0xE0C062) & 0x80) == 0x80);
+    REQUIRE((machine.memory().read(0xE0C063) & 0x80) == 0x80);
+
+    machine.setJoyportStick(0, Joyport::LEFT | Joyport::FIRE);
+    REQUIRE((machine.memory().read(0xE0C061) & 0x80) == 0x00); // fire
+    REQUIRE((machine.memory().read(0xE0C062) & 0x80) == 0x00); // left
+    REQUIRE((machine.memory().read(0xE0C063) & 0x80) == 0x80); // not right
+
+    machine.memory().read(0xE0C05B); // AN1 on — vertical
+    REQUIRE((machine.memory().read(0xE0C062) & 0x80) == 0x80); // left is not up
+    machine.setJoyportStick(0, Joyport::DOWN);
+    REQUIRE((machine.memory().read(0xE0C063) & 0x80) == 0x00);
+
+    // Stick 2 is behind AN0 and must not answer for stick 1.
+    machine.setJoyportStick(1, Joyport::UP);
+    REQUIRE((machine.memory().read(0xE0C062) & 0x80) == 0x80);
+    machine.memory().read(0xE0C059); // AN0 on — stick 2
+    REQUIRE((machine.memory().read(0xE0C062) & 0x80) == 0x00);
+  }
+
+  SECTION("and it answers instead of the Apple keys, not beside them") {
+    machine.memory().read(0xE0C058);
+    machine.memory().read(0xE0C05A);
+
+    // An Apple key held reads as *not pressed* here, because the Joyport is
+    // driving the line and reads the other way up.
+    machine.setButton(0, true);
+    REQUIRE((machine.memory().read(0xE0C061) & 0x80) == 0x80);
+
+    machine.setGamePortDevice(GamePortDevice::AppleJoystick);
+    REQUIRE((machine.memory().read(0xE0C061) & 0x80) == 0x00); // released with it
+    machine.setButton(0, true);
+    REQUIRE((machine.memory().read(0xE0C061) & 0x80) == 0x80);
+  }
+}
+
+TEST_CASE("A IIgs still starts with a Joyport fitted", "[iigs][gameport][joyport]") {
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the Joyport boot test");
+    return;
+  }
+
+  // Both of the Joyport's idle-high lines look like a held Open and Closed
+  // Apple, and the startup firmware reads exactly those to choose between a
+  // normal start, the Control Panel and the self test. Without the guard
+  // window this machine never reaches its own splash screen.
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  machine.setGamePortDevice(GamePortDevice::SiriusJoyport);
+
+  runToPrompt(machine);
+  const std::string screen = machine.screenText();
+  INFO("screen:\n" << screen);
+  REQUIRE(screen.find("Fatal") == std::string::npos);
+  REQUIRE(screen.find("Check startup device") != std::string::npos);
+}
+
+TEST_CASE("An image inserted while the firmware runs slot 5 waits for reset",
+          "[iigs][boot][smartport]") {
+  // With nothing inserted the machine's own slot 5 firmware shows through, and
+  // at "Check startup device!" the firmware runs it over and over. Inserting
+  // an image used to put the SmartPort's ROM there at once, under a CPU part
+  // way through the old code, and the machine landed in the monitor at
+  // whatever byte of the new ROM its next instruction fell on. The ROM now
+  // changes at reset: the insert is held, and Ctrl+Reset boots from it.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the SmartPort insert test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the SmartPort insert test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+
+  // Deep inside the slot 5 firmware on one of its later passes: the insert
+  // that sent the machine to the monitor with a BRK at $00/C51F.
+  int visits = 0;
+  bool inserted = false;
+  for (int i = 0; i < 40000000; i++) {
+    const uint32_t pc = machine.cpu().getPCFull();
+    if ((pc & 0xFFFF00) == 0x00C500 && ++visits == 10) {
+      REQUIRE(machine.insertBlockImage(0, image.data(), image.size(), "hd.po"));
+      inserted = true;
+      break;
+    }
+    machine.step();
+  }
+  REQUIRE(inserted);
+  REQUIRE(machine.smartPort().isROMPending());
+
+  for (int i = 0; i < 20000000; i++) machine.step();
+  std::string text = screenText(machine);
+  INFO("screen:\n" << text);
+  REQUIRE(text.find("BRK") == std::string::npos);
+  REQUIRE(text.find("Check startup device") != std::string::npos);
+
+  machine.warmReset();
+  REQUIRE_FALSE(machine.smartPort().isROMPending());
+  for (int i = 0; i < 60000000 && !machine.cpu().isStopped(); i++) machine.step();
+  text = screenText(machine);
+  INFO("after Ctrl+Reset:\n" << text);
+  REQUIRE(text.find("BITSY.BOOT") != std::string::npos);
+}
+
+TEST_CASE("Ejecting the last image leaves the SmartPort's ROM until reset",
+          "[iigs][smartport]") {
+  // The same rule the other way: a program that calls $C50D after the image
+  // went must find the SmartPort, answering that the device is gone, and not
+  // the machine's own firmware appearing under it.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the SmartPort eject test");
+    return;
+  }
+  const std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the SmartPort eject test");
+    return;
+  }
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  // Before the CPU has run, the ROM appears at once.
+  REQUIRE(machine.insertBlockImage(0, image.data(), image.size(), "hd.po"));
+  REQUIRE(machine.smartPort().hasROM());
+
+  for (int i = 0; i < 1000000; i++) machine.step();
+  machine.ejectBlockImage(0);
+  REQUIRE(machine.smartPort().hasROM());
+
+  machine.warmReset();
+  REQUIRE_FALSE(machine.smartPort().hasROM());
+}

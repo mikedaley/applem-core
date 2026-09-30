@@ -21,6 +21,18 @@ class ExpansionCard;
 class MouseIOU;
 class NoSlotClock;
 
+/**
+ * The soft switches as one word, for a debugger to look at.
+ *
+ * Both machines' //e switches are the same switches — a IIgs's are its Mega
+ * II's — so the packing is here rather than on either machine. The three
+ * pushbuttons and "a key is waiting" are passed in because they do not come
+ * from the switches: on a //e they are the game connector and the keyboard
+ * latch, and on a IIgs they come from the ADB.
+ */
+uint64_t packSoftSwitchState(const SoftSwitches &sw, bool button0, bool button1,
+                             bool button2, bool keyAvailable);
+
 class MMU {
 public:
   using KeyboardCallback = std::function<uint8_t()>;
@@ -61,6 +73,25 @@ public:
   uint8_t readRAM(uint16_t address, bool aux = false) const;
   void writeRAM(uint16_t address, uint8_t value, bool aux = false);
 
+  /**
+   * The language card's RAM at $D000-$FFFF, with main or auxiliary named by
+   * the caller instead of taken from ALTZP.
+   *
+   * A //e has one language card and ALTZP decides which half of it is in the
+   * map — there is no other way to reach it, so `readLanguageCard` asks the
+   * switch and that is the whole story. A IIgs reaches the same hardware two
+   * ways: through the map, as a //e does, and by addressing bank $E0 or $E1
+   * directly, where the *bank number* names the half. Those are two different
+   * 48K, and the toolbox and GS/OS live in $E1's.
+   *
+   * The read is RAM, not ROM: whether the space reads the card or the machine's
+   * ROM is the caller's to decide, because a IIgs asks a different register
+   * about it. The write still honours the card's write enable, which is the
+   * same switch either way in.
+   */
+  uint8_t readLanguageCardRAM(uint16_t address, bool aux) const;
+  void writeLanguageCardRAM(uint16_t address, uint8_t value, bool aux);
+
   // Language card RAM access (for state serialization)
   const uint8_t *getLCBank1(bool aux = false) const {
     return aux ? auxLcBank1_.data() : lcBank1_.data();
@@ -93,6 +124,29 @@ public:
 
   // Soft switch state
   const SoftSwitches &getSoftSwitches() const { return switches_; }
+
+  /**
+   * What an unread address reads: whatever the video scanner is fetching.
+   *
+   * Public because a IIgs's memory controller sits in front of this one and
+   * has to answer for an empty socket itself — a slot the Slot register has
+   * switched to a card that is not there drives nothing, and the machine's own
+   * device for that slot must not answer in its place.
+   */
+  uint8_t floatingBus() { return getFloatingBusValue(); }
+
+  /**
+   * The switches a save state carries, as one word, and how they come back.
+   *
+   * Restoring is done by writing the switches' own addresses rather than
+   * poking the struct, so that everything that watches a switch — the video,
+   * the language card's bank pointers, a machine that has no auxiliary bank
+   * and ignores the whole group — sees the change the way it always does. The
+   * language card takes the double read its write latch needs. Both machines
+   * use this: a IIgs's Mega II is this class, restored the same way.
+   */
+  uint32_t packSwitchesForState() const;
+  void restoreSwitchesFromState(uint32_t packed);
 
   // Callbacks
   void setKeyboardCallback(KeyboardCallback cb) {

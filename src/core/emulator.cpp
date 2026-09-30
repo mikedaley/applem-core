@@ -12,6 +12,7 @@
 #include "cards/thunderclock/thunderclock_card.hpp"
 #include "cards/mouse/mouse_card.hpp"
 #include "cards/serial/serial_port.hpp"
+#include "iigs/iigs_spec.hpp"
 #include "cards/smartport/smartport_card.hpp"
 #include "cards/softcard/softcard_z80.hpp"
 #include "debug/condition_evaluator.hpp"
@@ -30,6 +31,8 @@ Emulator::Emulator(MachineId machine) : machine_(&machineProfile(machine)) {
   video_ = std::make_unique<Video>(*mmu_);
   audio_ = std::make_unique<Audio>(*machine_);
   keyboard_ = std::make_unique<Keyboard>();
+  // An unmodified II+ cannot type lower case; the profile says so.
+  keyboard_->setUppercaseOnly(!machine_->caps.hasLowercase);
 
   // Create cards, keep raw pointers, then insert into slots. Which drive
   // controller gets built is the machine's: a //e and a II+ take a Disk II
@@ -169,6 +172,18 @@ SystemRoms romsFor(MachineId machine) {
   case MachineId::AppleIIc:
     return {roms::ROM_SYSTEM_IIC, roms::ROM_SYSTEM_IIC_SIZE,
             roms::ROM_CHAR_IIC, roms::ROM_CHAR_IIC_SIZE};
+  case MachineId::AppleIIgs:
+    // A IIgs's character generator is in neither of the places the other
+    // machines keep theirs: not a part of its own, and not in the system ROM
+    // either — searching a ROM 01 image for so much as one glyph finds
+    // nothing. It is inside the video chip, which the CPU cannot read.
+    //
+    // So the machine is given the //e's set, which is the same font: the
+    // enhanced //e, the //c and the IIgs draw the same characters, MouseText
+    // included. Without it every glyph is blank and the screen shows solid
+    // bars where the text should be.
+    return {roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE, roms::ROM_CHAR,
+            roms::ROM_CHAR_SIZE};
   case MachineId::AppleIIe:
     break;
   }
@@ -178,7 +193,29 @@ SystemRoms romsFor(MachineId machine) {
 
 } // namespace
 
+const uint8_t *Emulator::systemROMFor(MachineId machine, size_t &size) {
+  const SystemRoms rom = romsFor(machine);
+  size = rom.systemSize;
+  return rom.system;
+}
+
+const uint8_t *Emulator::characterROMFor(MachineId machine, size_t &size) {
+  const SystemRoms rom = romsFor(machine);
+  size = rom.charSize;
+  return rom.chars;
+}
+
 bool Emulator::isMachineRunnable(MachineId machine) {
+  // A IIgs is not built from this class's parts — it has its own coordinator,
+  // IIgsMachine, and the host builds that instead when the machine is a IIgs.
+  // What decides whether it can be started is the same thing that decides for
+  // every other machine: whether its ROM is in the build. The IIgs's ROM is
+  // banked and its profile describes a 64KB window rather than the whole
+  // image, so the size to expect is the image's own.
+  if (machineProfile(machine).family == MachineFamily::AppleIIgs) {
+    return romsFor(machine).systemSize >= iigs::ROM_SIZE_ROM01;
+  }
+
   // A machine's ROM has to actually fill the space its profile claims. A short
   // image would leave the reset vector reading whatever the array was
   // initialised to, which looks like a running machine that immediately goes
@@ -235,21 +272,10 @@ void Emulator::reset() {
   lastFrameCycle_ = 0;
   samplesGenerated_ = 0;
   frameReady_ = false;
-  breakpointHit_ = false;
-  watchpointHit_ = false;
-  skipBreakpointOnce_ = false;
-  tempBreakpointActive_ = false;
-  tempBreakpoint_ = 0;
-  tempBreakpointHit_ = false;
+  debug_.reset();
   // Keep beam breakpoints across reset (same as regular breakpoints)
-  for (auto& bp : beamBreakpoints_) {
-    bp.lastFireFrame = UINT64_MAX;
-    bp.lastFireScanline = -1;
-  }
-  beamBreakHit_ = false;
-  beamBreakHitId_ = -1;
-  beamBreakHitScanline_ = -1;
-  beamBreakHitHPos_ = -1;
+  // MachineDebug::reset() above has already released every beam breakpoint
+  // for the new frame.
   paused_ = false;
 
   // Clear BASIC debugging state
@@ -288,12 +314,7 @@ void Emulator::warmReset() {
   video_->beginNewFrame(cpu_->getTotalCycles());
 
   // Clear debugger hit flags
-  breakpointHit_ = false;
-  watchpointHit_ = false;
-  skipBreakpointOnce_ = false;
-  tempBreakpointActive_ = false;
-  tempBreakpointHit_ = false;
-  beamBreakHit_ = false;
+  debug_.reset();
 
   // Clear BASIC debugger state
   basicBreakpointHit_ = false;
@@ -306,8 +327,8 @@ void Emulator::warmReset() {
 }
 
 void Emulator::setPaused(bool paused) {
-  if (!paused && paused_ && breakpointHit_) {
-    skipBreakpointOnce_ = true;
+  if (!paused && paused_ && debug_.isBreakpointHit()) {
+    debug_.skipNextBreakpoint();
   }
   if (!paused && paused_ && basicBreakpointHit_) {
     // Skip this BASIC breakpoint until we move to a different line/statement
@@ -327,11 +348,8 @@ void Emulator::setPaused(bool paused) {
     }
     skipBasicBreakpointStmt_ = hasStmtBp ? static_cast<int8_t>(stmtIdx) : -1;
   }
-  breakpointHit_ = false;
+  debug_.clearHits();
   basicBreakpointHit_ = false;
-  watchpointHit_ = false;
-  beamBreakHit_ = false;
-  beamBreakHitId_ = -1;
   // Reset frame sample counter when unpausing to prevent backlog
   if (!paused && paused_) {
     samplesGenerated_ = 0;
@@ -374,34 +392,10 @@ void Emulator::runCycles(int cycles) {
       continue;
     }
 
-    // Check breakpoints (user breakpoints and temp breakpoint)
-    {
-      uint16_t pc = cpu_->getPC();
-
-      // Check temp breakpoint (step over / step out)
-      if (tempBreakpointActive_ && pc == tempBreakpoint_) {
-        // Disarm FIRST, then record the hit: clearTempBreakpoint() resets
-        // tempBreakpointHit_, so setting the flag before the call wiped it
-        // again and isTempBreakpointHit() could never report true.
-        clearTempBreakpoint();
-        tempBreakpointHit_ = true;
-        breakpointHit_ = true;
-        breakpointAddress_ = pc;
-        paused_ = true;
-        return;
-      }
-
-      // Check user breakpoints
-      if (!breakpoints_.empty()) {
-        if (skipBreakpointOnce_) {
-          skipBreakpointOnce_ = false;
-        } else if (breakpoints_.count(pc) && !disabledBreakpoints_.count(pc)) {
-          breakpointHit_ = true;
-          breakpointAddress_ = pc;
-          paused_ = true;
-          return;
-        }
-      }
+    // Breakpoints, the temporary one behind step over and step out included
+    if (debug_.shouldBreakBefore(cpu_->getPC(), cpu_->getSP())) {
+      paused_ = true;
+      return;
     }
 
     // Track BASIC program running state by monitoring ROM entry points.
@@ -578,7 +572,7 @@ void Emulator::runCycles(int cycles) {
     }
 
     // Record trace before execution
-    if (traceEnabled_) recordTrace();
+    if (debug_.isTraceEnabled()) recordTrace();
 
     // Track cycles before instruction
     uint64_t cyclesBefore = cpu_->getTotalCycles();
@@ -634,42 +628,22 @@ void Emulator::runCycles(int cycles) {
       frameReady_ = true;
     }
 
-    // Check watchpoint hit (set by MMU callbacks during execution)
-    if (watchpointHit_) return;
+    // A watchpoint hit during the instruction, through the MMU's callbacks
+    if (debug_.isWatchpointHit()) return;
 
-    // Check beam breakpoints
-    if (!beamBreakpoints_.empty()) {
-      uint64_t fc = cpu_->getTotalCycles() - lastFrameCycle_;
-      const auto framecycles =
+    // Beam breakpoints, measured from the start of the frame in progress
+    if (debug_.hasBeamBreakpoints()) {
+      uint64_t frameCycle = cpu_->getTotalCycles() - lastFrameCycle_;
+      const auto perFrame =
           static_cast<uint64_t>(machine_->timing.cyclesPerFrame());
-      if (fc >= framecycles) fc %= framecycles;
-      int16_t sl = static_cast<int16_t>(fc / 65);
-      int16_t hp = static_cast<int16_t>(fc % 65);
-      for (auto& bp : beamBreakpoints_) {
-        if (!bp.enabled) continue;
-        bool scanOk = (bp.scanline < 0) || (sl == bp.scanline);
-        bool hPosOk = (bp.hPos < 0) || (hp >= bp.hPos);
-        bool valid = (bp.scanline >= 0 || bp.hPos >= 0);
-        if (!scanOk || !hPosOk || !valid) continue;
-
-        // For wildcard-scanline breakpoints (HBLANK, Column), fire once per scanline.
-        // For specific-scanline breakpoints (VBL, Scanline, ScanCol), fire once per frame.
-        bool alreadyFired;
-        if (bp.scanline < 0) {
-          alreadyFired = (lastFrameCycle_ == bp.lastFireFrame && sl == bp.lastFireScanline);
-        } else {
-          alreadyFired = (lastFrameCycle_ == bp.lastFireFrame);
-        }
-        if (!alreadyFired) {
-          beamBreakHit_ = true;
-          beamBreakHitId_ = bp.id;
-          beamBreakHitScanline_ = sl;
-          beamBreakHitHPos_ = hp;
-          bp.lastFireFrame = lastFrameCycle_;
-          bp.lastFireScanline = sl;
-          paused_ = true;
-          return;
-        }
+      if (frameCycle >= perFrame) frameCycle %= perFrame;
+      const int scanline =
+          static_cast<int>(frameCycle / machine_->timing.cyclesPerScanline);
+      const int hPos =
+          static_cast<int>(frameCycle % machine_->timing.cyclesPerScanline);
+      if (debug_.shouldBreakAtBeam(lastFrameCycle_, scanline, hPos)) {
+        paused_ = true;
+        return;
       }
     }
   }
@@ -727,6 +701,10 @@ int Emulator::handleRawKeyDown(int browserKeycode, bool shift, bool ctrl,
   // Update button state from modifier keys
   setButton(0, keyboard_->isOpenApplePressed());   // Open Apple
   setButton(1, keyboard_->isClosedApplePressed()); // Closed Apple
+  // A //c wires Shift to PB2 as well (the //e's shift-key mod, built in), so
+  // the IOU that answers $C063 there is told. The Enhanced //e modelled here
+  // does not have the mod, so on it PB2 stays the game port's third button.
+  if (mouseIOU_) mouseIOU_->setShiftKey(shift);
 
   return result;
 }
@@ -742,10 +720,14 @@ void Emulator::handleRawKeyUp(int browserKeycode, bool shift, bool ctrl,
   // Update button state from modifier keys
   setButton(0, keyboard_->isOpenApplePressed());   // Open Apple
   setButton(1, keyboard_->isClosedApplePressed()); // Closed Apple
+  // The browser reports the state after the event, so releasing Shift itself
+  // arrives with shift false.
+  if (mouseIOU_) mouseIOU_->setShiftKey(shift);
 }
 
 void Emulator::releaseModifiers() {
   keyboard_->releaseModifiers();
+  if (mouseIOU_) mouseIOU_->setShiftKey(false);
   updateAnyKeyDown();
   setButton(0, keyboard_->isOpenApplePressed());
   setButton(1, keyboard_->isClosedApplePressed());
@@ -1017,13 +999,10 @@ const char *Emulator::getDiskFilename(int drive) const {
 // Debug facilities (breakpoints, watchpoints, trace, beam) are in emulator_debug.cpp
 
 void Emulator::stepInstruction() {
-  breakpointHit_ = false;
-  watchpointHit_ = false;
-  beamBreakHit_ = false;
-  beamBreakHitId_ = -1;
+  debug_.clearHits();
 
   // Record trace before execution
-  if (traceEnabled_) recordTrace();
+  if (debug_.isTraceEnabled()) recordTrace();
 
   // Track cycles before instruction
   uint64_t cyclesBefore = cpu_->getTotalCycles();
@@ -1088,90 +1067,9 @@ const char *Emulator::disassembleAt(uint16_t address) {
 }
 
 uint64_t Emulator::getSoftSwitchState() const {
-  const auto &sw = mmu_->getSoftSwitches();
-  uint64_t state = 0;
-
-  // Pack soft switch state into a 64-bit value
-  // Display switches (bits 0-5)
-  if (sw.text)
-    state |= (1ULL << 0);
-  if (sw.mixed)
-    state |= (1ULL << 1);
-  if (sw.page2)
-    state |= (1ULL << 2);
-  if (sw.hires)
-    state |= (1ULL << 3);
-  if (sw.col80)
-    state |= (1ULL << 4);
-  if (sw.altCharSet)
-    state |= (1ULL << 5);
-
-  // Memory switches (bits 6-12)
-  if (sw.store80)
-    state |= (1ULL << 6);
-  if (sw.ramrd)
-    state |= (1ULL << 7);
-  if (sw.ramwrt)
-    state |= (1ULL << 8);
-  if (sw.intcxrom)
-    state |= (1ULL << 9);
-  if (sw.altzp)
-    state |= (1ULL << 10);
-  if (sw.slotc3rom)
-    state |= (1ULL << 11);
-  if (sw.intc8rom)
-    state |= (1ULL << 12);
-
-  // Language card (bits 13-16)
-  if (sw.lcram)
-    state |= (1ULL << 13);
-  if (sw.lcram2)
-    state |= (1ULL << 14);
-  if (sw.lcwrite)
-    state |= (1ULL << 15);
-  if (sw.lcprewrite)
-    state |= (1ULL << 16);
-
-  // Annunciators (bits 17-20)
-  if (sw.an0)
-    state |= (1ULL << 17);
-  if (sw.an1)
-    state |= (1ULL << 18);
-  if (sw.an2)
-    state |= (1ULL << 19);
-  if (sw.an3)
-    state |= (1ULL << 20);
-
-  // I/O state (bits 21-23)
-  if (sw.vblBar)
-    state |= (1ULL << 21);
-  if (sw.cassetteOut)
-    state |= (1ULL << 22);
-  if (sw.cassetteIn)
-    state |= (1ULL << 23);
-
-  // Buttons (bits 24-26)
-  if (buttonState_[0])
-    state |= (1ULL << 24);
-  if (buttonState_[1])
-    state |= (1ULL << 25);
-  if (buttonState_[2])
-    state |= (1ULL << 26);
-
-  // Keyboard (bit 27)
-  if (keyboardLatch_ & 0x80)
-    state |= (1ULL << 27);
-
-  // DHIRES (bit 28) - computed from AN3 off + 80COL + HIRES
-  bool dhires = !sw.an3 && sw.col80 && sw.hires;
-  if (dhires)
-    state |= (1ULL << 28);
-
-  // IOUDIS (bit 29)
-  if (sw.ioudis)
-    state |= (1ULL << 29);
-
-  return state;
+  return packSoftSwitchState(mmu_->getSoftSwitches(), buttonState_[0],
+                             buttonState_[1], buttonState_[2],
+                             (keyboardLatch_ & 0x80) != 0);
 }
 
 uint8_t Emulator::cpuRead(uint16_t address) { return mmu_->read(address); }
@@ -1308,6 +1206,15 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     return false;
   }
 
+  // Asking for the card that is already there changes nothing, and must not:
+  // refitting builds a new, empty card, and a SmartPort's images are in the
+  // card. The host applies the saved slot layout at startup, after it may
+  // already have restored an image, and every refit threw that image away.
+  // Restoring a state skips a same-card refit for the same reason.
+  if (strcmp(getSlotCardName(slot), cardId) == 0) {
+    return true;
+  }
+
   // Before any slot change, clean up existing special card pointers.
   // insertCard() destroys the old card, so dangling pointers must be cleared.
   ExpansionCard* existing = mmu_->getCard(slot);
@@ -1410,8 +1317,13 @@ bool Emulator::setSlotCard(uint8_t slot, const char* cardId) {
     card->setSetA([this](uint8_t v) { cpu_->setA(v); });
     card->setGetP([this]() { return cpu_->getP(); });
     card->setSetP([this](uint8_t v) { cpu_->setP(v); });
-    card->setGetSP([this]() { return cpu_->getSP(); });
-    card->setSetSP([this](uint8_t v) { cpu_->setSP(v); });
+    card->setGetSP([this]() { return static_cast<uint16_t>(0x0100 | cpu_->getSP()); });
+    card->setSetSP([this](uint16_t v) { cpu_->setSP(static_cast<uint8_t>(v)); });
+    // A 6502 fetches with `read(pc_++)`, so by the time a read reaches a card
+    // the counter has already moved past the opcode.
+    card->setExecutingAt([this](uint16_t address) {
+      return cpu_->getPC() == static_cast<uint16_t>(address + 1);
+    });
     card->setGetPC([this]() { return cpu_->getPC(); });
     card->setSetPC([this](uint16_t v) { cpu_->setPC(v); });
     card->setSetX([this](uint8_t v) { cpu_->setX(v); });

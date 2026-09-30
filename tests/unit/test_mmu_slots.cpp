@@ -118,6 +118,41 @@ TEST_CASE("Slot ROM: read $C500-$C5FF accesses Thunderclock card ROM", "[mmu][sl
     CHECK(mmu->read(0xC506) == 0x70);  // BVS
 }
 
+namespace {
+// A card whose ROM reads are events: the shape of a SmartPort card, whose entry
+// points are traps that run a whole block call when read.
+class TrapCard : public ExpansionCard {
+public:
+    int romReads = 0;
+    int romPeeks = 0;
+    uint8_t readIO(uint8_t) override { return 0; }
+    void writeIO(uint8_t, uint8_t) override {}
+    uint8_t readROM(uint8_t offset) override { romReads++; return offset; }
+    uint8_t peekROM(uint8_t offset) override { romPeeks++; return offset; }
+    void reset() override {}
+    const char* getName() const override { return "Trap"; }
+};
+} // namespace
+
+TEST_CASE("Peeking slot ROM asks the card to peek and never to read", "[mmu][slots][rom]") {
+    // MMU::read peeks every address first while a watchpoint is armed, so a
+    // peek that read the card ran a SmartPort's calls twice: a //e booting a
+    // SmartPort image with any watchpoint set ended in the monitor.
+    auto mmu = createMMU();
+    auto card = std::make_unique<TrapCard>();
+    auto* trap = card.get();
+    mmu->insertCard(7, std::move(card));
+
+    CHECK(mmu->peek(0xC70D) == 0x0D);
+    CHECK(trap->romPeeks == 1);
+    CHECK(trap->romReads == 0);
+
+    mmu->setWatchpointsActive(true);
+    mmu->setWatchpointCallbacks([](uint16_t, uint8_t) {}, [](uint16_t, uint8_t) {});
+    CHECK(mmu->read(0xC70D) == 0x0D);
+    CHECK(trap->romReads == 1); // the CPU's read, once
+}
+
 TEST_CASE("Slot ROM: empty slot returns floating bus value", "[mmu][slots][rom]") {
     auto mmu = createMMU();
 

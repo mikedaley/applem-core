@@ -121,10 +121,11 @@ uint8_t MouseIOU::peek(uint8_t reg) const {
     case RD_Y_EDGE:
         return yEdgeFalling_ ? BIT7 : 0x00;
     case RD_BUTTON:
-        // Pressed reads as zero. A //e's shift-key modifier is on the same
-        // address and idles the other way round, which is why a //c with no
-        // mouse attached must still read high here.
-        return button_ ? 0x00 : BIT7;
+        // Pressed reads as zero, and so does a held Shift key: a //c has the
+        // //e's shift-key modification built in, on this same line, and the
+        // Technical Reference gives both as "0 if it is pressed". Neither is
+        // a pull-down, which is why a //c with nothing pressed reads high.
+        return (button_ || shiftKey_) ? 0x00 : BIT7;
     case RD_X1:
         return x1_ ? BIT7 : 0x00;
     case RD_Y1:
@@ -213,6 +214,40 @@ void MouseIOU::update(uint64_t cycle, bool inVbl) {
 bool MouseIOU::isIRQActive() const {
     if (xyEnabled_ && (xInt_ || yInt_)) return true;
     return vblEnabled_ && vblInt_;
+}
+
+void MouseIOU::serialize(StateWriter &w) const {
+    w.boolean(xyEnabled_);
+    w.boolean(vblEnabled_);
+    w.boolean(xEdgeFalling_);
+    w.boolean(yEdgeFalling_);
+    w.boolean(xInt_);
+    w.boolean(yInt_);
+    w.boolean(vblInt_);
+    w.boolean(x1_);
+    w.boolean(y1_);
+    w.boolean(button_);
+    w.i32(pendingX_);
+    w.i32(pendingY_);
+    w.u64(nextStepCycle_);
+    w.boolean(wasInVbl_);
+}
+
+void MouseIOU::deserialize(StateReader &r) {
+    xyEnabled_ = r.boolean();
+    vblEnabled_ = r.boolean();
+    xEdgeFalling_ = r.boolean();
+    yEdgeFalling_ = r.boolean();
+    xInt_ = r.boolean();
+    yInt_ = r.boolean();
+    vblInt_ = r.boolean();
+    x1_ = r.boolean();
+    y1_ = r.boolean();
+    button_ = r.boolean();
+    pendingX_ = r.i32();
+    pendingY_ = r.i32();
+    nextStepCycle_ = r.u64();
+    wasInVbl_ = r.boolean();
 }
 
 } // namespace a2e
