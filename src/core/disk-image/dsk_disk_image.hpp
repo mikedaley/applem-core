@@ -132,6 +132,9 @@ public:
    */
   bool getTrackBits(int track, std::vector<uint8_t> &bits, uint32_t &bitCount);
 
+  bool inspectQuarterTrack(int quarter_track, TrackView &out) override;
+  double getRotation() const override;
+
 private:
   // Raw sector data storage
   std::array<uint8_t, DISK_SIZE> sector_data_{};

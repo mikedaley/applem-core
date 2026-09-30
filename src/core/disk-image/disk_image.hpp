@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace a2e {
 
@@ -196,6 +197,45 @@ public:
    * @return 1 if a flux transition reaches the head during this tick
    */
   virtual uint8_t readTick() { return 0; }
+
+  // ===== Inspection =====
+
+  /**
+   * One quarter track as the drive would read it, for the Disk Inspector.
+   *
+   * Every format answers in the same currency, bit cells, so one analyser
+   * serves them all: a sector image encodes its track, a WOZ bit track is
+   * what it is, and a flux track is resolved into the cells the sequencer
+   * would clock out of it, with how long each one really took.
+   */
+  struct TrackView {
+    std::vector<uint8_t> bits;   // Packed cells, MSB first
+    uint32_t bit_count = 0;
+    // Flux tracks only: the time each cell took, in quarters of 125ns (a
+    // nominal cell is 125), capped at 255. Empty for any other track.
+    std::vector<uint8_t> cell_time;
+    int track_id = -1; // Quarter tracks reading the same stored track share it
+    bool flux = false;
+  };
+
+  /**
+   * Fill a TrackView for a quarter track
+   *
+   * @param quarter_track 0-159
+   * @param out           Receives the track
+   * @return false if nothing is recorded there
+   */
+  virtual bool inspectQuarterTrack(int quarter_track, TrackView &out) {
+    (void)quarter_track;
+    (void)out;
+    return false;
+  }
+
+  /**
+   * How far round the disk is under the head: 0 at the start of the track
+   * the head is on, approaching 1 at its end.
+   */
+  virtual double getRotation() const { return 0.0; }
 
   // ===== Status =====
 

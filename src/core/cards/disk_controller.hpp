@@ -139,6 +139,16 @@ public:
     DiskImage* getMutableDiskImage(int drive);
 
     /**
+     * A number that changes whenever what is on a drive's disk may have:
+     * insert, eject, the head writing, or a host path taking the image to
+     * change it. The Disk Inspector compares it rather than re-reading a
+     * whole disk to find out nothing moved.
+     */
+    uint32_t getRevision(int drive) const {
+        return (drive >= 0 && drive < 2) ? revision_[drive] : 0;
+    }
+
+    /**
      * Check if motor is currently on
      * @return true if motor is running
      */
@@ -284,6 +294,7 @@ protected:
 
     // Disk images for each drive
     std::unique_ptr<DiskImage> diskImages_[2];
+    uint32_t revision_[2] = {0, 0};
 
     // Cycle callback
     CycleCallback cycleCallback_;

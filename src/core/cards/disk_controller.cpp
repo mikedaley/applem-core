@@ -260,6 +260,7 @@ bool DiskController::insertDisk(int drive, const uint8_t* data, size_t size,
     }
 
     diskImages_[drive] = std::move(image);
+    revision_[drive]++;
 
     // Reset LSS timing for this drive
     if (drive == selectedDrive_) {
@@ -278,6 +279,7 @@ bool DiskController::insertBlankDisk(int drive) {
     image->createBlank();
 
     diskImages_[drive] = std::move(image);
+    revision_[drive]++;
     return true;
 }
 
@@ -292,6 +294,7 @@ void DiskController::ejectDisk(int drive) {
     }
 
     diskImages_[drive].reset();
+    revision_[drive]++;
 }
 
 bool DiskController::hasDisk(int drive) const {
@@ -328,6 +331,8 @@ DiskImage* DiskController::getMutableDiskImage(int drive) {
     if (drive < 0 || drive > 1) {
         return nullptr;
     }
+    // Whoever asks for a writable image may be about to change it
+    revision_[drive]++;
     return diskImages_[drive].get();
 }
 
@@ -439,6 +444,7 @@ void DiskController::clockLSS() {
         uint8_t level = (nextState >> 3) & 1;
         disk->writeBit(level ^ writeLevel_);
         writeLevel_ = level;
+        revision_[selectedDrive_]++;
     }
 
     sequencerState_ = nextState;

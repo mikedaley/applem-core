@@ -21,6 +21,7 @@ set(CORE_SOURCES
     src/core/audio/audio.cpp
     src/core/disk-image/dsk_disk_image.cpp
     src/core/disk-image/woz_disk_image.cpp
+    src/core/disk-image/disk_inspection.cpp
     src/core/disk-image/disk_converter.cpp
     src/core/disk-image/gcr_encoding.cpp
     src/core/input/joyport.cpp
@@ -274,6 +275,10 @@ if(EMSCRIPTEN)
                 \"_isDiskInserted\", \
                 \"_isDiskModified\", \
                 \"_getDiskFilename\", \
+                \"_getDiskOverview\", \
+                \"_getDiskTrackDetail\", \
+                \"_getDiskRotation\", \
+                \"_getDiskRevision\", \
                 \"_getLastDiskByte\", \
                 \"_exportState\", \
                 \"_importState\", \
@@ -587,6 +592,7 @@ else()
         src/core/audio/audio.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/disk_inspection.cpp
         src/core/disk-image/disk_converter.cpp
         src/core/disk-image/gcr_encoding.cpp
         src/core/input/joyport.cpp
@@ -1094,6 +1100,15 @@ else()
     add_catch2_test(test_dsk_disk_image
         tests/unit/test_dsk_disk_image.cpp
         src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # Disk Inspector's track analysis
+    add_catch2_test(test_disk_inspection
+        tests/unit/test_disk_inspection.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
     )
 

@@ -108,6 +108,25 @@ bool DskDiskImage::getTrackBits(int track, std::vector<uint8_t> &bits,
   return true;
 }
 
+bool DskDiskImage::inspectQuarterTrack(int quarter_track, TrackView &out) {
+  out = TrackView{};
+  // Every quarter track of a whole track reads it, as hasData() says
+  int track = quarter_track / 4;
+  if (quarter_track < 0 || !getTrackBits(track, out.bits, out.bit_count)) {
+    return false;
+  }
+  out.track_id = track;
+  return true;
+}
+
+double DskDiskImage::getRotation() const {
+  int track = quarter_track_ / 4;
+  if (track < 0 || track >= TRACKS) return 0.0;
+  const auto &bt = bit_tracks_[track];
+  if (!bt.valid || bt.bit_count == 0) return 0.0;
+  return double(bit_position_ % bt.bit_count) / bt.bit_count;
+}
+
 int DskDiskImage::countCatalogChain(int track, int sector,
                                     bool prodosOrder) const {
   int links = 0;

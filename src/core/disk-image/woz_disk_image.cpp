@@ -334,7 +334,8 @@ void WozDiskImage::fluxToPulses(const uint8_t *flux, size_t size,
 }
 
 void WozDiskImage::fluxToBits(const uint8_t *flux, size_t size,
-                              TrackData &out) {
+                              TrackData &out,
+                              std::vector<uint8_t> *cell_time) {
   static constexpr double FLUX_TICKS_PER_CELL =
       double(TICKS_PER_CELL) * FLUX_TO_TICK_DEN / FLUX_TO_TICK_NUM;
 
@@ -343,6 +344,9 @@ void WozDiskImage::fluxToBits(const uint8_t *flux, size_t size,
   out.valid = false;
   out.flux = false;
   out.flux_source.clear();
+  if (cell_time) {
+    cell_time->clear();
+  }
 
   std::vector<uint8_t> bits;
   bits.reserve(size * 2 / 8 + 1);
@@ -373,6 +377,12 @@ void WozDiskImage::fluxToBits(const uint8_t *flux, size_t size,
       push(0);
     }
     push(1);
+    if (cell_time) {
+      // Each cell of the interval took an equal share of it
+      long quarters = std::lround(4.0 * ticks / cells);
+      cell_time->insert(cell_time->end(), cells,
+                        static_cast<uint8_t>(std::min(255L, quarters)));
+    }
     ticks = 0;
   }
 
@@ -749,6 +759,35 @@ uint8_t WozDiskImage::readBit() {
   uint8_t bit = readBitInternal();
   bit_position_ = (bit_position_ + 1) % track->bit_count;
   return bit;
+}
+
+bool WozDiskImage::inspectQuarterTrack(int quarter_track, TrackView &out) {
+  out = TrackView{};
+  if (quarter_track < 0 || quarter_track >= QUARTER_TRACK_COUNT) return false;
+  uint8_t index = tmap_[quarter_track];
+  if (index == NO_TRACK || index >= tracks_.size() || !tracks_[index].valid) {
+    return false;
+  }
+  const TrackData &track = tracks_[index];
+  out.track_id = index;
+  if (track.flux) {
+    TrackData cells;
+    fluxToBits(track.flux_source.data(), track.flux_source.size(), cells,
+               &out.cell_time);
+    out.bits = std::move(cells.bits);
+    out.bit_count = cells.bit_count;
+    out.flux = true;
+  } else {
+    out.bits = track.bits;
+    out.bit_count = track.bit_count;
+  }
+  return out.bit_count > 0;
+}
+
+double WozDiskImage::getRotation() const {
+  const TrackData *track = getCurrentTrackData();
+  if (!track || track->bit_count == 0) return 0.0;
+  return double(bit_position_ % track->bit_count) / track->bit_count;
 }
 
 bool WozDiskImage::isTickTimed() const {

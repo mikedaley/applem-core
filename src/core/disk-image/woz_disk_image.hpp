@@ -76,6 +76,8 @@ public:
   void writeBit(uint8_t bit) override;
   bool isTickTimed() const override;
   uint8_t readTick() override;
+  bool inspectQuarterTrack(int quarter_track, TrackView &out) override;
+  double getRotation() const override;
 
   bool isWriteProtected() const override;
   bool isModified() const override { return modified_; }
@@ -343,8 +345,11 @@ private:
    * @param flux Flux timing bytes
    * @param size Number of bytes
    * @param out  Receives the packed bits (MSB first) and bit count
+   * @param cell_time If given, receives how long each cell took, in quarters
+   *                  of 125ns (see DiskImage::TrackView)
    */
-  static void fluxToBits(const uint8_t *flux, size_t size, TrackData &out);
+  static void fluxToBits(const uint8_t *flux, size_t size, TrackData &out,
+                         std::vector<uint8_t> *cell_time = nullptr);
 
   /**
    * Get track data at current head position
