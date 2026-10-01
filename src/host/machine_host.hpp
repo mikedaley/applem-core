@@ -138,7 +138,7 @@ public:
   // from the name.
   bool insertDisk(int drive, const uint8_t *data, size_t size,
                   const char *filename);
-  // A freshly formatted DOS 3.3 disk. The 8-bit machines only.
+  // An unformatted WOZ, ready for the machine to format.
   bool insertBlankDisk(int drive);
   void ejectDisk(int drive);
   bool isDiskInserted(int drive);

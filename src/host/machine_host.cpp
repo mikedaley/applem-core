@@ -299,8 +299,12 @@ bool MachineHost::insertDisk(int drive, const uint8_t *data, size_t size,
   return false;
 }
 
+// The controller makes the blank, and every machine's drives are a
+// DiskController, so a IIgs gets one too; asking only the //e family's
+// Emulator left the button doing nothing there.
 bool MachineHost::insertBlankDisk(int drive) {
-  return emulator_ && emulator_->insertBlankDisk(drive);
+  DiskController *disk = diskController();
+  return disk && disk->insertBlankDisk(drive);
 }
 
 void MachineHost::ejectDisk(int drive) {

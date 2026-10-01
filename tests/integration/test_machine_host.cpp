@@ -229,6 +229,14 @@ TEST_CASE("Floppies go in, come out as files, and come out again", "[host][disk]
   REQUIRE(host.isDiskInserted(1));
 }
 
+TEST_CASE("A IIgs takes a blank disk too", "[host][disk][iigs]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  REQUIRE(host.insertBlankDisk(0));
+  REQUIRE(host.isDiskInserted(0));
+}
+
 TEST_CASE("Slots are refitted by card id", "[host][slots]") {
   MachineHost host;
   host.build();
