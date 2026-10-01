@@ -1,4 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
+
+# The oldest macOS the native builds run on. Without it the compiler targets
+# whatever macOS builds them, and an app built on macOS 27 will not start on
+# 26. It has to be set before project(), so the core library is built for the
+# same macOS as the app it is linked into; an empty value (what an older
+# build directory has cached) is replaced too. The WebAssembly build, which
+# comes through Emscripten's toolchain, is left alone.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_TOOLCHAIN_FILE MATCHES "Emscripten"
+   AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Oldest macOS the native builds run on" FORCE)
+endif()
+
 project(web-a2e VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
