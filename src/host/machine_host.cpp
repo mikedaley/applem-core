@@ -160,6 +160,23 @@ int MachineHost::generateStereoAudioSamples(float *buffer, int sampleCount) {
   return 0;
 }
 
+int MachineHost::consumeFrameSamples() {
+  if (iigs_) return iigs_->consumeFrameSamples();
+  if (emulator_) return emulator_->consumeFrameSamples();
+  return 0;
+}
+
+void MachineHost::setPaused(bool paused) {
+  if (iigs_) iigs_->setPaused(paused);
+  else if (emulator_) emulator_->setPaused(paused);
+}
+
+bool MachineHost::isPaused() const {
+  if (iigs_) return iigs_->isPaused();
+  if (emulator_) return emulator_->isPaused();
+  return false;
+}
+
 const uint8_t *MachineHost::framebuffer() {
   if (iigs_) return iigs_->framebuffer();
   if (emulator_) return emulator_->getFramebuffer();

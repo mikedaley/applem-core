@@ -46,7 +46,7 @@ for check in "${CHECKS[@]}"; do
   # --include limits the sweep to sources; -E for extended regex.
   if hits="$(grep -rnE --include='*.cpp' --include='*.hpp' --include='*.h' \
               -- "$pattern" "$CORE" "$HOST" 2>/dev/null)"; then
-    echo "check-core-purity: $name found in src/core/ or src/host/ — $explanation" >&2
+    echo "check-core-purity: $name found in src/core/ or src/host/: $explanation" >&2
     echo "$hits" | sed "s|^$ROOT/|  |" >&2
     status=1
   fi

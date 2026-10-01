@@ -92,6 +92,11 @@ public:
   void warmReset();
   void runCycles(int cycles);
   int generateStereoAudioSamples(float *buffer, int sampleCount);
+  // How many whole frames' worth of samples have been generated since the
+  // last ask, 800 at 48kHz each. A host publishes a picture when it is one.
+  int consumeFrameSamples();
+  void setPaused(bool paused);
+  bool isPaused() const;
   const uint8_t *framebuffer();
   size_t framebufferSize() const;
   // True once per finished frame: answering clears it.
