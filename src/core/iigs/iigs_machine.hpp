@@ -226,6 +226,8 @@ public:
   static constexpr uint8_t SMARTPORT_SLOT = 5;
 
   SmartPortCard &smartPort() { return *smartPort_; }
+  // The Mockingboard in a socket, or nullptr when none is fitted.
+  MockingboardCard *mockingboard() { return mockingboard_; }
 
   /**
    * Fit or remove a card in one of the seven sockets.

@@ -26,6 +26,7 @@ namespace a2e {
 
 class Audio;
 class DiskController;
+class MockingboardCard;
 class SmartPortCard;
 class Video;
 
@@ -87,6 +88,9 @@ public:
   Audio *speaker();
   Video *video();
   SmartPortCard *smartPort();
+  // A Mockingboard, from either kind of machine, or nullptr when none is
+  // fitted (a //e parks the card it does not have rather than freeing it).
+  MockingboardCard *mockingboard();
 
   // Whether the running machine's system ROM is in this build.
   bool hasSystemROM() const;

@@ -134,6 +134,12 @@ SmartPortCard *MachineHost::smartPort() {
   return nullptr;
 }
 
+MockingboardCard *MachineHost::mockingboard() {
+  if (emulator_) return emulator_->getMockingboardPtr();
+  if (iigs_) return iigs_->mockingboard();
+  return nullptr;
+}
+
 bool MachineHost::hasSystemROM() const {
   if (emulator_) return emulator_->hasSystemROM();
   return iigs_ != nullptr && Emulator::isMachineRunnable(machineId_);

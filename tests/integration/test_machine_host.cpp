@@ -293,3 +293,23 @@ TEST_CASE("A //e's SmartPort and clock come from the slot layout, not the constr
   REQUIRE(host.setSlotCard(7, "smartport"));
   REQUIRE(host.smartPort() != nullptr);
 }
+
+TEST_CASE("A Mockingboard is found on either kind of machine, and only when fitted",
+          "[host][mockingboard]") {
+  // The front ends' Mockingboard windows are offered on this answer, so a
+  // card that has been taken out must not still be found: a //e parks the
+  // card it does not have rather than freeing it.
+  MachineHost host;
+  host.build();
+  REQUIRE(host.mockingboard() != nullptr);
+  REQUIRE(host.setSlotCard(4, "empty"));
+  REQUIRE(host.mockingboard() == nullptr);
+  REQUIRE(host.setSlotCard(4, "mockingboard"));
+  REQUIRE(host.mockingboard() != nullptr);
+
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  REQUIRE(host.mockingboard() == nullptr);
+  REQUIRE(host.setSlotCard(4, "mockingboard"));
+  REQUIRE(host.mockingboard() != nullptr);
+}
