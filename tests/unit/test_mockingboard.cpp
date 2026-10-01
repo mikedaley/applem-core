@@ -375,3 +375,45 @@ TEST_CASE("MockingboardCard sample production tracks emulation speed",
         CHECK(queuedAfterOneBuffer(multiplier) == Approx(frames).margin(2));
     }
 }
+
+TEST_CASE("MockingboardCard muting a PSG 1 channel leaves PSG 2 playing",
+          "[mockingboard][mute]") {
+    // Two chips holding the same registers share PSG 1's output, so that
+    // their independent counters cannot cancel. The mutes are not registers,
+    // and a share that ignored them carried PSG 1's mute into the right
+    // channel: muting PSG 1 silenced the same channel on PSG 2.
+    MockingboardCard card;
+    card.setEnabled(true);
+    auto writePSG = [&](uint8_t via, uint8_t reg, uint8_t value) {
+        card.writeROM(via | VIA_ORA, reg);
+        card.writeROM(via | VIA_ORB, 0x07); // LATCH
+        card.writeROM(via | VIA_ORB, 0x04);
+        card.writeROM(via | VIA_ORA, value);
+        card.writeROM(via | VIA_ORB, 0x06); // WRITE
+        card.writeROM(via | VIA_ORB, 0x04);
+    };
+    for (uint8_t via : {uint8_t(0x00), uint8_t(0x80)}) {
+        card.writeROM(via | VIA_DDRA, 0xFF);
+        card.writeROM(via | VIA_DDRB, 0x07);
+        writePSG(via, 0, 244);  // channel A, about 262Hz
+        writePSG(via, 1, 0);
+        writePSG(via, 7, 0x3E); // tone A only
+        writePSG(via, 8, 15);
+    }
+    REQUIRE(card.getPSG1().getRegister(0) == card.getPSG2().getRegister(0));
+
+    card.getPSG1().setChannelMute(0, true);
+    const int frames = 4800;
+    card.update(static_cast<int>(frames * 1023000.0 / 48000.0));
+    std::vector<float> out(frames * 2);
+    card.consumeStereoSamples(out.data(), frames);
+
+    // Past the DC filter's settling, the left is silent and the right plays.
+    float left = 0.0f, right = 0.0f;
+    for (int i = frames / 2; i < frames; i++) {
+        left = std::max(left, std::abs(out[i * 2]));
+        right = std::max(right, std::abs(out[i * 2 + 1]));
+    }
+    CHECK(left < 0.01f);
+    CHECK(right > 0.1f);
+}

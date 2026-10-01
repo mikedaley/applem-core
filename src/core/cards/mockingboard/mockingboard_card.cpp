@@ -98,6 +98,12 @@ bool MockingboardCard::arePsgsIdentical() const {
     for (int i = 0; i < 14; i++) {
         if (psg1_.getRegister(i) != psg2_.getRegister(i)) return false;
     }
+    // And the debugger's mutes, which are not registers but do change what
+    // a chip plays: two chips that share PSG 1's output share its mutes,
+    // and muting a channel on PSG 1 silenced it on PSG 2 as well.
+    for (int ch = 0; ch < 3; ch++) {
+        if (psg1_.isChannelMuted(ch) != psg2_.isChannelMuted(ch)) return false;
+    }
     return true;
 }
 
