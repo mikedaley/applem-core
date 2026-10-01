@@ -683,6 +683,18 @@ else()
     target_include_directories(a2e_core PUBLIC ${ALL_CORE_INCLUDES})
     target_compile_options(a2e_core PRIVATE -O2 -Wall -Wextra)
 
+    # The native macOS front end: Dear ImGui (docking branch) over Metal, on
+    # the same core and host layer as the browser. Off by default so the test
+    # build needs nothing it did not need before. See docs/NATIVE.md.
+    option(A2E_BUILD_NATIVE "Build the native macOS front end (ImGui + Metal)" OFF)
+    if(A2E_BUILD_NATIVE)
+        if(NOT APPLE)
+            message(FATAL_ERROR "The native front end is macOS only (Metal)")
+        endif()
+        enable_language(OBJC OBJCXX)
+        add_subdirectory(native)
+    endif()
+
     # ==========================================================================
     # Helper function: add a Catch2 test with specified sources
     # ==========================================================================
