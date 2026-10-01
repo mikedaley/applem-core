@@ -403,6 +403,14 @@ bool MachineHost::setSlotCard(int slot, const std::string &cardId) {
   return false;
 }
 
+bool MachineHost::isSlotInternal(int slot) const {
+  return iigs_ ? iigs_->isSlotInternal(static_cast<uint8_t>(slot)) : true;
+}
+
+void MachineHost::setSlotInternal(int slot, bool internal) {
+  if (iigs_) iigs_->setSlotInternal(static_cast<uint8_t>(slot), internal);
+}
+
 void MachineHost::setNoSlotClock(bool enabled) {
   if (emulator_) emulator_->enableNoSlotClock(enabled);
 }

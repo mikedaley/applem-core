@@ -278,3 +278,18 @@ TEST_CASE("Only a //e takes a speed multiplier", "[host]") {
   host.setSpeedMultiplier(4);
   REQUIRE(host.speedMultiplier() == 1);
 }
+
+TEST_CASE("A //e's SmartPort and clock come from the slot layout, not the constructor",
+          "[host][smartport]") {
+  // The Emulator fits only the drives, the Mockingboard and a //c's ports
+  // itself; the profile's other defaults are fitted when the host applies
+  // the slot layout, as the browser's Expansion Slots window does at
+  // startup. A host that forgets has no SmartPort.
+  MachineHost host;
+  host.build();
+  REQUIRE(host.slotCard(6) == "disk2");
+  REQUIRE(host.slotCard(4) == "mockingboard");
+  REQUIRE(host.smartPort() == nullptr);
+  REQUIRE(host.setSlotCard(7, "smartport"));
+  REQUIRE(host.smartPort() != nullptr);
+}

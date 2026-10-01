@@ -164,6 +164,11 @@ public:
   // Expansion slots, by the card ids the profile and the browser use.
   std::string slotCard(int slot) const;
   bool setSlotCard(int slot, const std::string &cardId);
+  // A IIgs's slots each have a built-in device as well as a socket, and
+  // $C02D says which answers. Every other machine's slots are sockets only,
+  // so they answer true and ignore a change.
+  bool isSlotInternal(int slot) const;
+  void setSlotInternal(int slot, bool internal);
   void setNoSlotClock(bool enabled);
   bool noSlotClock() const;
 
