@@ -21,8 +21,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORE="$ROOT/src/core"
+# src/host/ is held to the same rule: it is the layer every front end shares,
+# the browser's bindings and the native app alike, so it may not lean on
+# either of them.
+HOST="$ROOT/src/host"
 
-[ -d "$CORE" ] || { echo "check-core-purity: missing $CORE" >&2; exit 2; }
+for dir in "$CORE" "$HOST"; do
+  [ -d "$dir" ] || { echo "check-core-purity: missing $dir" >&2; exit 2; }
+done
 
 # name : extended-regex : explanation
 CHECKS=(
@@ -39,16 +45,16 @@ for check in "${CHECKS[@]}"; do
 
   # --include limits the sweep to sources; -E for extended regex.
   if hits="$(grep -rnE --include='*.cpp' --include='*.hpp' --include='*.h' \
-              -- "$pattern" "$CORE" 2>/dev/null)"; then
-    echo "check-core-purity: $name found in src/core/ — $explanation" >&2
+              -- "$pattern" "$CORE" "$HOST" 2>/dev/null)"; then
+    echo "check-core-purity: $name found in src/core/ or src/host/ — $explanation" >&2
     echo "$hits" | sed "s|^$ROOT/|  |" >&2
     status=1
   fi
 done
 
 if [ "$status" -eq 0 ]; then
-  files=$(find "$CORE" \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) | wc -l | tr -d ' ')
-  echo "check-core-purity: OK ($files core files, no host dependencies)"
+  files=$(find "$CORE" "$HOST" \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) | wc -l | tr -d ' ')
+  echo "check-core-purity: OK ($files core and host files, no platform dependencies)"
 fi
 
 exit "$status"

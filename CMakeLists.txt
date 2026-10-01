@@ -74,7 +74,13 @@ set(CORE_SOURCES
     src/core/basic/basic_detokenizer.cpp
     src/core/basic/basic_tokenizer.cpp
     src/core/assembler/assembler.cpp
-    src/bindings/wasm_interface.cpp
+)
+
+# What every host asks of the running machine, whichever kind it is. Shared by
+# the WebAssembly bindings and the native front end, so neither decides alone
+# how a question reaches a //e or a IIgs.
+set(HOST_SOURCES
+    src/host/machine_host.cpp
 )
 
 # ROM embedding - generate C arrays from ROM files
@@ -129,6 +135,8 @@ add_custom_command(
 if(EMSCRIPTEN)
     add_executable(a2e
         ${CORE_SOURCES}
+        ${HOST_SOURCES}
+        src/bindings/wasm_interface.cpp
     )
 
     # Ensure roms.cpp is generated before building
@@ -667,6 +675,13 @@ else()
 
     # Ensure roms.cpp is generated for native builds
     add_custom_target(generate_roms_native DEPENDS ${CMAKE_BINARY_DIR}/generated/roms.cpp)
+
+    # The core and the host layer as one library, for a native front end to
+    # link. The tests below still compile the core into each binary themselves.
+    add_library(a2e_core STATIC ${CORE_SOURCES} ${HOST_SOURCES})
+    add_dependencies(a2e_core generate_roms_native)
+    target_include_directories(a2e_core PUBLIC ${ALL_CORE_INCLUDES})
+    target_compile_options(a2e_core PRIVATE -O2 -Wall -Wextra)
 
     # ==========================================================================
     # Helper function: add a Catch2 test with specified sources
@@ -1227,6 +1242,12 @@ else()
         ${CORE_TEST_SOURCES}
         ${TEST_COMMON_SOURCES}
     )
+
+    # The host layer, linked as a front end links it: through a2e_core.
+    add_catch2_test(test_machine_host
+        tests/integration/test_machine_host.cpp
+    )
+    target_link_libraries(test_machine_host PRIVATE a2e_core)
 
     add_catch2_test(test_emulator_basic
         tests/integration/test_emulator_basic.cpp
