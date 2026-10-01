@@ -12,11 +12,15 @@
 #include "../core/debug/machine_debug.hpp"
 #include "../core/machine/machine_profile.hpp"
 #include "iigs/iigs_machine.hpp"
+#include "../core/disk-image/disk_converter.hpp"
+#include "../core/input/joyport.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace a2e {
 
@@ -116,13 +120,59 @@ public:
   void setButton(int button, bool pressed);
   void setPaddleValue(int paddle, int value);
 
-  // Media.
+  void setGamePortDevice(GamePortDevice device);
+  GamePortDevice gamePortDevice() const;
+  void setJoyportStick(int stick, int switches);
+  // The mouse, wherever the machine keeps it: a card on a //e, the IOU on a
+  // //c, the ADB on a IIgs. hasMouse() is whether there is one to drive.
+  bool hasMouse();
+  void mouseMove(int dx, int dy);
+  void mouseButton(bool pressed);
+
+  // The CPU clock as a multiple of the machine's own. A IIgs keeps its own
+  // speed register, so this answers 1 there and ignores a change.
+  void setSpeedMultiplier(int multiplier);
+  int speedMultiplier() const;
+
+  // Floppies. A sector image, a nibble image or a WOZ; the format comes
+  // from the name.
   bool insertDisk(int drive, const uint8_t *data, size_t size,
                   const char *filename);
+  // A freshly formatted DOS 3.3 disk. The 8-bit machines only.
+  bool insertBlankDisk(int drive);
   void ejectDisk(int drive);
+  bool isDiskInserted(int drive);
+  bool isDiskModified(int drive);
+  const char *diskFilename(int drive) const;
+  // The disk as a file in the given format, or nullptr if it cannot be
+  // written that way (a copy-protected nibble track as sectors, say).
+  const uint8_t *exportDiskAs(int drive, DiskSaveFormat format, size_t *size);
+  bool canExportDiskAs(int drive, DiskSaveFormat format);
+  DiskSaveFormat diskNativeFormat(int drive);
+
+  // Block devices on the SmartPort. On a IIgs an image inserted while the
+  // machine runs takes over slot 5 only at the next reset.
   bool insertBlockImage(int device, const uint8_t *data, size_t size,
                         const char *filename);
   void ejectBlockImage(int device);
+  bool isBlockImageInserted(int device);
+  bool isBlockImageModified(int device);
+  std::string blockImageFilename(int device);
+  const uint8_t *exportBlockImage(int device, size_t *size);
+  bool isSmartPortROMPending();
+
+  // Expansion slots, by the card ids the profile and the browser use.
+  std::string slotCard(int slot) const;
+  bool setSlotCard(int slot, const std::string &cardId);
+  void setNoSlotClock(bool enabled);
+  bool noSlotClock() const;
+
+  // A IIgs's 256 bytes of battery-backed settings, which the host keeps as
+  // a real battery would. Empty on any other machine.
+  std::vector<uint8_t> batteryRam();
+  void setBatteryRam(const std::vector<uint8_t> &bytes);
+  // Whether anything has written to it since this was last asked.
+  bool takeBatteryRamChanged();
 
   // Save states.
   const uint8_t *exportState(size_t *size);

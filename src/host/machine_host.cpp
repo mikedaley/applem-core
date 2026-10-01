@@ -12,6 +12,8 @@
 #include "../core/cards/smartport/smartport_card.hpp"
 #include "../core/video/video.hpp"
 #include "cpu/65816/cpu65816.hpp"
+#include "iigs/iigs_clock.hpp"
+#include "iigs/iigs_memory.hpp"
 
 namespace a2e::host {
 
@@ -251,6 +253,45 @@ void MachineHost::setPaddleValue(int paddle, int value) {
   else if (emulator_) emulator_->setPaddleValue(paddle, value);
 }
 
+void MachineHost::setGamePortDevice(GamePortDevice device) {
+  if (iigs_) iigs_->setGamePortDevice(device);
+  else if (emulator_) emulator_->setGamePortDevice(device);
+}
+
+GamePortDevice MachineHost::gamePortDevice() const {
+  if (iigs_) return iigs_->gamePortDevice();
+  if (emulator_) return emulator_->gamePortDevice();
+  return GamePortDevice::AppleJoystick;
+}
+
+void MachineHost::setJoyportStick(int stick, int switches) {
+  if (iigs_) iigs_->setJoyportStick(stick, switches);
+  else if (emulator_) emulator_->setJoyportStick(stick, switches);
+}
+
+bool MachineHost::hasMouse() {
+  if (iigs_) return true; // the ADB's, always there
+  return emulator_ && emulator_->isMouseInstalled();
+}
+
+void MachineHost::mouseMove(int dx, int dy) {
+  if (iigs_) iigs_->mouseMove(dx, dy);
+  else if (emulator_) emulator_->mouseMove(dx, dy);
+}
+
+void MachineHost::mouseButton(bool pressed) {
+  if (iigs_) iigs_->mouseButton(pressed);
+  else if (emulator_) emulator_->mouseButton(pressed);
+}
+
+void MachineHost::setSpeedMultiplier(int multiplier) {
+  if (emulator_) emulator_->setSpeedMultiplier(multiplier);
+}
+
+int MachineHost::speedMultiplier() const {
+  return emulator_ ? emulator_->getSpeedMultiplier() : 1;
+}
+
 bool MachineHost::insertDisk(int drive, const uint8_t *data, size_t size,
                              const char *filename) {
   if (iigs_) return iigs_->insertDisk(drive, data, size, filename ? filename : "");
@@ -258,9 +299,49 @@ bool MachineHost::insertDisk(int drive, const uint8_t *data, size_t size,
   return false;
 }
 
+bool MachineHost::insertBlankDisk(int drive) {
+  return emulator_ && emulator_->insertBlankDisk(drive);
+}
+
 void MachineHost::ejectDisk(int drive) {
   if (iigs_) iigs_->ejectDisk(drive);
   else if (emulator_) emulator_->ejectDisk(drive);
+}
+
+bool MachineHost::isDiskInserted(int drive) {
+  DiskController *disk = diskController();
+  return disk && disk->hasDisk(drive);
+}
+
+bool MachineHost::isDiskModified(int drive) {
+  DiskController *disk = diskController();
+  if (!disk || !disk->hasDisk(drive)) return false;
+  const DiskImage *image = disk->getDiskImage(drive);
+  return image && image->isModified();
+}
+
+const char *MachineHost::diskFilename(int drive) const {
+  if (iigs_) return iigs_->getDiskFilename(drive);
+  if (emulator_) return emulator_->getDiskFilename(drive);
+  return nullptr;
+}
+
+const uint8_t *MachineHost::exportDiskAs(int drive, DiskSaveFormat format, size_t *size) {
+  if (iigs_) return iigs_->exportDiskDataAs(drive, format, size);
+  if (emulator_) return emulator_->exportDiskDataAs(drive, format, size);
+  if (size) *size = 0;
+  return nullptr;
+}
+
+bool MachineHost::canExportDiskAs(int drive, DiskSaveFormat format) {
+  if (iigs_) return iigs_->canExportDiskAs(drive, format);
+  return emulator_ && emulator_->canExportDiskAs(drive, format);
+}
+
+DiskSaveFormat MachineHost::diskNativeFormat(int drive) {
+  if (iigs_) return iigs_->getDiskNativeFormat(drive);
+  if (emulator_) return emulator_->getDiskNativeFormat(drive);
+  return DiskSaveFormat::DOSOrder;
 }
 
 // A IIgs decides when its SmartPort's ROM may appear, so it goes through the
@@ -275,6 +356,69 @@ bool MachineHost::insertBlockImage(int device, const uint8_t *data, size_t size,
 void MachineHost::ejectBlockImage(int device) {
   if (iigs_) iigs_->ejectBlockImage(device);
   else if (emulator_) emulator_->ejectSmartPortImage(device);
+}
+
+bool MachineHost::isBlockImageInserted(int device) {
+  SmartPortCard *card = smartPort();
+  return card && card->isImageInserted(device);
+}
+
+bool MachineHost::isBlockImageModified(int device) {
+  SmartPortCard *card = smartPort();
+  return card && card->isImageModified(device);
+}
+
+std::string MachineHost::blockImageFilename(int device) {
+  SmartPortCard *card = smartPort();
+  return card ? card->getImageFilename(device) : std::string();
+}
+
+const uint8_t *MachineHost::exportBlockImage(int device, size_t *size) {
+  SmartPortCard *card = smartPort();
+  if (!card) {
+    if (size) *size = 0;
+    return nullptr;
+  }
+  return card->exportImageData(device, size);
+}
+
+bool MachineHost::isSmartPortROMPending() {
+  SmartPortCard *card = smartPort();
+  return card && card->isROMPending();
+}
+
+std::string MachineHost::slotCard(int slot) const {
+  if (emulator_) return emulator_->getSlotCardName(static_cast<uint8_t>(slot));
+  if (iigs_) return iigs_->getSlotCardName(static_cast<uint8_t>(slot));
+  return "invalid";
+}
+
+bool MachineHost::setSlotCard(int slot, const std::string &cardId) {
+  if (emulator_) return emulator_->setSlotCard(static_cast<uint8_t>(slot), cardId.c_str());
+  if (iigs_) return iigs_->setSlotCard(static_cast<uint8_t>(slot), cardId.empty() ? "empty" : cardId);
+  return false;
+}
+
+void MachineHost::setNoSlotClock(bool enabled) {
+  if (emulator_) emulator_->enableNoSlotClock(enabled);
+}
+
+bool MachineHost::noSlotClock() const {
+  return emulator_ && emulator_->isNoSlotClockEnabled();
+}
+
+std::vector<uint8_t> MachineHost::batteryRam() {
+  if (!iigs_) return {};
+  const uint8_t *bytes = iigs_->memory().clock().batteryRamBytes();
+  return std::vector<uint8_t>(bytes, bytes + iigs::IIgsClock::batteryRamSize());
+}
+
+void MachineHost::setBatteryRam(const std::vector<uint8_t> &bytes) {
+  if (iigs_ && !bytes.empty()) iigs_->memory().clock().loadBatteryRam(bytes.data(), bytes.size());
+}
+
+bool MachineHost::takeBatteryRamChanged() {
+  return iigs_ && iigs_->memory().clock().takeBatteryRamChanged();
 }
 
 const uint8_t *MachineHost::exportState(size_t *size) {

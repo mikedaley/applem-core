@@ -199,3 +199,74 @@ TEST_CASE("A save state goes out and back through the host", "[host][state]") {
   REQUIRE(host.importState(copy.data(), copy.size()));
   REQUIRE(host.totalCycles() == cycles);
 }
+
+TEST_CASE("Floppies go in, come out as files, and come out again", "[host][disk]") {
+  MachineHost host;
+  host.build();
+  REQUIRE_FALSE(host.isDiskInserted(0));
+  REQUIRE(host.insertBlankDisk(0));
+  REQUIRE(host.isDiskInserted(0));
+  REQUIRE_FALSE(host.isDiskModified(0));
+
+  // A blank disk is an unformatted WOZ: there are no sectors yet to write
+  // out as a DSK, but it is a WOZ already.
+  REQUIRE(host.diskNativeFormat(0) == DiskSaveFormat::WOZ);
+  REQUIRE_FALSE(host.canExportDiskAs(0, DiskSaveFormat::DOSOrder));
+  REQUIRE(host.canExportDiskAs(0, DiskSaveFormat::WOZ));
+  size_t size = 0;
+  const uint8_t *woz = host.exportDiskAs(0, DiskSaveFormat::WOZ, &size);
+  REQUIRE(woz != nullptr);
+  REQUIRE(size > 0);
+  const std::vector<uint8_t> image(woz, woz + size);
+
+  // The same bytes back in, in the other drive, by name.
+  REQUIRE(host.insertDisk(1, image.data(), image.size(), "copy.woz"));
+  REQUIRE(host.isDiskInserted(1));
+  REQUIRE(std::string(host.diskFilename(1)) == "copy.woz");
+
+  host.ejectDisk(0);
+  REQUIRE_FALSE(host.isDiskInserted(0));
+  REQUIRE(host.isDiskInserted(1));
+}
+
+TEST_CASE("Slots are refitted by card id", "[host][slots]") {
+  MachineHost host;
+  host.build();
+  REQUIRE(host.slotCard(6) == "disk2");
+  REQUIRE(host.setSlotCard(4, "mouse"));
+  REQUIRE(host.slotCard(4) == "mouse");
+  REQUIRE(host.hasMouse());
+  REQUIRE(host.setSlotCard(4, "empty"));
+  REQUIRE_FALSE(host.hasMouse());
+
+  host.setNoSlotClock(true);
+  REQUIRE(host.noSlotClock());
+}
+
+TEST_CASE("A IIgs's battery RAM goes out and back as it was", "[host][iigs]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  MachineHost host;
+  REQUIRE(host.batteryRam().empty()); // nothing built yet
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  runSeconds(host, 3.0);
+  // The firmware wrote its settings while starting.
+  REQUIRE(host.takeBatteryRamChanged());
+  const std::vector<uint8_t> written = host.batteryRam();
+  REQUIRE(written.size() == 256);
+
+  MachineHost next;
+  REQUIRE(next.setMachine(MachineId::AppleIIgs));
+  next.setBatteryRam(written);
+  REQUIRE(next.batteryRam() == written);
+}
+
+TEST_CASE("Only a //e takes a speed multiplier", "[host]") {
+  MachineHost host;
+  host.build();
+  host.setSpeedMultiplier(4);
+  REQUIRE(host.speedMultiplier() == 4);
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  host.setSpeedMultiplier(4);
+  REQUIRE(host.speedMultiplier() == 1);
+}
