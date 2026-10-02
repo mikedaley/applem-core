@@ -373,6 +373,7 @@ void IIgsMachine::runCycles(int slowCyclesToRun) {
       return;
     }
     if (debug_.isTraceEnabled()) recordTrace();
+    if (!coverage_.empty()) markExecuted(cpu_->getPCFull());
 
     step();
 
@@ -419,7 +420,18 @@ void IIgsMachine::setPaused(bool paused) {
 void IIgsMachine::stepInstruction() {
   debug_.clearHits();
   if (debug_.isTraceEnabled()) recordTrace();
+  if (!coverage_.empty()) markExecuted(cpu_->getPCFull());
   step();
+}
+
+void IIgsMachine::setCoverageEnabled(bool enabled) {
+  if (enabled == isCoverageEnabled()) return;
+  if (enabled) coverage_.assign((1u << 24) / 8, 0);
+  else std::vector<uint8_t>().swap(coverage_);
+}
+
+void IIgsMachine::clearCoverage() {
+  std::fill(coverage_.begin(), coverage_.end(), 0);
 }
 
 uint32_t IIgsMachine::stepOver() {

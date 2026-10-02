@@ -124,6 +124,19 @@ public:
   /** One instruction, whether or not a breakpoint sits on it. */
   void stepInstruction();
 
+  // Which addresses have run an instruction, for a debugger's listing to
+  // grey out the bytes that never have: a bit per address over the whole
+  // 24-bit space (2MB), held only while it is switched on. A //e counts
+  // cycles per address instead; a counter per address here would be 64MB.
+  void setCoverageEnabled(bool enabled);
+  bool isCoverageEnabled() const { return !coverage_.empty(); }
+  void clearCoverage();
+  bool wasExecuted(uint32_t address) const {
+    if (coverage_.empty()) return false;
+    address &= 0xFFFFFF;
+    return (coverage_[address >> 3] >> (address & 7)) & 1;
+  }
+
   /**
    * Run to just after the call at the program counter, or one instruction if
    * it is not a call.
@@ -454,6 +467,11 @@ private:
   bool paused_ = false;
 
   void recordTrace();
+  void markExecuted(uint32_t address) {
+    address &= 0xFFFFFF;
+    coverage_[address >> 3] |= static_cast<uint8_t>(1 << (address & 7));
+  }
+  std::vector<uint8_t> coverage_;
 
   /** Tell the ADB which modifier keys are down. See $C025. */
   void reportModifiers(bool shift, bool ctrl, bool capsLock, int browserKeycode);

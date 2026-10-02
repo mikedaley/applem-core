@@ -164,6 +164,9 @@ public:
   // ===== Cycles =====
 
   int getCycleCount() const { return cycleCount_; }
+  // An opcode's base cost: eight-bit registers, a page-aligned direct page,
+  // no page crossed. What the CPU adds to it is charged where it arises.
+  static int baseCycles(uint8_t opcode);
   uint64_t getTotalCycles() const { return totalCycles_; }
   void setTotalCycles(uint64_t c) { totalCycles_ = c; }
   void resetCycleCount() { totalCycles_ = 0; }

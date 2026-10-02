@@ -590,6 +590,12 @@ private:
 
   // Frame timing
   uint64_t lastFrameCycle_ = 0;
+
+  // The body of runCycles, and the start of each frame within it: see
+  // startFrame for which frames are drawn.
+  void runUntil(uint64_t targetCycles);
+  void startFrame(uint64_t runEnd);
+
   bool frameReady_ = false;
 
   // Audio-driven frame sync

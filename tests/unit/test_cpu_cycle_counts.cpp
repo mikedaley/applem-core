@@ -204,6 +204,24 @@ TEST_CASE("Branch instruction cycle counts", "[cpu][cycles]") {
         measureCycles(*f.cpu); // LDA
         REQUIRE(measureCycles(*f.cpu) == 4);
     }
+
+    // BRA is a branch that is always taken, so it costs what a taken branch
+    // costs: the table holds the untaken count and branch() adds the rest.
+    // It used to hold 3, which made every BRA a cycle long.
+    SECTION("BRA in the same page takes 3 cycles") {
+        test::CPUTestFixture f;
+        f.loadAndReset(0x0400, {0x80, 0x02}); // BRA +2
+        REQUIRE(measureCycles(*f.cpu) == 3);
+    }
+
+    SECTION("BRA crossing a page takes 4 cycles") {
+        test::CPUTestFixture f;
+        // BRA at $04FD, PC after fetch = $04FF, target = $0504
+        f.mem.loadProgram(0x04FD, {0x80, 0x05});
+        f.mem.setResetVector(0x04FD);
+        f.cpu->reset();
+        REQUIRE(measureCycles(*f.cpu) == 4);
+    }
 }
 
 // ============================================================================

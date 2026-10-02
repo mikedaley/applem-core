@@ -42,6 +42,8 @@ constexpr std::array<uint8_t, 256> CYCLES = {{
 
 } // namespace
 
+int CPU65816::baseCycles(uint8_t opcode) { return CYCLES[opcode]; }
+
 void CPU65816::executeInstruction() {
   if (stopped_) {
     // STP stops the clock. Only a reset starts it again, and until then the

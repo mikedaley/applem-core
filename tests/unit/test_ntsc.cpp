@@ -275,6 +275,53 @@ TEST_CASE("Pixel exact never colours an unlit dot", "[ntsc][pixel-exact]") {
     REQUIRE(line.out[299] == 0xFFFFFFFFu);
 }
 
+TEST_CASE("Pixel exact measures each run as the walk out from every dot did",
+          "[ntsc][pixel-exact]") {
+    // The runs are found in one pass each way rather than by walking out from
+    // every lit dot, which was quadratic in the run. The answer must be the
+    // same: this is the old rule, applied dot by dot, against random lines of
+    // every density, every kind of dot, and runs that reach both ends.
+    const auto &palette = idealPalette();
+    uint32_t seed = 12345;
+    auto next = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+
+    for (int trial = 0; trial < 400; trial++) {
+        Line line;
+        const uint32_t density = trial % 8; // 0 = all lit .. 7 = sparse
+        for (int x = 0; x < VISIBLE_DOTS; x++) {
+            line.set(x, density == 0 ? 1 : (next() % 8 >= density ? 1 : 0));
+            const uint32_t k = next() % 3;
+            line.kind[x] = trial % 3 == 0 ? IdealKind::DOT_GATED
+                           : k == 0       ? IdealKind::CELL
+                           : k == 1       ? IdealKind::DOT_GATED
+                                          : IdealKind::DOT_GATED_CELL;
+        }
+        decodeIdeal(line.dots, line.kind, true, false, line.out);
+
+        const uint8_t *v = line.dots + DOT_ORIGIN;
+        for (int x = 0; x < VISIBLE_DOTS; x++) {
+            uint32_t expect;
+            if (line.kind[x] == IdealKind::CELL) {
+                const int g = x & ~3;
+                int n = 0;
+                for (int j = 0; j < 4; j++) if (v[g + j]) n |= 1 << ((g + j) & 3);
+                expect = palette[n];
+            } else if (!v[x]) {
+                expect = 0xFF000000u;
+            } else {
+                int lo = x, hi = x;
+                while (lo > 0 && v[lo - 1]) lo--;
+                while (hi < VISIBLE_DOTS - 1 && v[hi + 1]) hi++;
+                int n = 0;
+                for (int q = lo; q <= hi; q++) n |= 1 << (q & 3);
+                expect = hi - lo + 1 >= 3 ? 0xFFFFFFFFu : palette[n];
+            }
+            INFO("trial " << trial << " dot " << x);
+            REQUIRE(line.out[x] == expect);
+        }
+    }
+}
+
 TEST_CASE("Pixel exact gives an isolated HIRES pixel its artifact colour",
           "[ntsc][pixel-exact]") {
     // A lone HIRES pixel is two dots. It should be a clean, flat artifact

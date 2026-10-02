@@ -122,6 +122,17 @@ public:
   // Called at frame boundaries to reset the change log and snapshot state
   void beginNewFrame(uint64_t cycleStart);
 
+  // Whether the frame just begun is drawn. A skipped frame keeps everything
+  // that carries over into the next one — the switch state through the
+  // change log, and the burst the colour killer integrates — and emits and
+  // decodes nothing, so the framebuffer keeps the last frame that was drawn.
+  // beginNewFrame draws by default.
+  void setSkipFrame(bool skip) { skipFrame_ = skip; }
+  bool isSkippingFrame() const { return skipFrame_; }
+  // Draw the frame in progress after all, as far as it has gone: someone is
+  // about to look at it. Does nothing to a frame that is being drawn.
+  void drawSkippedFrame();
+
 private:
   // ==========================================================================
   // Signal stage
@@ -262,6 +273,10 @@ private:
   // text in every mode.
   bool chromaEnabled_ = false;
   bool burstSeenThisFrame_ = false;
+  // The frame in progress is not drawn; see setSkipFrame.
+  bool skipFrame_ = false;
+  // Nor was the one before it, so below the beam the framebuffer is older.
+  bool previousFrameSkipped_ = false;
 
   // Display options
   VideoColorMode colorMode_ = VideoColorMode::COMPOSITE;

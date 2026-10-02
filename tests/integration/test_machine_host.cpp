@@ -12,6 +12,7 @@
 
 #include "../../src/host/machine_host.hpp"
 #include "cpu65816.hpp"
+#include "disassembler/disassembler65816.hpp"
 
 #include <string>
 #include <vector>
@@ -312,4 +313,285 @@ TEST_CASE("A Mockingboard is found on either kind of machine, and only when fitt
   REQUIRE(host.mockingboard() == nullptr);
   REQUIRE(host.setSlotCard(4, "mockingboard"));
   REQUIRE(host.mockingboard() != nullptr);
+}
+
+namespace {
+
+// A small program at $2000 on a //e that has run to its prompt, with the
+// machine paused on its first instruction.
+void loadProgram(MachineHost &host, const std::vector<uint8_t> &code) {
+  host.build();
+  runSeconds(host, 1.5);
+  host.setPaused(true);
+  for (size_t i = 0; i < code.size(); i++) {
+    host.emulator()->writeMemory(static_cast<uint16_t>(0x2000 + i), code[i]);
+  }
+  host.setRegister(a2e::host::CpuRegister::PC, 0x2000);
+}
+
+} // namespace
+
+TEST_CASE("The debugger steps a //e and reads its registers through the host",
+          "[host][debugger]") {
+  MachineHost host;
+  // LDA #$42 / LDX #$03 / STA $0300,X / BNE +2 / NOP / NOP
+  loadProgram(host, {0xA9, 0x42, 0xA2, 0x03, 0x9D, 0x00, 0x03, 0xD0, 0x02, 0xEA, 0xEA});
+  REQUIRE(host.cpuState().pc == 0x2000);
+
+  host.stepInstruction();
+  host.stepInstruction();
+  a2e::host::CpuState s = host.cpuState();
+  REQUIRE(s.a == 0x42);
+  REQUIRE(s.x == 0x03);
+  REQUIRE(s.pc == 0x2004);
+  REQUIRE(s.emulation());
+  REQUIRE(s.accumulator8());
+
+  // The store is about to write $0303, and the host can say so first.
+  const a2e::host::Instruction store = host.disassemble(s.pc);
+  REQUIRE(store.mnemonic == "STA");
+  REQUIRE(store.operand == "$0300,X");
+  REQUIRE(store.mode == a2e::host::OperandMode::AbsoluteX);
+  const auto ea = host.effectiveAddress(store, s);
+  REQUIRE(ea);
+  REQUIRE(ea->address == 0x0303);
+  host.stepInstruction();
+  REQUIRE(host.peek(0x0303) == 0x42);
+
+  // A not-equal with Z clear goes, and the listing knows where.
+  s = host.cpuState();
+  const a2e::host::Instruction branch = host.disassemble(s.pc);
+  REQUIRE(branch.mnemonic == "BNE");
+  REQUIRE(branch.target == 0x200B);
+  REQUIRE(host.branchTaken(branch, s) == std::optional<bool>(true));
+  REQUIRE_FALSE(host.branchTaken(store, s).has_value());
+
+  // Registers are set through the host as a debugger edits them.
+  host.setRegister(a2e::host::CpuRegister::A, 0x1234);
+  REQUIRE(host.cpuState().a == 0x34); // a //e keeps the low byte
+}
+
+TEST_CASE("The host resolves a pointer through the zero page",
+          "[host][debugger]") {
+  MachineHost host;
+  // LDY #$05 / LDA ($06),Y, with $06/$07 pointing at $4000.
+  loadProgram(host, {0xA0, 0x05, 0xB1, 0x06});
+  host.emulator()->writeMemory(0x06, 0x00);
+  host.emulator()->writeMemory(0x07, 0x40);
+  host.emulator()->writeMemory(0x4005, 0x99);
+  host.stepInstruction();
+  const a2e::host::CpuState s = host.cpuState();
+  const auto ea = host.effectiveAddress(host.disassemble(s.pc), s);
+  REQUIRE(ea);
+  REQUIRE(ea->address == 0x4005);
+  REQUIRE(ea->value == 0x99);
+}
+
+TEST_CASE("A listing always shows its centre as an instruction",
+          "[host][debugger]") {
+  MachineHost host;
+  loadProgram(host, {0xA9, 0x42, 0xA2, 0x03, 0x9D, 0x00, 0x03, 0xD0, 0x02, 0xEA, 0xEA});
+  const auto lines = host.disassembleRange(0x2004, 2, 6);
+  REQUIRE(lines.size() == 6);
+  bool found = false;
+  for (const auto &line : lines) found = found || line.address == 0x2004;
+  REQUIRE(found);
+  REQUIRE(lines[0].address == 0x2000);
+}
+
+TEST_CASE("The trace ring comes back through the host, oldest first",
+          "[host][debugger]") {
+  MachineHost host;
+  loadProgram(host, {0xA9, 0x42, 0xA2, 0x03, 0xEA});
+  host.debug()->clearTrace();
+  host.debug()->setTraceEnabled(true);
+  host.stepInstruction();
+  host.stepInstruction();
+  const auto lines = host.traceLines(0, 10);
+  REQUIRE(lines.size() == 2);
+  REQUIRE(lines[0].instruction.address == 0x2000);
+  REQUIRE(lines[0].instruction.mnemonic == "LDA");
+  REQUIRE(lines[1].instruction.mnemonic == "LDX");
+}
+
+TEST_CASE("A IIgs's instructions read as its own monitor writes them",
+          "[host][debugger][iigs]") {
+  // The host splits the mnemonic from the operand for a front end to colour;
+  // put back together they must be what formatDisasm816 writes.
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  const uint32_t at = 0x002000;
+  const a2e::CPU65816 &cpu = host.iigs()->cpu();
+  for (int op = 0; op < 256; op++) {
+    host.iigs()->memory().write(at, static_cast<uint8_t>(op));
+    host.iigs()->memory().write(at + 1, 0x34);
+    host.iigs()->memory().write(at + 2, 0x12);
+    host.iigs()->memory().write(at + 3, 0x01);
+    const uint8_t bytes[4] = {static_cast<uint8_t>(op), 0x34, 0x12, 0x01};
+    const std::string whole = a2e::formatDisasm816(
+        a2e::disassemble816(bytes, 4, at, cpu.accumulator8(), cpu.index8()));
+    const a2e::host::Instruction in = host.disassemble(at);
+    const std::string text = in.operand.empty() ? in.mnemonic : in.mnemonic + " " + in.operand;
+    INFO("opcode " << op);
+    REQUIRE(whole.substr(whole.size() - text.size()) == text);
+  }
+}
+
+TEST_CASE("An instruction's cost at the PC is what a //e then charges for it",
+          "[host][debugger][cycles]") {
+  // Every opcode, with indexes that do and do not carry into the next page,
+  // and flags that take and refuse every branch: the debugger's column is
+  // the core's own arithmetic, so the two must never disagree.
+  MachineHost host;
+  loadProgram(host, {0xEA});
+  const uint8_t indexes[] = {0x00, 0xF0};
+  const uint8_t flags[] = {0x00, 0xC3, 0x08};
+  for (int op = 0; op < 256; op++) {
+    if (op == 0xCB || op == 0xDB) continue; // WAI and STP would stop the processor
+    for (uint8_t index : indexes) {
+      for (uint8_t p : flags) {
+        host.emulator()->writeMemory(0x2000, static_cast<uint8_t>(op));
+        host.emulator()->writeMemory(0x2001, 0x34);
+        host.emulator()->writeMemory(0x2002, 0x12);
+        // A zero page pointer for ($34),Y, near the end of a page.
+        host.emulator()->writeMemory(0x34, 0x80);
+        host.emulator()->writeMemory(0x35, 0x40);
+        host.setRegister(a2e::host::CpuRegister::PC, 0x2000);
+        host.setRegister(a2e::host::CpuRegister::X, index);
+        host.setRegister(a2e::host::CpuRegister::Y, index);
+        host.setRegister(a2e::host::CpuRegister::SP, 0xF0);
+        host.setRegister(a2e::host::CpuRegister::P, p | 0x20);
+        const a2e::host::CpuState s = host.cpuState();
+        const a2e::host::Instruction in = host.disassemble(s.pc);
+        const a2e::host::CycleCost cost = host.cycleCost(in, s, true);
+        const a2e::host::CycleCost range = host.cycleCost(in, s, false);
+        const uint64_t before = host.emulator()->getTotalCycles();
+        host.stepInstruction();
+        const uint64_t used = host.emulator()->getTotalCycles() - before;
+        INFO("opcode $" << std::hex << op << " " << in.mnemonic << " " << in.operand << " index $"
+                        << int(index) << " P $" << int(p));
+        REQUIRE(cost.min == cost.max);
+        REQUIRE(cost.min == used);
+        REQUIRE(range.min <= used);
+        REQUIRE(range.max >= used);
+      }
+    }
+  }
+}
+
+TEST_CASE("An instruction's cost at the PC is what a IIgs then charges for it",
+          "[host][debugger][cycles][iigs]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  host.build();
+  host.setPaused(true);
+  a2e::CPU65816 &cpu = host.iigs()->cpu();
+  auto &memory = host.iigs()->memory();
+
+  struct Mode {
+    bool native;
+    uint8_t widths; // the M and X bits of P
+    uint16_t d;
+  };
+  const Mode modes[] = {{false, 0x30, 0x0000}, {true, 0x30, 0x0000}, {true, 0x00, 0x0000},
+                        {true, 0x20, 0x0012}, {true, 0x10, 0x0000}};
+  const uint16_t indexes[] = {0x0000, 0x00F0};
+  const uint8_t flags[] = {0x00, 0xC3};
+  for (const Mode &mode : modes) {
+    for (int op = 0; op < 256; op++) {
+      // STP and WAI stop the clock; XCE, REP, SEP, PLP and RTI change the
+      // very widths the cost was worked out at, which is still right, but
+      // they would leave the next pass in a mode it did not ask for.
+      if (op == 0xDB || op == 0xCB) continue;
+      for (uint16_t index : indexes) {
+        for (uint8_t p : flags) {
+          // Put the processor in the mode, then the registers.
+          cpu.setEmulation(!mode.native);
+          cpu.setP(static_cast<uint8_t>((p & ~0x30) | (mode.native ? mode.widths : 0x30)));
+          host.setRegister(a2e::host::CpuRegister::D, mode.d);
+          host.setRegister(a2e::host::CpuRegister::DBR, 0);
+          host.setRegister(a2e::host::CpuRegister::X, index);
+          host.setRegister(a2e::host::CpuRegister::Y, index);
+          host.setRegister(a2e::host::CpuRegister::SP, 0x01F0);
+          host.setRegister(a2e::host::CpuRegister::A, 0x0000); // MVN/MVP move one byte
+          const uint32_t at = 0x002000;
+          memory.write(at, static_cast<uint8_t>(op));
+          memory.write(at + 1, 0x34);
+          memory.write(at + 2, 0x12);
+          memory.write(at + 3, 0x00);
+          memory.write(mode.d + 0x34, 0x80);
+          memory.write(mode.d + 0x35, 0x40);
+          memory.write(mode.d + 0x36, 0x00);
+          host.setRegister(a2e::host::CpuRegister::PC, at);
+          const a2e::host::CpuState s = host.cpuState();
+          const a2e::host::Instruction in = host.disassemble(s.pc);
+          const a2e::host::CycleCost cost = host.cycleCost(in, s, true);
+          const a2e::host::CycleCost range = host.cycleCost(in, s, false);
+          const uint64_t before = cpu.getTotalCycles();
+          host.stepInstruction();
+          const uint64_t used = cpu.getTotalCycles() - before;
+          INFO("opcode $" << std::hex << op << " " << in.mnemonic << " " << in.operand << " native "
+                          << mode.native << " widths $" << int(mode.widths) << " D $" << mode.d
+                          << " index $" << index << " P $" << int(p));
+          REQUIRE(cost.min == cost.max);
+          REQUIRE(cost.min == used);
+          REQUIRE(range.min <= used);
+          REQUIRE(range.max >= used);
+        }
+      }
+    }
+  }
+}
+
+TEST_CASE("Heat counts a //e's cycles where they were spent, and only while asked",
+          "[host][debugger][profile]") {
+  MachineHost host;
+  // LDA #$42 / NOP, with a line nobody runs after it.
+  loadProgram(host, {0xA9, 0x42, 0xEA, 0xEA});
+  REQUIRE(host.hasCycleProfile());
+  host.stepInstruction();
+  REQUIRE(host.profileCycles(0x2000) == 0); // not counting yet
+
+  host.setRegister(a2e::host::CpuRegister::PC, 0x2000);
+  host.setProfiling(true);
+  host.clearProfile();
+  host.stepInstruction();
+  host.stepInstruction();
+  REQUIRE(host.profileCycles(0x2000) == 2);
+  REQUIRE(host.profileCycles(0x2002) == 2);
+  REQUIRE(host.wasExecuted(0x2000));
+  REQUIRE_FALSE(host.wasExecuted(0x2003));
+  uint32_t max = 0;
+  uint64_t total = 0;
+  host.profileTotals(max, total);
+  REQUIRE(max == 2);
+  REQUIRE(total == 4);
+
+  host.clearProfile();
+  REQUIRE_FALSE(host.wasExecuted(0x2000));
+}
+
+TEST_CASE("A IIgs records what has run, by its full address",
+          "[host][debugger][profile][iigs]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  host.build();
+  host.setPaused(true);
+  REQUIRE_FALSE(host.hasCycleProfile());
+  REQUIRE(host.hasCoverage());
+  auto &memory = host.iigs()->memory();
+  memory.write(0x012000, 0xEA);
+  memory.write(0x012001, 0xEA);
+  host.setRegister(a2e::host::CpuRegister::PC, 0x012000);
+  host.setProfiling(true);
+  host.stepInstruction();
+  REQUIRE(host.wasExecuted(0x012000));
+  REQUIRE_FALSE(host.wasExecuted(0x002000)); // the same offset in another bank
+  REQUIRE_FALSE(host.wasExecuted(0x012001));
+  REQUIRE(host.profileCycles(0x012000) == 0); // no heat on this machine
+  host.setProfiling(false);
+  REQUIRE_FALSE(host.wasExecuted(0x012000));
 }

@@ -11,6 +11,9 @@
 
 #include "emulator.hpp"
 
+#include <algorithm>
+#include <cstring>
+
 using namespace a2e;
 
 // ---------------------------------------------------------------------------
@@ -758,4 +761,96 @@ TEST_CASE("Ctrl+6 and Ctrl+- are Ctrl+^ and Ctrl+_ at $C000", "[emulator][keyboa
     emu.readMemory(0xC010);
     emu.handleRawKeyDown(189, false, false, false, false, false, 0);
     REQUIRE(emu.readMemory(0xC000) == 0xAD);
+}
+
+// ---------------------------------------------------------------------------
+// Frames nobody sees
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Hi-res page 1, then three passes writing a changing value across
+// $2000-$20FF (rows all down the screen), then a delay of about 32,000
+// cycles with nothing written, then `tail`: a jump back to the writes, or a
+// NOP to break on and a jump to itself.
+void loadSkipProgram(Emulator &emu, bool halt) {
+    const uint8_t program[] = {
+        0xAD, 0x50, 0xC0, 0xAD, 0x57, 0xC0, 0xAD, 0x52, 0xC0, 0xAD, 0x54, 0xC0,
+        0xA9, 0x03, 0x85, 0x06,                   // $600C LDA #3 / STA $06
+        0xE8, 0x8A, 0x99, 0x00, 0x20, 0xC8,       // $6010 INX TXA STA $2000,Y INY
+        0xD0, 0xF8, 0xC6, 0x06, 0xD0, 0xF4,       // $6016 BNE / DEC $06 / BNE
+        0xA0, 0x19, 0xCA, 0xD0, 0xFD, 0x88,       // $601C LDY #25 DEX BNE DEY
+        0xD0, 0xFA,                               // $6022 BNE $601E
+        0xEA,                                     // $6024 NOP
+        0x4C, static_cast<uint8_t>(halt ? 0x25 : 0x0C), 0x60,
+    };
+    for (size_t i = 0; i < sizeof(program); i++) {
+        emu.writeMemory(static_cast<uint16_t>(0x6000 + i), program[i]);
+    }
+    emu.setPC(0x6000);
+}
+
+// The same run, in pieces no longer than a frame, so no frame in it is
+// skipped. Each piece stops at the first instruction past its own end, so
+// the last stops exactly where one long run would.
+void runInPieces(Emulator &emu, uint64_t until) {
+    const auto perFrame = static_cast<uint64_t>(emu.getMachine().timing.cyclesPerFrame());
+    while (emu.getTotalCycles() < until && !emu.isPaused()) {
+        emu.runCycles(static_cast<int>(std::min(perFrame, until - emu.getTotalCycles())));
+    }
+}
+
+bool sameFramebuffer(Emulator &a, Emulator &b) {
+    return std::memcmp(a.getFramebuffer(), b.getFramebuffer(), a.getFramebufferSize()) == 0;
+}
+
+} // namespace
+
+TEST_CASE("A long run skips the frames nobody sees and ends on the same picture",
+          "[emulator][video][skip]") {
+    // A run at 8x is eight frames, and only the last is published, so the
+    // others are not drawn. The picture at the end must be exactly the one a
+    // run that drew every frame ends on.
+    Emulator skipped, drawn;
+    skipped.init();
+    drawn.init();
+    loadSkipProgram(skipped, false);
+    loadSkipProgram(drawn, false);
+
+    const auto perFrame = static_cast<uint64_t>(skipped.getMachine().timing.cyclesPerFrame());
+    for (int run = 0; run < 3; run++) {
+        const uint64_t until = skipped.getTotalCycles() + 8 * perFrame;
+        skipped.runCycles(static_cast<int>(8 * perFrame));
+        runInPieces(drawn, until);
+        REQUIRE(skipped.getTotalCycles() == drawn.getTotalCycles());
+        REQUIRE(sameFramebuffer(skipped, drawn));
+    }
+}
+
+TEST_CASE("A breakpoint in a skipped frame shows the frame it stopped in",
+          "[emulator][video][skip]") {
+    // The breakpoint is about two and a half frames into an eight-frame run,
+    // in a frame that was being skipped. The machine stops there, so that
+    // frame is drawn as far as the beam, and the lines below it, which show
+    // the frame before, are drawn too: that frame was skipped as well.
+    // Nothing is written after the first frame, so a machine that drew every
+    // frame shows the same picture.
+    Emulator skipped, drawn;
+    skipped.init();
+    drawn.init();
+    loadSkipProgram(skipped, true);
+    loadSkipProgram(drawn, true);
+    skipped.addBreakpoint(0x6024);
+    drawn.addBreakpoint(0x6024);
+
+    const auto perFrame = static_cast<uint64_t>(skipped.getMachine().timing.cyclesPerFrame());
+    const uint64_t until = skipped.getTotalCycles() + 8 * perFrame;
+    skipped.runCycles(static_cast<int>(8 * perFrame));
+    runInPieces(drawn, until);
+
+    REQUIRE(skipped.isPaused());
+    REQUIRE(drawn.isPaused());
+    REQUIRE(skipped.getPC() == 0x6024);
+    REQUIRE(skipped.getTotalCycles() == drawn.getTotalCycles());
+    REQUIRE(sameFramebuffer(skipped, drawn));
 }

@@ -361,9 +361,27 @@ void Emulator::runCycles(int cycles) {
   if (paused_)
     return;
 
-  uint64_t startCycles = cpu_->getTotalCycles();
-  uint64_t targetCycles = startCycles + cycles;
+  runUntil(cpu_->getTotalCycles() + cycles);
 
+  // A run that stopped early, at a breakpoint or a watchpoint, may have
+  // stopped in a frame nobody was going to see. Now somebody will, so it is
+  // drawn as far as the beam has gone. A run that went the whole way ends in
+  // a frame that was drawn, and this does nothing.
+  video_->drawSkippedFrame();
+}
+
+// A frame starts. If another whole frame will finish after it before this run
+// ends, it is never shown: the host publishes one picture per run, the last
+// finished one. At 4x a run is four frames and at 8x eight, so all but the
+// last one or two are skipped rather than decoded and thrown away. Pass 0 for
+// a run with no end in sight (a single step), which skips nothing.
+void Emulator::startFrame(uint64_t runEnd) {
+  video_->beginNewFrame(lastFrameCycle_);
+  const auto perFrame = static_cast<uint64_t>(machine_->timing.cyclesPerFrame());
+  video_->setSkipFrame(lastFrameCycle_ + 2 * perFrame <= runEnd);
+}
+
+void Emulator::runUntil(uint64_t targetCycles) {
   while (cpu_->getTotalCycles() < targetCycles) {
     // When Z80 SoftCard is active, the 6502 is halted via DMA.
     // Skip all 6502-specific checks and just advance timing.
@@ -386,7 +404,7 @@ void Emulator::runCycles(int cycles) {
           static_cast<uint64_t>(machine_->timing.cyclesPerFrame())) {
         lastFrameCycle_ += machine_->timing.cyclesPerFrame();
         video_->renderFrame();
-        video_->beginNewFrame(lastFrameCycle_);
+        startFrame(targetCycles);
         frameReady_ = true;
       }
       continue;
@@ -623,8 +641,8 @@ void Emulator::runCycles(int cycles) {
       // uses cycles modulo the frame length). Using currentCycle would drift
       // by a few cycles each frame, desynchronizing raster effects.
       lastFrameCycle_ += machine_->timing.cyclesPerFrame();
-      video_->renderFrame();                   // Uses this frame's change log
-      video_->beginNewFrame(lastFrameCycle_);   // Reset log, aligned to frame boundary
+      video_->renderFrame();       // Uses this frame's change log
+      startFrame(targetCycles);    // Reset log, aligned to frame boundary
       frameReady_ = true;
     }
 
@@ -1044,7 +1062,7 @@ void Emulator::stepInstruction() {
       static_cast<uint64_t>(machine_->timing.cyclesPerFrame())) {
     lastFrameCycle_ += machine_->timing.cyclesPerFrame();
     video_->renderFrame();
-    video_->beginNewFrame(lastFrameCycle_);
+    startFrame(0);
     frameReady_ = true;
   }
 }

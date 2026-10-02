@@ -180,6 +180,13 @@ private:
   // CPU variant
   CPUVariant variant_;
 
+public:
+  // An opcode's base cost, before the page and branch penalties: a debugger
+  // shows the same numbers the CPU charges.
+  static int baseCycles(uint8_t opcode) { return CYCLE_TABLE[opcode]; }
+
+private:
+
   // Opcode table for cycle counts
   static constexpr std::array<uint8_t, 256> CYCLE_TABLE = {{
       7, 6, 2, 2, 5, 3, 5, 5, 3, 2, 2, 2, 6, 4, 6, 5, // 00-0F
@@ -190,7 +197,7 @@ private:
       2, 5, 5, 2, 4, 4, 6, 5, 2, 4, 3, 2, 8, 4, 6, 5, // 50-5F
       6, 6, 2, 2, 3, 3, 5, 5, 4, 2, 2, 2, 5, 4, 6, 5, // 60-6F
       2, 5, 5, 2, 4, 4, 6, 5, 2, 4, 4, 2, 6, 4, 6, 5, // 70-7F
-      3, 6, 2, 2, 3, 3, 3, 5, 2, 2, 2, 2, 4, 4, 4, 5, // 80-8F
+      2, 6, 2, 2, 3, 3, 3, 5, 2, 2, 2, 2, 4, 4, 4, 5, // 80-8F: $80 BRA is 2 + taken, as every branch
       2, 6, 5, 2, 4, 4, 4, 5, 2, 5, 2, 2, 4, 5, 5, 5, // 90-9F
       2, 6, 2, 2, 3, 3, 3, 5, 2, 2, 2, 2, 4, 4, 4, 5, // A0-AF
       2, 5, 5, 2, 4, 4, 4, 5, 2, 4, 2, 2, 4, 4, 4, 5, // B0-BF

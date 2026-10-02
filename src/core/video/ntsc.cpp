@@ -297,6 +297,27 @@ void decodeIdeal(const uint8_t *dots, const IdealKind *kind, bool chroma,
   uint8_t idx[VISIBLE_DOTS];
   bool literal[VISIBLE_DOTS]; // resolved to plain black/white, not a palette hue
 
+  // Where the run of lit dots through each lit dot begins and ends, found once
+  // per run. Walking out from every dot instead made a line quadratic in its
+  // longest run: a full-width white line was 157,000 steps rather than 560,
+  // and a bright hi-res screen at 4x or 8x took longer to decode than the
+  // frames lasted. Unlit dots are not filled in, and are never read.
+  int16_t runStart[VISIBLE_DOTS];
+  int16_t runEnd[VISIBLE_DOTS];
+  for (int x = 0; x < VISIBLE_DOTS;) {
+    if (!v[x]) {
+      x++;
+      continue;
+    }
+    int end = x;
+    while (end < VISIBLE_DOTS - 1 && v[end + 1]) end++;
+    for (int p = x; p <= end; p++) {
+      runStart[p] = static_cast<int16_t>(x);
+      runEnd[p] = static_cast<int16_t>(end);
+    }
+    x = end + 1;
+  }
+
   for (int x = 0; x < VISIBLE_DOTS; x++) {
     switch (kind[x]) {
     case IdealKind::CELL: {
@@ -328,9 +349,8 @@ void decodeIdeal(const uint8_t *dots, const IdealKind *kind, bool chroma,
       // to read as white. Using run length rather than byte position keeps this
       // correct across the high bit's half-dot shift, and means text picks up
       // the same NTSC colouring its dot pattern would produce on real hardware.
-      int lo = x, hi = x;
-      while (lo > 0 && v[lo - 1]) lo--;
-      while (hi < VISIBLE_DOTS - 1 && v[hi + 1]) hi++;
+      const int lo = runStart[x];
+      const int hi = runEnd[x];
 
       if (hi - lo + 1 >= 3) {
         literal[x] = true;
@@ -377,8 +397,13 @@ void decodeIdeal(const uint8_t *dots, const IdealKind *kind, bool chroma,
 void decodeSolid(const uint8_t *dots, const IdealKind *kind,
                  const uint8_t *cell, uint32_t *out) {
   // The dot-gated dots first, exactly as the sharp decoder does them, so a
-  // text stroke is the same in both modes.
-  decodeIdeal(dots, kind, true, false, out);
+  // text stroke is the same in both modes. Only text is dot-gated here, and a
+  // line with none (every hi-res, lo-res and double-resolution line) would
+  // have every dot of that decode painted over below, so it is skipped.
+  if (std::any_of(kind, kind + VISIBLE_DOTS,
+                  [](IdealKind k) { return k == IdealKind::DOT_GATED; })) {
+    decodeIdeal(dots, kind, true, false, out);
+  }
 
   // Then everything that carries a colour of its own: a cell's value, or a
   // HIRES pixel's answer under the rule in Video::emitHiResScanline. Painted

@@ -94,6 +94,7 @@ set(CORE_SOURCES
 # how a question reaches a //e or a IIgs.
 set(HOST_SOURCES
     src/host/machine_host.cpp
+    src/host/machine_host_debug.cpp
 )
 
 # ROM embedding - generate C arrays from ROM files

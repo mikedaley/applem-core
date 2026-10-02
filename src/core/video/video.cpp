@@ -99,6 +99,43 @@ void Video::beginNewFrame(uint64_t cycleStart) {
   lastRenderedScanline_ = -1;
   changeIdx_ = 0;
   currentRenderState_ = frameStartState_;
+  previousFrameSkipped_ = skipFrame_;
+  skipFrame_ = false;
+}
+
+void Video::drawSkippedFrame() {
+  if (!skipFrame_) return;
+  skipFrame_ = false;
+  // The change log holds the whole frame so far, so the lines are drawn again
+  // from the frame's starting state with every switch change where it fell.
+  // What they show is memory as it is now rather than as the beam found it,
+  // which for a machine that has just stopped is the same thing or near it.
+  const int upTo = lastRenderedScanline_;
+  lastRenderedScanline_ = -1;
+  changeIdx_ = 0;
+  currentRenderState_ = frameStartState_;
+  while (lastRenderedScanline_ < upTo) {
+    lastRenderedScanline_++;
+    renderScanlineWithChanges(lastRenderedScanline_);
+  }
+
+  // Below the beam the screen shows the frame before. If that one was skipped
+  // as well, the framebuffer there is older still, so those lines are drawn
+  // from memory and the switches as they are now: the nearest thing to the
+  // frame that was not drawn. They are not this frame's, so the beam does not
+  // move.
+  if (!previousFrameSkipped_) return;
+  const VideoSwitchState vs = captureVideoState();
+  const int visibleScanlines = machine_->timing.visibleScanlines;
+  const int visibleColumns = machine_->timing.visibleColumns;
+  for (int scanline = upTo + 1; scanline < visibleScanlines; scanline++) {
+    beginScanline();
+    textLine_ = isTextScanline(scanline, vs);
+    doubleHiResLine_ = false;
+    burst_ = burstForScanline(scanline, vs);
+    renderScanlineSegment(scanline, 0, visibleColumns, vs);
+    endScanline(scanline);
+  }
 }
 
 // ============================================================================
@@ -667,7 +704,7 @@ void Video::renderScanlineWithChanges(int scanline) {
   uint32_t visibleStartCycle = scanlineStartCycle + timing.hblankCycles;
   uint32_t scanlineEndCycle = scanlineStartCycle + timing.cyclesPerScanline;
 
-  beginScanline();
+  if (!skipFrame_) beginScanline();
 
   // Phase 1: Consume hblank changes (cycles 0-24) and any earlier changes
   while (changeIdx_ < switchChangeCount_) {
@@ -687,6 +724,16 @@ void Video::renderScanlineWithChanges(int scanline) {
   burst_ = burstForScanline(scanline, currentRenderState_);
   if (burst_) {
     burstSeenThisFrame_ = true;
+  }
+
+  // A skipped line keeps the state moving and draws nothing.
+  if (skipFrame_) {
+    while (changeIdx_ < switchChangeCount_ &&
+           switchChanges_[changeIdx_].cycleOffset < scanlineEndCycle) {
+      currentRenderState_ = switchChanges_[changeIdx_].state;
+      changeIdx_++;
+    }
+    return;
   }
 
   // Phase 2: Process visible-area changes (one cycle per visible column)
