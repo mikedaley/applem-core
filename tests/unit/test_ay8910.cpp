@@ -431,3 +431,71 @@ TEST_CASE("The I/O ports read their pins when set to input", "[ay8910][reg]") {
     CHECK(readReg(psg, 14) == 0x12);
     CHECK(readReg(psg, 15) == 0x34);
 }
+
+// ============================================================================
+// Noise, against the datasheet and the die
+// ============================================================================
+
+TEST_CASE("The noise register shifts every 16 NP clocks", "[ay8910][noise][timing]") {
+    // Datasheet: the noise clock is the input clock over 16, then over NP.
+    // NP = 31 shifts every 496 clocks, which at 48kHz is every 23.27
+    // samples; from a reset the register holds 1, so the output starts high
+    // and the first shift takes it low.
+    AY8910 psg;
+    writeReg(psg, 6, 31);
+    writeReg(psg, 7, 0x37);  // noise on A only, tones off
+    writeReg(psg, 8, 15);
+    const int count = 48000;
+    std::vector<float> out(count);
+    psg.generateChannelSamples(out.data(), count, 48000, 0);
+
+    // Every change of level is on a shift; the shifts are 496 clocks apart.
+    constexpr double SAMPLES_PER_SHIFT = 496.0 * 48000.0 / 1023000.0;
+    std::vector<int> changes;
+    for (int i = 1; i < count; i++) if ((out[i] > 0.1f) != (out[i - 1] > 0.1f)) changes.push_back(i);
+    REQUIRE(changes.size() > 1000);
+    for (size_t i = 1; i < changes.size(); i++) {
+        const double gap = changes[i] - changes[i - 1];
+        const double shifts = gap / SAMPLES_PER_SHIFT;
+        INFO("gap " << gap << " samples at change " << i);
+        CHECK(std::fabs(shifts - std::round(shifts)) < 0.1);
+    }
+
+    // Reading the level once per shift gives the register's own sequence.
+    uint32_t rng = 1;
+    int wrong = 0;
+    for (int shift = 0; shift < 2000; shift++) {
+        const int at = static_cast<int>((shift + 0.5) * SAMPLES_PER_SHIFT);
+        if ((out[at] > 0.1f) != ((rng & 1) != 0)) wrong++;
+        const uint32_t feedback = (rng & 1) ^ ((rng >> 3) & 1);
+        rng = (rng >> 1) | (feedback << 16);
+    }
+    CHECK(wrong == 0);
+}
+
+TEST_CASE("Noise period 0 is period 1", "[ay8910][noise]") {
+    AY8910 zero, one;
+    for (AY8910* psg : {&zero, &one}) {
+        writeReg(*psg, 7, 0x37);
+        writeReg(*psg, 8, 15);
+    }
+    writeReg(zero, 6, 0);
+    writeReg(one, 6, 1);
+    const int count = 4096;
+    std::vector<float> a(count), b(count);
+    zero.generateChannelSamples(a.data(), count, 48000, 0);
+    one.generateChannelSamples(b.data(), count, 48000, 0);
+    CHECK(a == b);
+}
+
+TEST_CASE("The noise register is maximal length", "[ay8910][noise]") {
+    // 17 bits, the input bit 0 XOR bit 3: every state but zero before it repeats.
+    uint32_t rng = 1;
+    long states = 0;
+    do {
+        const uint32_t feedback = (rng & 1) ^ ((rng >> 3) & 1);
+        rng = (rng >> 1) | (feedback << 16);
+        states++;
+    } while (rng != 1);
+    CHECK(states == (1 << 17) - 1);
+}
