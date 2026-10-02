@@ -159,6 +159,60 @@ TEST_CASE("The IIgs memory size is remembered, and rebuilds only a IIgs",
   (void)before;
 }
 
+// Frames the machine finished in a second of audio, as a host counts them.
+int framesInASecond(MachineHost &host) {
+  std::vector<float> buffer(800 * 2);
+  host.consumeFrameSamples(); // whatever went before
+  int frames = 0;
+  for (int i = 0; i < 60; i++) {
+    host.generateStereoAudioSamples(buffer.data(), 800);
+    frames += host.consumeFrameSamples();
+  }
+  return frames;
+}
+
+TEST_CASE("Switching to PAL retimes the running machine and keeps it",
+          "[host][pal]") {
+  MachineHost host;
+  host.build();
+  runSeconds(host, 0.5);
+  Emulator *emulator = host.emulator();
+  emulator->getMMU().write(0x0300, 0xA5);
+  REQUIRE(framesInASecond(host) == Approx(60).margin(1));
+
+  REQUIRE(host.setVideoStandard(VideoStandard::PAL));
+  REQUIRE(host.emulator() == emulator); // the same machine, not a new one
+  REQUIRE(emulator->videoStandard() == VideoStandard::PAL);
+  REQUIRE(host.profile().timing.scanlinesPerFrame == 312);
+  REQUIRE(emulator->getMMU().read(0x0300) == 0xA5);
+  REQUIRE(framesInASecond(host) == Approx(50).margin(1));
+
+  // A reset is not a change of standard.
+  emulator->reset();
+  REQUIRE(emulator->videoStandard() == VideoStandard::PAL);
+
+  REQUIRE(host.setVideoStandard(VideoStandard::NTSC));
+  REQUIRE(framesInASecond(host) == Approx(60).margin(1));
+}
+
+TEST_CASE("A IIgs stays NTSC, and the choice is kept for the next machine",
+          "[host][pal]") {
+  MachineHost host;
+  REQUIRE(host.setVideoStandard(VideoStandard::PAL));
+  host.build();
+  REQUIRE(host.emulator()->videoStandard() == VideoStandard::PAL);
+
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  REQUIRE(host.videoStandard() == VideoStandard::NTSC);
+  REQUIRE(host.profile().timing.standard == VideoStandard::NTSC);
+  REQUIRE_FALSE(host.setVideoStandard(VideoStandard::PAL));
+
+  REQUIRE(host.setMachine(MachineId::AppleIIe));
+  REQUIRE(host.videoStandard() == VideoStandard::PAL);
+  REQUIRE(host.emulator()->getMachine().timing.scanlinesPerFrame == 312);
+}
+
 TEST_CASE("The parts every machine has are found on either kind",
           "[host]") {
   for (MachineId id : {MachineId::AppleIIe, MachineId::AppleIIgs}) {

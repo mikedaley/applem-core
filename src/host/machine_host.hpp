@@ -146,6 +146,14 @@ public:
   // already running changes nothing.
   bool setMachine(MachineId id);
 
+  // NTSC or PAL. The standard is the host's choice, made for each machine,
+  // so it is held here and given to every machine built; switching it times
+  // the running machine afresh without rebuilding it (Emulator::
+  // setVideoStandard). A machine not made in that standard runs NTSC, and
+  // false is returned.
+  VideoStandard videoStandard() const;
+  bool setVideoStandard(VideoStandard standard);
+
   // How much fast RAM a IIgs has. Changing it rebuilds a running IIgs; any
   // other machine remembers it for when a IIgs is built.
   size_t iigsFastRam() const;
@@ -158,7 +166,7 @@ public:
   }
 
   MachineId machineId() const { return machineId_; }
-  const MachineProfile &profile() const { return machineProfile(machineId_); }
+  const MachineProfile &profile() const { return machineProfile(machineId_, videoStandard()); }
   bool isBuilt() const { return emulator_ || iigs_; }
 
   // Exactly one of these is non-null once the machine is built.
@@ -339,6 +347,7 @@ private:
   std::unique_ptr<Emulator> emulator_;
   std::unique_ptr<iigs::IIgsMachine> iigs_;
   MachineId machineId_ = MachineId::AppleIIe;
+  VideoStandard videoStandard_ = VideoStandard::NTSC;
   // A ROM 01 shipped with 256K on the board and a memory expansion card took
   // it further, which is what most of them had.
   size_t iigsFastRam_ = iigs::FAST_RAM_SIZE_ROM01;

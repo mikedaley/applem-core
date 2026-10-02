@@ -27,6 +27,10 @@ public:
   // into a span of emulated cycles. A machine with a different clock produces a
   // different number here and everything downstream follows.
   explicit Audio(const MachineProfile &machine = defaultMachineProfile());
+  // A machine on another clock: a sample is a different number of cycles.
+  void retime(const MachineProfile &machine) {
+    baseCyclesPerSample_ = machine.timing.cyclesPerSample(AUDIO_SAMPLE_RATE);
+  }
 
   // Speaker toggle (called when $C030 is accessed)
   void toggleSpeaker(uint64_t cycleCount);

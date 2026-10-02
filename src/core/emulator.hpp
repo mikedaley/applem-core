@@ -48,11 +48,19 @@ public:
   // Which machine to model. Everything downstream — the CPU fitted, the video
   // timing, how much RAM answers, which cards the slots take — follows from the
   // profile this selects.
-  explicit Emulator(MachineId machine = MachineId::AppleIIe);
+  explicit Emulator(MachineId machine = MachineId::AppleIIe,
+                    VideoStandard standard = VideoStandard::NTSC);
   ~Emulator();
 
   // The machine being modelled.
   const MachineProfile &getMachine() const { return *machine_; }
+
+  // Time the running machine for NTSC or PAL. Nothing but the timing changes,
+  // so the machine carries on with its memory, cards and disks as they are;
+  // software that measured the frame at startup wants a reboot. A machine not
+  // made in that standard is left as it is, and false returned.
+  bool setVideoStandard(VideoStandard standard);
+  VideoStandard videoStandard() const { return machine_->timing.standard; }
 
   // Whether this machine's system ROM was built into the binary. False means
   // the machine is described but cannot run — see init().
@@ -86,9 +94,9 @@ public:
   void runCycles(int cycles);
   int generateStereoAudioSamples(float *buffer, int sampleCount);
 
-  // Audio-driven frame synchronization
-  // Returns number of complete frames worth of samples generated since last
-  // call
+  // Audio-driven frame synchronization: how many video frames have been
+  // completed since the last call, so a host publishes a picture when there
+  // is a new one, at the machine's own frame rate.
   int consumeFrameSamples();
 
   // Frame management
@@ -598,9 +606,8 @@ private:
 
   bool frameReady_ = false;
 
-  // Audio-driven frame sync
-  static constexpr int SAMPLES_PER_FRAME = 800; // 48000 Hz / 60 Hz
-  int samplesGenerated_ = 0;
+  // Video frames finished and not yet reported by consumeFrameSamples
+  int framesCompleted_ = 0;
 
   // Breakpoints, watchpoints, the trace ring, beam breakpoints: the parts of
   // debugging that are not about this processor, shared with the IIgs.

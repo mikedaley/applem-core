@@ -26,7 +26,8 @@
 
 namespace a2e {
 
-Emulator::Emulator(MachineId machine) : machine_(&machineProfile(machine)) {
+Emulator::Emulator(MachineId machine, VideoStandard standard)
+    : machine_(&machineProfile(machine, standard)) {
   mmu_ = std::make_unique<MMU>(*machine_);
   video_ = std::make_unique<Video>(*mmu_);
   audio_ = std::make_unique<Audio>(*machine_);
@@ -270,7 +271,7 @@ void Emulator::reset() {
   // user's chosen clock speed, or a paste boost in flight), not machine state,
   // so a reset must not drop the machine back to 1 MHz behind their back.
   lastFrameCycle_ = 0;
-  samplesGenerated_ = 0;
+  framesCompleted_ = 0;
   frameReady_ = false;
   debug_.reset();
   // Keep beam breakpoints across reset (same as regular breakpoints)
@@ -323,7 +324,7 @@ void Emulator::warmReset() {
 
   paused_ = false;
   frameReady_ = false;
-  samplesGenerated_ = 0;
+  framesCompleted_ = 0;
 }
 
 void Emulator::setPaused(bool paused) {
@@ -352,7 +353,7 @@ void Emulator::setPaused(bool paused) {
   basicBreakpointHit_ = false;
   // Reset frame sample counter when unpausing to prevent backlog
   if (!paused && paused_) {
-    samplesGenerated_ = 0;
+    framesCompleted_ = 0;
   }
   paused_ = paused;
 }
@@ -375,6 +376,23 @@ void Emulator::runCycles(int cycles) {
 // finished one. At 4x a run is four frames and at 8x eight, so all but the
 // last one or two are skipped rather than decoded and thrown away. Pass 0 for
 // a run with no end in sight (a single step), which skips nothing.
+bool Emulator::setVideoStandard(VideoStandard standard) {
+  if (!machineHasStandard(machine_->id, standard)) return false;
+  if (standard == machine_->timing.standard) return true;
+  machine_ = &machineProfile(machine_->id, standard);
+  mmu_->retime(*machine_);
+  video_->retime(*machine_);
+  audio_->retime(*machine_);
+  if (mockingboard_) mockingboard_->setMachine(*machine_); // parked or fitted
+  // The vertical blank flag and the floating bus place the beam by the cycle
+  // count modulo the frame, so the frame in progress starts where that says.
+  const uint64_t now = cpu_->getTotalCycles();
+  const auto perFrame = static_cast<uint64_t>(machine_->timing.cyclesPerFrame());
+  lastFrameCycle_ = now - now % perFrame;
+  startFrame(now);
+  return true;
+}
+
 void Emulator::startFrame(uint64_t runEnd) {
   video_->beginNewFrame(lastFrameCycle_);
   const auto perFrame = static_cast<uint64_t>(machine_->timing.cyclesPerFrame());
@@ -406,6 +424,7 @@ void Emulator::runUntil(uint64_t targetCycles) {
         video_->renderFrame();
         startFrame(targetCycles);
         frameReady_ = true;
+        framesCompleted_++;
       }
       continue;
     }
@@ -644,6 +663,7 @@ void Emulator::runUntil(uint64_t targetCycles) {
       video_->renderFrame();       // Uses this frame's change log
       startFrame(targetCycles);    // Reset log, aligned to frame boundary
       frameReady_ = true;
+      framesCompleted_++;
     }
 
     // A watchpoint hit during the instruction, through the MMU's callbacks
@@ -691,18 +711,16 @@ int Emulator::generateStereoAudioSamples(float *buffer, int sampleCount) {
   // Run emulation for the required cycles
   runCycles(cyclesToRun);
 
-  // Track samples for frame synchronization
-  samplesGenerated_ += sampleCount;
-
   // Generate stereo audio samples (interleaved L/R)
   return audio_->generateStereoSamples(buffer, sampleCount, cpu_->getTotalCycles());
 }
 
 int Emulator::consumeFrameSamples() {
-  // Returns number of complete frames worth of samples generated
-  // 48000 Hz / 60 Hz = 800 samples per frame
-  int frames = samplesGenerated_ / SAMPLES_PER_FRAME;
-  samplesGenerated_ %= SAMPLES_PER_FRAME;
+  // The frames the video finished since the last call. Counting them rather
+  // than 800-sample blocks is what lets a 50Hz machine publish 50 pictures a
+  // second instead of 60, one of every five of them a repeat.
+  const int frames = framesCompleted_;
+  framesCompleted_ = 0;
   return frames;
 }
 
@@ -1064,6 +1082,7 @@ void Emulator::stepInstruction() {
     video_->renderFrame();
     startFrame(0);
     frameReady_ = true;
+    framesCompleted_++;
   }
 }
 

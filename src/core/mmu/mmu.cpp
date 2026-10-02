@@ -222,6 +222,13 @@ void MMU::warmReset() {
 
 // ===== Expansion Slot Management =====
 
+void MMU::retime(const MachineProfile &machine) {
+  machine_ = &machine;
+  for (auto &card : slots_) {
+    if (card) card->setMachine(machine);
+  }
+}
+
 std::unique_ptr<ExpansionCard> MMU::insertCard(uint8_t slot, std::unique_ptr<ExpansionCard> card) {
   // Which slots exist is the machine's business, so the profile decides. A //e
   // answers for 1-7; a II+ also has slot 0.

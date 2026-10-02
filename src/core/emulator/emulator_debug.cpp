@@ -173,9 +173,9 @@ void Emulator::stepBasicLine() {
   basicStepNextColon_ = 0;   // Not used for line stepping
   basicStepMode_ = BasicStepMode::Line;
 
-  // Clear any hit flags, reset sample counter to prevent backlog, and resume
+  // Clear any hit flags, reset the frame counter to prevent backlog, and resume
   basicBreakpointHit_ = false;
-  samplesGenerated_ = 0;
+  framesCompleted_ = 0;
   paused_ = false;
   basicBreakLine_ = 0;
 }
@@ -188,9 +188,9 @@ void Emulator::stepBasicStatement() {
   basicStepSkipFirst_ = (pc == 0xD820);
   basicStepMode_ = BasicStepMode::Statement;
 
-  // Clear any hit flags, reset sample counter to prevent backlog, and resume
+  // Clear any hit flags, reset the frame counter to prevent backlog, and resume
   basicBreakpointHit_ = false;
-  samplesGenerated_ = 0;
+  framesCompleted_ = 0;
   paused_ = false;
   basicBreakLine_ = 0;
 }

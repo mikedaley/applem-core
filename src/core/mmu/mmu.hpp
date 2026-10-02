@@ -54,6 +54,11 @@ public:
   // The machine this MMU is modelling.
   const MachineProfile &getMachine() const { return *machine_; }
 
+  // The same machine timed for another television standard (see
+  // Emulator::setVideoStandard). Only the timing may differ, and every card
+  // fitted is told, since a card may keep time by the frame.
+  void retime(const MachineProfile &machine);
+
   // Base of the address window systemROM_ covers. Every ROM read indexes the
   // array as `address - ROM_WINDOW_BASE`, and loadROM() places a machine's
   // image at the offset its own ROM base implies.

@@ -28,6 +28,8 @@ public:
 
   // The machine this video generator is modelling.
   const MachineProfile &getMachine() const { return *machine_; }
+  // The same machine timed for another television standard.
+  void retime(const MachineProfile &machine) { machine_ = &machine; }
 
   // Whether the colour killer is letting chroma through for the current field.
   // False means the picture is being decoded as monochrome because no burst

@@ -42,7 +42,7 @@ void MachineHost::build() {
 
   iigs_.reset();
   if (emulator_) return;
-  emulator_ = std::make_unique<Emulator>(machineId_);
+  emulator_ = std::make_unique<Emulator>(machineId_, videoStandard());
   emulator_->init();
   if (emulatorBuilt_) emulatorBuilt_(*emulator_);
 }
@@ -53,6 +53,17 @@ bool MachineHost::setMachine(MachineId id) {
   destroy();
   build();
   return isBuilt();
+}
+
+VideoStandard MachineHost::videoStandard() const {
+  return machineHasStandard(machineId_, videoStandard_) ? videoStandard_ : VideoStandard::NTSC;
+}
+
+bool MachineHost::setVideoStandard(VideoStandard standard) {
+  videoStandard_ = standard;
+  if (!machineHasStandard(machineId_, standard)) return false;
+  if (emulator_) emulator_->setVideoStandard(standard);
+  return true;
 }
 
 size_t MachineHost::iigsFastRam() const {

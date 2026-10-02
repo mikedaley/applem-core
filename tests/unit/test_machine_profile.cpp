@@ -445,6 +445,78 @@ TEST_CASE("VBL follows the profile's visible scanline count", "[machine]") {
     REQUIRE((mmu.read(0xC019) & 0x80) == 0x80);
 }
 
+TEST_CASE("A PAL machine is its NTSC twin on 312 lines at 50Hz", "[machine][pal]") {
+    for (MachineId id : {MachineId::AppleIIe, MachineId::AppleIIPlus, MachineId::AppleIIc}) {
+        const auto &ntsc = machineProfile(id);
+        const auto &pal = machineProfile(id, VideoStandard::PAL);
+        REQUIRE(machineHasStandard(id, VideoStandard::PAL));
+        REQUIRE(&pal != &ntsc);
+        REQUIRE(pal.id == ntsc.id);
+        REQUIRE(std::string(pal.key) == ntsc.key);
+
+        REQUIRE(ntsc.timing.standard == VideoStandard::NTSC);
+        REQUIRE(pal.timing.standard == VideoStandard::PAL);
+        REQUIRE(pal.timing.scanlinesPerFrame == 312);
+        REQUIRE(pal.timing.cyclesPerFrame() == 20280);
+        REQUIRE(pal.timing.cpuClockHz == Approx(14250450.0 / 14.0));
+        REQUIRE(pal.timing.cpuClockHz / pal.timing.cyclesPerFrame() == Approx(50.19).epsilon(0.001));
+
+        // Everything else is the same machine.
+        REQUIRE(pal.timing.cyclesPerScanline == ntsc.timing.cyclesPerScanline);
+        REQUIRE(pal.timing.visibleScanlines == ntsc.timing.visibleScanlines);
+        REQUIRE(pal.timing.mixedModeTextScanline == ntsc.timing.mixedModeTextScanline);
+        REQUIRE(pal.cpu == ntsc.cpu);
+        REQUIRE(pal.memory.mainRamSize == ntsc.memory.mainRamSize);
+        REQUIRE(pal.display.framebufferSize() == ntsc.display.framebufferSize());
+        REQUIRE(pal.lastSlot == ntsc.lastSlot);
+    }
+
+    // There is no PAL IIgs yet, and asking for one gets the NTSC machine.
+    REQUIRE_FALSE(machineHasStandard(MachineId::AppleIIgs, VideoStandard::PAL));
+    REQUIRE(&machineProfile(MachineId::AppleIIgs, VideoStandard::PAL) ==
+            &machineProfile(MachineId::AppleIIgs));
+    REQUIRE(&machineProfile(MachineId::AppleIIe, VideoStandard::NTSC) ==
+            &machineProfile(MachineId::AppleIIe));
+}
+
+TEST_CASE("A PAL machine's vertical blank is lines 192 to 311", "[machine][pal]") {
+    const auto &m = machineProfile(MachineId::AppleIIe, VideoStandard::PAL);
+    MMU mmu(m);
+    mmu.loadROM(roms::ROM_SYSTEM, roms::ROM_SYSTEM_SIZE,
+                roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+    uint64_t cycles = 0;
+    mmu.setCycleCallback([&cycles]() { return cycles; });
+    auto line = [&](int n) { cycles = static_cast<uint64_t>(n) * 65; };
+
+    line(191);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x80);
+    line(192);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x00);
+    line(262); // where an NTSC frame would have started again
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x00);
+    line(311);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x00);
+    line(312);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x80);
+}
+
+TEST_CASE("A PAL scanner counts the extra lines in from below", "[machine][pal]") {
+    // The vertical counter ends every frame at $1FF and the PAL one starts at
+    // $0C8 rather than $0FA to fit fifty more lines in, so the last line of a
+    // frame reads the same address on both, and the visible lines do too.
+    MMU ntsc(machineProfile(MachineId::AppleIIe));
+    MMU pal(machineProfile(MachineId::AppleIIe, VideoStandard::PAL));
+    for (int column = 0; column < 65; column += 8) {
+        REQUIRE(pal.getVideoScannerAddress(311 * 65 + column) ==
+                ntsc.getVideoScannerAddress(261 * 65 + column));
+        REQUIRE(pal.getVideoScannerAddress(100 * 65 + column) ==
+                ntsc.getVideoScannerAddress(100 * 65 + column));
+        // Line 256 is where each counter wraps: $0C8 against $0FA.
+        REQUIRE(pal.getVideoScannerAddress(256 * 65 + column) ==
+                ntsc.getVideoScannerAddress(206 * 65 + column));
+    }
+}
+
 TEST_CASE("Audio measures a sample against the machine's clock", "[machine]") {
     // The profile's clock is what turns a sample count into a span of emulated
     // cycles, and that span is what paces the whole emulator.

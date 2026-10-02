@@ -199,6 +199,7 @@ if(EMSCRIPTEN)
                 \"_setMachine\", \
                 \"_getIIgsMemoryKB\", \
                 \"_setIIgsMemoryKB\", \
+                \"_getVideoStandard\", \"_setVideoStandard\", \
                 \"_forceRenderFrame\", \
                 \"_isFrameReady\", \
                 \"_keyDown\", \

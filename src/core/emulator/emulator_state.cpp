@@ -92,7 +92,7 @@ const uint8_t *Emulator::exportState(size_t *size) {
 
   // Timing
   w.u64(lastFrameCycle_);
-  w.u32(static_cast<uint32_t>(samplesGenerated_));
+  w.u32(0); // was a count of audio samples towards the next frame; kept for the layout
 
   w.boolean(audio_->getSpeakerState());
 
@@ -189,7 +189,11 @@ bool Emulator::importState(const uint8_t *data, size_t size) {
   buttonState_[2] = r.boolean();
 
   lastFrameCycle_ = r.u64();
-  samplesGenerated_ = static_cast<int>(r.u32());
+  (void)r.u32();
+  framesCompleted_ = 0;
+  // A state carries no standard, so one saved in NTSC may come back in PAL:
+  // the frame in progress starts where the cycle count says it does.
+  lastFrameCycle_ -= lastFrameCycle_ % static_cast<uint64_t>(machine_->timing.cyclesPerFrame());
 
   (void)r.boolean(); // speaker level: the next toggle sets it
   if (r.failed()) return false;

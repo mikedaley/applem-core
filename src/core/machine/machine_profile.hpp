@@ -80,6 +80,16 @@ enum class MachineFamily : uint8_t {
 // rather than in the display section: a scanline is a count of cycles, not of
 // pixels.
 // ----------------------------------------------------------------------------
+
+// The television standard a machine's video is timed for. Apple sold the 8-bit
+// machines in both: a PAL machine is the same design on a 14.25045MHz crystal
+// rather than 14.31818MHz, drawing 312 lines a frame at 50Hz rather than 262
+// at 60Hz. Software timed against the beam is written for one or the other,
+// so a demo made in Europe tears and jumps on an NTSC machine.
+enum class VideoStandard : uint8_t {
+  NTSC = 0,
+  PAL = 1,
+};
 struct MachineTiming {
   double cpuClockHz;         // 1.023 MHz on a //e
   int cyclesPerScanline;     // 65: 40 visible columns + 25 of horizontal blank
@@ -88,6 +98,7 @@ struct MachineTiming {
   int scanlinesPerFrame;     // 262 total, including vertical blank
   int visibleScanlines;      // 192 lines actually drawn
   int mixedModeTextScanline; // First of the four text lines in mixed mode
+  VideoStandard standard = VideoStandard::NTSC;
 
   constexpr int cyclesPerFrame() const {
     return cyclesPerScanline * scanlinesPerFrame;
@@ -660,12 +671,44 @@ inline constexpr MachineProfile APPLE_IIGS_PROFILE = {
 };
 
 // ============================================================================
+// PAL
+//
+// A PAL Apple II differs from its NTSC twin in timing alone, so its profile is
+// derived rather than written out: the crystal divided by 14 as the NTSC
+// machine's is, and 312 lines a frame, of which the same 192 are drawn. The
+// 120 left are vertical blanking, and the video scanner's vertical counter
+// starts lower to make room ($0C8 rather than $0FA), which
+// getVideoScannerAddress already derives from the line count.
+//
+// The IIgs is left NTSC for now: its timing lives in iigs_spec.hpp as well as
+// its profile, and a PAL IIgs is a separate job.
+// ============================================================================
+inline constexpr double PAL_CPU_CLOCK_HZ = 14250450.0 / 14.0; // ~1.0179 MHz
+inline constexpr int PAL_SCANLINES_PER_FRAME = 312;
+
+constexpr MachineProfile palVariant(MachineProfile m) {
+  m.timing.cpuClockHz = PAL_CPU_CLOCK_HZ;
+  m.timing.scanlinesPerFrame = PAL_SCANLINES_PER_FRAME;
+  m.timing.standard = VideoStandard::PAL;
+  return m;
+}
+
+inline constexpr MachineProfile APPLE_IIE_PAL_PROFILE = palVariant(APPLE_IIE_PROFILE);
+inline constexpr MachineProfile APPLE_II_PLUS_PAL_PROFILE = palVariant(APPLE_II_PLUS_PROFILE);
+inline constexpr MachineProfile APPLE_IIC_PAL_PROFILE = palVariant(APPLE_IIC_PROFILE);
+
+// ============================================================================
 // Registry
 // ============================================================================
 // Ordered by MachineId, which machineProfile() relies on and a test pins.
 inline constexpr std::array<const MachineProfile *, MACHINE_COUNT>
     MACHINE_PROFILES = {{&APPLE_IIE_PROFILE, &APPLE_II_PLUS_PROFILE,
                          &APPLE_IIC_PROFILE, &APPLE_IIGS_PROFILE}};
+
+// Each machine's PAL variant, by MachineId, or nullptr where there is none.
+inline constexpr std::array<const MachineProfile *, MACHINE_COUNT>
+    MACHINE_PAL_PROFILES = {{&APPLE_IIE_PAL_PROFILE, &APPLE_II_PLUS_PAL_PROFILE,
+                             &APPLE_IIC_PAL_PROFILE, nullptr}};
 
 constexpr const MachineProfile &defaultMachineProfile() {
   return APPLE_IIE_PROFILE;
@@ -675,6 +718,21 @@ constexpr const MachineProfile &machineProfile(MachineId id) {
   const auto index = static_cast<size_t>(id);
   return index < MACHINE_PROFILES.size() ? *MACHINE_PROFILES[index]
                                          : APPLE_IIE_PROFILE;
+}
+
+// Whether a machine can be had in a standard. Every machine is NTSC.
+constexpr bool machineHasStandard(MachineId id, VideoStandard standard) {
+  if (standard == VideoStandard::NTSC) return true;
+  const auto index = static_cast<size_t>(id);
+  return index < MACHINE_PAL_PROFILES.size() && MACHINE_PAL_PROFILES[index] != nullptr;
+}
+
+// A machine in a standard, or in NTSC if it is not made in that one.
+constexpr const MachineProfile &machineProfile(MachineId id, VideoStandard standard) {
+  if (standard == VideoStandard::PAL && machineHasStandard(id, standard)) {
+    return *MACHINE_PAL_PROFILES[static_cast<size_t>(id)];
+  }
+  return machineProfile(id);
 }
 
 constexpr const MachineProfile &machineProfileAt(int index) {
@@ -792,6 +850,13 @@ constexpr bool allProfilesValid() {
     if (m.family == MachineFamily::AppleII && !profileFitsCompiledStorage(m))
       return false;
     if (!profileIsSelfConsistent(m)) return false;
+    if (m.timing.standard != VideoStandard::NTSC) return false;
+    // A PAL variant is its machine with different timing and nothing else.
+    if (const auto *pal = MACHINE_PAL_PROFILES[i]) {
+      if (pal->id != m.id || pal->family != MachineFamily::AppleII) return false;
+      if (pal->timing.standard != VideoStandard::PAL) return false;
+      if (!profileFitsCompiledStorage(*pal) || !profileIsSelfConsistent(*pal)) return false;
+    }
   }
   return true;
 }
@@ -813,6 +878,7 @@ static_assert(APPLE_IIE_PROFILE.timing.scanlinesPerFrame == SCANLINES_PER_FRAME)
 static_assert(APPLE_IIE_PROFILE.timing.cyclesPerFrame() == CYCLES_PER_FRAME);
 static_assert(APPLE_IIE_PROFILE.timing.cyclesPerSample(AUDIO_SAMPLE_RATE) ==
               CYCLES_PER_SAMPLE);
+static_assert(APPLE_IIE_PAL_PROFILE.timing.cyclesPerFrame() == 65 * 312);
 // The relationships between these numbers are checked for every machine by
 // profileIsSelfConsistent() above, not just for the //e.
 
