@@ -9,8 +9,6 @@
 
 #include <cstdint>
 #include <array>
-#include <vector>
-#include <functional>
 
 namespace a2e {
 
@@ -19,13 +17,22 @@ namespace a2e {
 class AY8910 {
 public:
     static constexpr int NUM_CHANNELS = 3;
-    // Mockingboard uses the Apple II CPU clock divided down
-    // Apple IIe runs at 1.023 MHz (actually 1.0227272... MHz from 14.31818 MHz / 14)
-    static constexpr int PSG_CLOCK = 1023000;  // ~1.023 MHz for accuracy
+    // A Mockingboard clocks its PSGs from the slot's phi0, so the chip runs at
+    // whatever the machine's bus does: 1.023MHz on an NTSC machine and about
+    // 1.0179MHz on a PAL one. setClock() is how the card says which.
+    static constexpr double DEFAULT_CLOCK_HZ = 1023000.0;
 
-    using CycleCallback = std::function<uint64_t()>;
+    // Output samples are taken from the chip's tick stream (clock / 8) through
+    // a windowed-sinc low pass, so tones and noise above the host's Nyquist
+    // limit are removed rather than folded back into the audible band.
+    static constexpr int FILTER_TAPS = 64;      // ticks either side: 32
+    static constexpr int FILTER_PHASES = 512;   // fractional tick positions
 
     AY8910();
+
+    // The chip's master clock in Hz.
+    void setClock(double hz);
+    double getClock() const { return clockHz_; }
 
     // Set PSG ID for debug logging (1 or 2)
     void setPsgId(int id);
@@ -33,23 +40,19 @@ public:
     // Enable/disable console debug logging
     static void setDebugLogging(bool enabled);
 
-    // Set callback to get current CPU cycle (for timestamping register writes)
-    void setCycleCallback(CycleCallback callback) { cycleCallback_ = std::move(callback); }
-
     // Register access via 6522 VIA
     void setRegisterAddress(uint8_t address);
     void writeRegister(uint8_t value);
     uint8_t readRegister() const;
 
-    // Audio generation - pass cycle range for proper timing
-    void generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle);
-    // Legacy version without timing (uses immediate register values)
+    // Generate `count` band-limited samples at `sampleRate`, advancing the chip.
     void generateSamples(float* buffer, int count, int sampleRate);
+    // One channel's raw output, point sampled, for the debugger's waveforms.
     void generateChannelSamples(float* buffer, int count, int sampleRate, int channel);
 
-    // Generate a single audio sample at 48kHz using current register state.
-    // Advances PSG internal state by the appropriate number of ticks.
-    // Used for per-instruction incremental audio generation.
+    // Generate a single band-limited sample at 48kHz using current register
+    // state, advancing the chip by the ticks that sample covers. Used for
+    // per-instruction incremental audio generation.
     float generateSingleSample();
 
     // Channel muting (for debug/mixing purposes)
@@ -59,7 +62,7 @@ public:
     // Reset
     void reset();
 
-    // State access for debugging
+    // State access for debugging (the register as written, masked to its width)
     uint8_t getRegister(int reg) const {
         return (reg >= 0 && reg < 16) ? registers_[reg] : 0;
     }
@@ -119,8 +122,17 @@ private:
     bool envAlternate_ = false;  // Bit 1: Alternate direction each cycle
     bool envHold_ = false;       // Bit 0: Hold final value
 
-    // Fractional accumulator for sample rate conversion
+    // Fractional accumulator for sample rate conversion: ticks since the
+    // last one taken, in ticks.
     double phaseAccumulator_ = 0.0;
+
+    // Master clock and the ticks one 48kHz sample covers.
+    double clockHz_ = DEFAULT_CLOCK_HZ;
+    double ticksPerSample_ = DEFAULT_CLOCK_HZ / (48000.0 * 8.0);
+
+    // The last FILTER_TAPS tick outputs, newest at historyPos_ - 1.
+    std::array<float, FILTER_TAPS> history_{};
+    int historyPos_ = 0;
 
     // Volume table (4-bit to amplitude)
     static const float volumeTable_[16];
@@ -131,17 +143,13 @@ private:
     uint8_t lastWriteVal_ = 0;
     int psgId_ = 1;  // PSG identifier for logging
 
-    // Timestamped register writes for accurate sample generation
-    struct RegisterWrite {
-        uint64_t cycle;
-        uint8_t reg;
-        uint8_t value;
-    };
-    std::vector<RegisterWrite> pendingWrites_;
-    CycleCallback cycleCallback_;
-
-    // Apply a register write (internal, doesn't timestamp)
+    // Apply a register write
     void applyRegisterWrite(uint8_t reg, uint8_t value);
+
+    // Advance one tick (clock / 8) and record the mixer's output.
+    void tick();
+    // Advance by `ticks` and return the band-limited output at the new time.
+    float nextSample(double ticks);
 
     // Helper methods
     uint16_t getTonePeriod(int channel) const;

@@ -24,6 +24,7 @@
 #include "audio/audio.hpp"
 #include "cards/disk_controller.hpp"
 #include "iigs_video.hpp"
+#include "cards/mockingboard/mockingboard_card.hpp"
 #include "cards/smartport/smartport_card.hpp"
 #include "input/joyport.hpp"
 #include "machine/machine_profile.hpp"
@@ -1130,6 +1131,52 @@ TEST_CASE("A card in a socket answers only when the Slot register says so",
 
   REQUIRE(machine.setSlotCard(4, "empty"));
   REQUIRE(machine.getSlotCardName(4) == "empty");
+}
+
+TEST_CASE("A card in a socket runs on the slot bus's clock at any speed",
+          "[iigs][slots][mockingboard]") {
+  // A slot's phi2 is the Mega II's 1.023MHz whatever the 65816 is doing, so a
+  // Mockingboard's VIA timers and the rate it makes samples at count slow
+  // cycles. Clocked by the processor instead, at 2.8MHz its music ran about
+  // two and a half times too fast, and it made samples faster than the mixer
+  // took them, so the backlog grew without limit.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the slot clock test");
+    return;
+  }
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  runToPrompt(machine);
+  IIgsMemory &memory = machine.memory();
+  REQUIRE(machine.setSlotCard(4, "mockingboard"));
+  MockingboardCard *card = machine.mockingboard();
+  REQUIRE(card != nullptr);
+
+  // BRA to itself at $00:0300, at full speed, with interrupts masked.
+  memory.write(0x00C036, 0x80);
+  memory.write(0x000300, 0x80);
+  memory.write(0x000301, 0xFE);
+  machine.cpu().setPBR(0x00);
+  machine.cpu().setPC(0x0300);
+  machine.cpu().setP(static_cast<uint8_t>(machine.cpu().getP() | 0x04));
+
+  card->writeROM(0x04, 0x00);  // T1 latch low
+  card->writeROM(0x05, 0x80);  // T1 latch high: the counter starts at $8000
+  const size_t queued = card->getQueuedSampleFrames();
+  const uint16_t before = card->getVIA1().getT1Counter();
+
+  const uint64_t start = memory.slowCycles();
+  constexpr uint64_t SPAN = 20000;
+  while (memory.slowCycles() - start < SPAN) machine.step();
+  const uint64_t elapsed = memory.slowCycles() - start;
+
+  const int counted = before - card->getVIA1().getT1Counter();
+  CHECK(counted == Approx(static_cast<double>(elapsed)).margin(8));
+  const double cyclesPerSample =
+      machineProfile(MachineId::AppleIIgs).timing.cyclesPerSample(48000);
+  CHECK(static_cast<double>(card->getQueuedSampleFrames() - queued) ==
+        Approx(elapsed / cyclesPerSample).margin(2));
 }
 
 TEST_CASE("Slot 3 is not in the Slot register", "[iigs][slots]") {

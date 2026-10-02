@@ -9,7 +9,7 @@
  * - Timer updates
  * - Reset behavior
  * - Enable/disable state
- * - Audio sample generation
+ * - Audio sample generation and the PSGs' clock
  * - Serialization round-trip
  * - IRQ generation from VIA timer
  */
@@ -19,6 +19,8 @@
 
 #include "mockingboard_card.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -212,36 +214,6 @@ TEST_CASE("MockingboardCard setEnabled toggles state", "[mockingboard]") {
 // Audio generation
 // ---------------------------------------------------------------------------
 
-TEST_CASE("MockingboardCard generateStereoSamples produces output", "[mockingboard]") {
-    MockingboardCard card;
-
-    // Generate a small buffer of stereo samples
-    const int frameCount = 128;
-    std::vector<float> buffer(frameCount * 2, -999.0f); // interleaved L/R
-
-    card.generateStereoSamples(buffer.data(), frameCount, 48000);
-
-    // After generation, buffer should have been written (values should not be -999)
-    bool anyWritten = false;
-    for (int i = 0; i < frameCount * 2; ++i) {
-        if (buffer[i] != -999.0f) {
-            anyWritten = true;
-            break;
-        }
-    }
-    REQUIRE(anyWritten);
-}
-
-TEST_CASE("MockingboardCard generateStereoSamples with timing does not crash", "[mockingboard]") {
-    MockingboardCard card;
-
-    const int frameCount = 128;
-    std::vector<float> buffer(frameCount * 2, 0.0f);
-
-    card.generateStereoSamples(buffer.data(), frameCount, 48000, 0, 2730);
-    REQUIRE(true); // No crash
-}
-
 // ---------------------------------------------------------------------------
 // I/O space (unused by Mockingboard)
 // ---------------------------------------------------------------------------
@@ -378,10 +350,8 @@ TEST_CASE("MockingboardCard sample production tracks emulation speed",
 
 TEST_CASE("MockingboardCard muting a PSG 1 channel leaves PSG 2 playing",
           "[mockingboard][mute]") {
-    // Two chips holding the same registers share PSG 1's output, so that
-    // their independent counters cannot cancel. The mutes are not registers,
-    // and a share that ignored them carried PSG 1's mute into the right
-    // channel: muting PSG 1 silenced the same channel on PSG 2.
+    // The mutes are the debugger's, per chip: two chips playing the same
+    // notes are still two chips, and muting one must not silence the other.
     MockingboardCard card;
     card.setEnabled(true);
     auto writePSG = [&](uint8_t via, uint8_t reg, uint8_t value) {
@@ -416,4 +386,55 @@ TEST_CASE("MockingboardCard muting a PSG 1 channel leaves PSG 2 playing",
     }
     CHECK(left < 0.01f);
     CHECK(right > 0.1f);
+}
+
+TEST_CASE("MockingboardCard clocks its PSGs from the machine", "[mockingboard][pal]") {
+    // The PSGs run off the slot's phi0, so a PAL machine's 1.0179MHz plays
+    // every note about 9 cents lower than an NTSC machine's 1.023MHz.
+    MockingboardCard card;
+    CHECK(card.getPSG1().getClock() == Approx(1023000.0));
+    card.setMachine(APPLE_IIE_PAL_PROFILE);
+    CHECK(card.getPSG1().getClock() == Approx(PAL_CPU_CLOCK_HZ));
+    CHECK(card.getPSG2().getClock() == Approx(PAL_CPU_CLOCK_HZ));
+    card.setMachine(APPLE_IIE_PROFILE);
+    CHECK(card.getPSG1().getClock() == Approx(1023000.0));
+}
+
+TEST_CASE("MockingboardCard plays each PSG on its own side", "[mockingboard]") {
+    // Two chips given the same registers are two oscillators: the card does
+    // not substitute one chip's output for the other's.
+    MockingboardCard card;
+    auto writePSG = [&](uint8_t via, uint8_t reg, uint8_t value) {
+        card.writeROM(via | VIA_ORA, reg);
+        card.writeROM(via | VIA_ORB, 0x07);
+        card.writeROM(via | VIA_ORB, 0x04);
+        card.writeROM(via | VIA_ORA, value);
+        card.writeROM(via | VIA_ORB, 0x06);
+        card.writeROM(via | VIA_ORB, 0x04);
+    };
+    for (uint8_t via : {uint8_t(0x00), uint8_t(0x80)}) {
+        card.writeROM(via | VIA_DDRA, 0xFF);
+        card.writeROM(via | VIA_DDRB, 0x07);
+        card.writeROM(via | VIA_ORB, 0x04);
+    }
+    // PSG 1 starts its tone; PSG 2 is given the same notes half a period later.
+    writePSG(0x00, 0, 100);
+    writePSG(0x00, 7, 0x3E);
+    writePSG(0x00, 8, 15);
+    card.update(800);  // 100 ticks of the chip's clock/8 is 800 cycles
+    writePSG(0x80, 0, 100);
+    writePSG(0x80, 7, 0x3E);
+    writePSG(0x80, 8, 15);
+
+    const int frames = 4800;
+    card.update(static_cast<int>(frames * 1023000.0 / 48000.0));
+    std::vector<float> out(frames * 2);
+    card.consumeStereoSamples(out.data(), frames);
+
+    // Out of step by half a period, the two sides differ.
+    float diff = 0.0f;
+    for (int i = frames / 2; i < frames; i++) {
+        diff = std::max(diff, std::abs(out[i * 2] - out[i * 2 + 1]));
+    }
+    CHECK(diff > 0.1f);
 }

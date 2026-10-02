@@ -30,17 +30,15 @@ namespace a2e {
  */
 class MockingboardCard : public ExpansionCard {
 public:
-    using CycleCallback = std::function<uint64_t()>;
-
     // State size for serialization: enabled(1) + VIA1(32) + PSG1(48) + VIA2(32) + PSG2(48) = 161
     static constexpr size_t STATE_SIZE = 161;
 
     MockingboardCard();
     ~MockingboardCard() override = default;
 
-    // The card's own oscillators are independent of the host, but the rate at
-    // which it must hand samples to the mixer is measured in CPU cycles, so it
-    // follows the machine's clock.
+    // The PSGs are clocked from the slot's phi0, and the rate at which the
+    // card must hand samples to the mixer is measured in CPU cycles, so both
+    // follow the machine's clock (NTSC or PAL).
     void setMachine(const MachineProfile &machine) override;
 
     // Delete copy
@@ -69,12 +67,6 @@ public:
     void update(int cycles) override;
 
     void setIRQCallback(IRQCallback callback) override;
-    void setCycleCallback(CycleCallback callback) override {
-        cycleCallback_ = callback;
-        // Pass to PSGs for timestamped register writes
-        psg1_.setCycleCallback(callback);
-        psg2_.setCycleCallback(callback);
-    }
 
     bool isIRQActive() const override;
 
@@ -89,16 +81,6 @@ public:
     void setEnabled(bool enabled) override { enabled_ = enabled; }
 
     // ===== Audio Generation =====
-
-    /**
-     * Generate stereo audio samples (legacy, no timing)
-     */
-    void generateStereoSamples(float* buffer, int count, int sampleRate);
-
-    /**
-     * Generate stereo audio samples with proper timing
-     */
-    void generateStereoSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle);
 
     /**
      * Consume accumulated stereo samples (from incremental generation).
@@ -156,19 +138,6 @@ private:
 
     // Enabled state
     bool enabled_ = true;
-
-    // Callbacks
-    CycleCallback cycleCallback_;
-
-    // Preallocated audio buffers to avoid heap allocations in audio hot path
-    mutable std::vector<float> audioBuffer1_;
-    mutable std::vector<float> audioBuffer2_;
-
-    // Phase coherence: when both PSGs have identical sound registers (0-13),
-    // use PSG1's output for both channels. This eliminates phase cancellation
-    // caused by independent tone counters producing anti-phase waveforms
-    // when Mockingboard music mirrors content to both PSGs.
-    bool arePsgsIdentical() const;
 
     // Per-channel DC offset removal (high-pass filter)
     // Converts unipolar PSG output to bipolar for audio playback.

@@ -42,17 +42,79 @@ const float AY8910::volumeTable_[16] = {
     0.5704f, 0.6873f, 0.8482f, 1.0000f
 };
 
+namespace {
+
+constexpr double PI = 3.14159265358979323846;
+
+// Zeroth-order modified Bessel function, for the Kaiser window.
+double besselI0(double x) {
+    double sum = 1.0, term = 1.0;
+    for (int k = 1; k < 32; k++) {
+        term *= (x / (2.0 * k)) * (x / (2.0 * k));
+        sum += term;
+    }
+    return sum;
+}
+
+// The resampling filter: a Kaiser-windowed sinc over FILTER_TAPS ticks, one
+// row per fractional tick position, each row normalised to unity gain so a
+// steady level (sample playback through the volume register) passes exactly.
+// The cutoff is 20kHz at the //e's tick rate of 127.875kHz: with beta 7 the
+// stopband (about 70dB down) begins near 24kHz, so nothing that would fold
+// back below 20kHz at a 48kHz output survives.
+struct ResampleKernel {
+    float rows[AY8910::FILTER_PHASES][AY8910::FILTER_TAPS];
+
+    ResampleKernel() {
+        constexpr double TICK_RATE = AY8910::DEFAULT_CLOCK_HZ / 8.0;
+        constexpr double CUTOFF = 20000.0 / TICK_RATE;  // cycles per tick
+        constexpr double BETA = 7.0;
+        constexpr double HALF = AY8910::FILTER_TAPS / 2.0;
+        const double norm = besselI0(BETA);
+        for (int p = 0; p < AY8910::FILTER_PHASES; p++) {
+            const double frac = static_cast<double>(p) / AY8910::FILTER_PHASES;
+            double sum = 0.0;
+            double row[AY8910::FILTER_TAPS];
+            for (int j = 0; j < AY8910::FILTER_TAPS; j++) {
+                // Distance from the output time to tap j's tick (newest is j=0).
+                const double x = j + frac - HALF;
+                const double arg = 2.0 * CUTOFF * x;
+                const double sinc = (x == 0.0) ? 1.0 : std::sin(PI * arg) / (PI * arg);
+                const double u = x / HALF;
+                const double window = (u * u < 1.0) ? besselI0(BETA * std::sqrt(1.0 - u * u)) / norm : 0.0;
+                row[j] = sinc * window;
+                sum += row[j];
+            }
+            for (int j = 0; j < AY8910::FILTER_TAPS; j++) {
+                rows[p][j] = static_cast<float>(row[j] / sum);
+            }
+        }
+    }
+};
+
+const ResampleKernel& resampleKernel() {
+    static const ResampleKernel kernel;
+    return kernel;
+}
+
+} // namespace
+
 AY8910::AY8910() {
     reset();
 }
 
+void AY8910::setClock(double hz) {
+    if (hz <= 0.0) return;
+    clockHz_ = hz;
+    ticksPerSample_ = hz / (48000.0 * 8.0);
+}
+
 void AY8910::reset() {
+    // The RESET pin clears every register to zero, the mixer included, which
+    // enables every tone and noise path. The chip is still silent, because
+    // every amplitude register is zero as well.
     registers_.fill(0);
     currentRegister_ = 0;
-
-    // Set mixer to 0x3F - all tone and noise DISABLED for silence
-    // Bits 0-2: tone disable (1=disabled), Bits 3-5: noise disable (1=disabled)
-    registers_[REG_MIXER] = 0x3F;
 
     toneCounters_.fill(0);
     toneOutput_.fill(false);
@@ -69,10 +131,9 @@ void AY8910::reset() {
     envAlternate_ = false;
     envHold_ = false;
 
+    // The output history is what the chip has already played, so it stays:
+    // clearing it would put a step into the filter that the chip never made.
     phaseAccumulator_ = 0.0;
-
-    // Clear any pending register writes
-    pendingWrites_.clear();
 }
 
 void AY8910::setRegisterAddress(uint8_t address) {
@@ -133,6 +194,11 @@ void AY8910::applyRegisterWrite(uint8_t reg, uint8_t value) {
 }
 
 uint8_t AY8910::readRegister() const {
+    // R14 and R15 are the two I/O ports. Set to input (R7 bits 6 and 7 clear)
+    // a read returns the pins, and a Mockingboard leaves them unconnected, so
+    // they float high. Set to output, the read returns what was written.
+    if (currentRegister_ == REG_IO_PORT_A && !(registers_[REG_MIXER] & 0x40)) return 0xFF;
+    if (currentRegister_ == REG_IO_PORT_B && !(registers_[REG_MIXER] & 0x80)) return 0xFF;
     return registers_[currentRegister_];
 }
 
@@ -186,14 +252,13 @@ void AY8910::updateEnvelopeGenerator() {
     uint16_t period = getEnvPeriod();
 
     envCounter_++;
-    // Envelope counter runs at the same rate as tone counters (master/8).
-    // FUSE/AppleWin compare directly against the period value — no multiplier.
-    // The datasheet's fE = fCLOCK/(256*EP) refers to a full 32-step triangle
-    // (16 up + 16 down), so each individual step = EP ticks at master/8.
-    // Period 0 should be treated same as period 1 (minimum period, highest frequency)
-    // per MAME/AppleWin implementations - avoids undefined behavior.
+    // The datasheet's fE = fCLOCK / (256 * EP) is one ramp, and an
+    // AY-3-8910's ramp is 16 steps, so a step is 16 * EP master clocks: 2 * EP
+    // of these clock/8 ticks. (The 32-step ramp in the same time is the
+    // YM2149's.) FUSE, which AppleWin's PSG comes from, gets the same rate by
+    // counting EP at clock/16. Period 0 behaves as period 1.
     uint32_t effectivePeriod = (period == 0) ? 1 : period;
-    uint32_t threshold = static_cast<uint32_t>(effectivePeriod);
+    uint32_t threshold = effectivePeriod * 2;
     if (envCounter_ >= threshold) {
         envCounter_ = 0;
 
@@ -314,118 +379,48 @@ float AY8910::computeMixerOutput() const {
     return sample / 3.0f;
 }
 
-void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
-    // Legacy version - apply any pending writes immediately and generate
-    for (const auto& write : pendingWrites_) {
-        applyRegisterWrite(write.reg, write.value);
+void AY8910::tick() {
+    for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+        updateToneGenerator(ch);
     }
-    pendingWrites_.clear();
-
-    // PSG clock cycles per audio sample
-    double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
-    double toneStepsPerSample = cyclesPerSample / 8.0;
-
-    for (int i = 0; i < count; i++) {
-        phaseAccumulator_ += toneStepsPerSample;
-
-        // Advance PSG state and average output across all ticks
-        // This properly captures noise-tone gate interactions at clock resolution
-        float sampleAccum = 0.0f;
-        int ticks = 0;
-        while (phaseAccumulator_ >= 1.0) {
-            phaseAccumulator_ -= 1.0;
-            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                updateToneGenerator(ch);
-            }
-            updateNoiseGenerator();
-            updateEnvelopeGenerator();
-            sampleAccum += computeMixerOutput();
-            ticks++;
-        }
-
-        float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
-
-        buffer[i] = sample;
-    }
+    updateNoiseGenerator();
+    updateEnvelopeGenerator();
+    history_[historyPos_] = computeMixerOutput();
+    historyPos_ = (historyPos_ + 1) & (FILTER_TAPS - 1);
 }
 
-void AY8910::generateSamples(float* buffer, int count, int sampleRate, uint64_t startCycle, uint64_t endCycle) {
-    // PSG clock cycles per audio sample
-    double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
-    double toneStepsPerSample = cyclesPerSample / 8.0;
+float AY8910::nextSample(double ticks) {
+    phaseAccumulator_ += ticks;
+    while (phaseAccumulator_ >= 1.0) {
+        phaseAccumulator_ -= 1.0;
+        tick();
+    }
 
-    // Calculate CPU cycles per sample for timing
-    double cpuCyclesTotal = static_cast<double>(endCycle - startCycle);
-    double cpuCyclesPerSample = (count > 0) ? cpuCyclesTotal / count : 0;
+    // phaseAccumulator_ is now how far past the newest tick the output time
+    // is. The filter is centred FILTER_TAPS / 2 ticks behind it, so every tap
+    // it needs has already been taken.
+    int phase = static_cast<int>(phaseAccumulator_ * FILTER_PHASES);
+    if (phase >= FILTER_PHASES) phase = FILTER_PHASES - 1;
+    const float* row = resampleKernel().rows[phase];
 
-    // Index into pending writes
-    size_t writeIdx = 0;
+    float out = 0.0f;
+    int idx = historyPos_;
+    for (int j = 0; j < FILTER_TAPS; j++) {
+        idx = (idx - 1) & (FILTER_TAPS - 1);
+        out += history_[idx] * row[j];
+    }
+    return out;
+}
 
+void AY8910::generateSamples(float* buffer, int count, int sampleRate) {
+    const double ticks = clockHz_ / (static_cast<double>(sampleRate) * 8.0);
     for (int i = 0; i < count; i++) {
-        // Calculate the CPU cycle for this sample
-        uint64_t sampleCycle = startCycle + static_cast<uint64_t>(i * cpuCyclesPerSample);
-
-        // Apply any pending writes that should happen before this sample
-        while (writeIdx < pendingWrites_.size() && pendingWrites_[writeIdx].cycle <= sampleCycle) {
-            applyRegisterWrite(pendingWrites_[writeIdx].reg, pendingWrites_[writeIdx].value);
-            writeIdx++;
-        }
-
-        // Advance PSG state and average output across all ticks
-        phaseAccumulator_ += toneStepsPerSample;
-
-        float sampleAccum = 0.0f;
-        int ticks = 0;
-        while (phaseAccumulator_ >= 1.0) {
-            phaseAccumulator_ -= 1.0;
-            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                updateToneGenerator(ch);
-            }
-            updateNoiseGenerator();
-            updateEnvelopeGenerator();
-            sampleAccum += computeMixerOutput();
-            ticks++;
-        }
-
-        float sample = (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
-
-        buffer[i] = sample;
+        buffer[i] = nextSample(ticks);
     }
-
-    // Apply any remaining writes (for the end of the buffer)
-    while (writeIdx < pendingWrites_.size()) {
-        applyRegisterWrite(pendingWrites_[writeIdx].reg, pendingWrites_[writeIdx].value);
-        writeIdx++;
-    }
-
-    // Clear processed writes
-    pendingWrites_.clear();
 }
 
 float AY8910::generateSingleSample() {
-    // Precomputed constants for 48kHz sample rate
-    // toneStepsPerSample = PSG_CLOCK / (48000 * 8) = 1023000 / 384000 ≈ 2.6640625
-    static constexpr double TONE_STEPS = 1023000.0 / (48000.0 * 8.0);
-
-    // Advance PSG state and average output across all ticks
-    // Evaluating the mixer at each tick captures noise-tone gate interactions
-    // at the PSG clock resolution, preventing aliased modulation artifacts
-    phaseAccumulator_ += TONE_STEPS;
-
-    float sampleAccum = 0.0f;
-    int ticks = 0;
-    while (phaseAccumulator_ >= 1.0) {
-        phaseAccumulator_ -= 1.0;
-        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-            updateToneGenerator(ch);
-        }
-        updateNoiseGenerator();
-        updateEnvelopeGenerator();
-        sampleAccum += computeMixerOutput();
-        ticks++;
-    }
-
-    return (ticks > 0) ? sampleAccum / static_cast<float>(ticks) : computeMixerOutput();
+    return nextSample(ticksPerSample_);
 }
 
 void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, int channel) {
@@ -436,9 +431,7 @@ void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, in
         return;
     }
 
-    // PSG clock cycles per audio sample
-    double cyclesPerSample = static_cast<double>(PSG_CLOCK) / sampleRate;
-    double toneStepsPerSample = cyclesPerSample / 8.0;
+    const double toneStepsPerSample = clockHz_ / (static_cast<double>(sampleRate) * 8.0);
 
     for (int i = 0; i < count; i++) {
         phaseAccumulator_ += toneStepsPerSample;
@@ -446,11 +439,7 @@ void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, in
         // Advance all generators (needed for accurate state)
         while (phaseAccumulator_ >= 1.0) {
             phaseAccumulator_ -= 1.0;
-            for (int ch = 0; ch < NUM_CHANNELS; ch++) {
-                updateToneGenerator(ch);
-            }
-            updateNoiseGenerator();
-            updateEnvelopeGenerator();
+            tick();
         }
 
         // Unipolar output for visualization (no DC removal - shows raw waveform)
@@ -536,9 +525,6 @@ size_t AY8910::exportState(uint8_t* buffer) const {
 
 void AY8910::importState(const uint8_t* buffer) {
     size_t offset = 0;
-
-    // Clear any pending register writes from before state import
-    pendingWrites_.clear();
 
     // 16 registers
     for (int i = 0; i < 16; i++) {

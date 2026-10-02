@@ -76,7 +76,6 @@ Emulator::Emulator(MachineId machine, VideoStandard standard)
     [this](uint16_t addr, uint8_t val) { onWatchpointWrite(addr, val); });
 
   // Set up Mockingboard callbacks
-  mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
 
   // Whether anything is currently pulling the interrupt line down.

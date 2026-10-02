@@ -60,7 +60,7 @@ public:
     static constexpr size_t STATE_SIZE = 32;
 
     // Timer debug accessors
-    uint16_t getT1Counter() const { return t1Counter_; }
+    uint16_t getT1Counter() const { return static_cast<uint16_t>(t1Counter_); }
     uint16_t getT1Latch() const { return t1Latch_; }
     bool isT1Running() const { return t1Running_; }
     bool hasT1Fired() const { return t1Fired_; }
@@ -105,8 +105,9 @@ private:
     uint8_t ira_ = 0;    // Input Register A (external input)
     uint8_t irb_ = 0;    // Input Register B (external input)
 
-    // Timer 1
-    uint16_t t1Counter_ = 0xFFFF;
+    // Timer 1. -1 is the cycle the counter shows $FFFF between reaching zero
+    // and reloading in free-running mode.
+    int32_t t1Counter_ = 0xFFFF;
     uint16_t t1Latch_ = 0xFFFF;
     bool t1Running_ = false;
     bool t1Fired_ = false;
@@ -135,14 +136,17 @@ private:
     // Helper methods
     void updatePSG();
     void checkIRQ();
+    void timer1Underflow();
 
-    // Previous PSG control state for edge detection
+    // The PSG's BC1/BDIR/RESET lines and its data bus as last seen. The chip
+    // decodes them as levels, so it acts whenever either changes.
     uint8_t prevPsgControl_ = 0;
+    uint8_t lastPsgBus_ = 0;
 
-    // Track if a valid PSG address was latched (AppleWin-style)
+    // Whether the last address latched selected the chip (its top nibble is 0)
     bool psgAddressLatched_ = false;
 
-    // PSG state machine: operations only execute from INACTIVE state
+    // What BC1/BDIR currently ask of the PSG
     enum PsgState { PSG_INACTIVE, PSG_READ, PSG_WRITE, PSG_LATCH };
     PsgState psgState_ = PSG_INACTIVE;
 

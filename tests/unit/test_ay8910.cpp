@@ -7,6 +7,7 @@
 
 #include "ay8910.hpp"
 
+#include <algorithm>
 #include <vector>
 #include <cmath>
 
@@ -30,14 +31,9 @@ static uint8_t readReg(AY8910& psg, uint8_t reg) {
 
 TEST_CASE("AY8910 constructor creates valid instance", "[ay8910][ctor]") {
     AY8910 psg;
-    // Registers should be initialized to 0, except register 7 (mixer)
-    // which defaults to 0x3F (all tone and noise channels disabled for silence)
+    // A chip out of reset has every register at zero, the mixer included
     for (int r = 0; r < 16; r++) {
-        if (r == 7) {
-            CHECK(psg.getRegister(r) == 0x3F);
-        } else {
-            CHECK(psg.getRegister(r) == 0);
-        }
+        CHECK(psg.getRegister(r) == 0);
     }
 }
 
@@ -181,14 +177,11 @@ TEST_CASE("reset clears all registers", "[ay8910][reset]") {
 
     psg.reset();
 
+    // The RESET pin clears every register, the mixer included: every tone
+    // and noise path is enabled, and the zeroed amplitudes keep it silent.
     for (int r = 0; r < 16; r++) {
         INFO("Register " << r);
-        if (r == 7) {
-            // Mixer register resets to 0x3F (all channels disabled for silence)
-            CHECK(psg.getRegister(r) == 0x3F);
-        } else {
-            CHECK(psg.getRegister(r) == 0);
-        }
+        CHECK(psg.getRegister(r) == 0);
     }
 }
 
@@ -308,4 +301,133 @@ TEST_CASE("State serialization exports and imports", "[ay8910][state]") {
     CHECK(psg2.getRegister(0) == 0x55);
     CHECK(psg2.getRegister(7) == 0x38);
     CHECK(psg2.getRegister(8) == 0x0F);
+}
+
+// ============================================================================
+// Timing and output, measured against the datasheet
+// ============================================================================
+
+namespace {
+
+constexpr double SAMPLES_PER_CLOCK = 48000.0 / 1023000.0;
+
+// Rising edges of a channel's square wave in one second of output.
+int toneFrequency(AY8910& psg) {
+    int edges = 0;
+    float prev = psg.generateSingleSample();
+    for (int i = 0; i < 48000; i++) {
+        float s = psg.generateSingleSample();
+        if (s > 0.1667f && prev <= 0.1667f) edges++;
+        prev = s;
+    }
+    return edges;
+}
+
+// Peak-to-peak output over a window, after the filter has settled.
+float peakToPeak(AY8910& psg, int samples) {
+    for (int i = 0; i < 256; i++) psg.generateSingleSample();
+    float lo = 1.0f, hi = -1.0f;
+    for (int i = 0; i < samples; i++) {
+        float s = psg.generateSingleSample();
+        lo = std::min(lo, s);
+        hi = std::max(hi, s);
+    }
+    return hi - lo;
+}
+
+} // namespace
+
+TEST_CASE("A tone's frequency is the clock over 16 times its period", "[ay8910][timing]") {
+    // Datasheet: fT = fCLOCK / (16 * TP). TP = 100 at 1.023MHz is 639.4Hz.
+    AY8910 psg;
+    writeReg(psg, 0, 100);
+    writeReg(psg, 7, 0x3E);
+    writeReg(psg, 8, 15);
+    CHECK(toneFrequency(psg) == Approx(1023000.0 / 1600.0).margin(1));
+}
+
+TEST_CASE("The chip runs at the clock it is given", "[ay8910][timing]") {
+    // A Mockingboard's PSGs run off phi0, which on a PAL machine is
+    // 14.25045MHz / 14: the same period plays lower.
+    constexpr double PAL_CLOCK = 14250450.0 / 14.0;
+    AY8910 psg;
+    psg.setClock(PAL_CLOCK);
+    writeReg(psg, 0, 100);
+    writeReg(psg, 7, 0x3E);
+    writeReg(psg, 8, 15);
+    CHECK(toneFrequency(psg) == Approx(PAL_CLOCK / 1600.0).margin(1));
+}
+
+TEST_CASE("An envelope ramp lasts 256 clocks times its period", "[ay8910][envelope][timing]") {
+    // Datasheet: fE = fCLOCK / (256 * EP), one ramp of the AY-3-8910's 16
+    // steps. The 32-step ramp in the same time is the YM2149's; counting a
+    // step every EP ticks of clock/8 played every envelope twice as fast.
+    AY8910 psg;
+    writeReg(psg, 7, 0x3F);  // tone and noise off: the output is the envelope
+    writeReg(psg, 8, 0x10);  // channel A follows the envelope
+    writeReg(psg, 11, 100);
+    writeReg(psg, 12, 0);
+    writeReg(psg, 13, 0x08); // repeating decay
+
+    // Measure between two returns to the top of the ramp. The filter spreads
+    // each jump over a sample or two, so one jump is counted once.
+    float prev = psg.generateSingleSample();
+    int starts = 0, first = 0, ramp = 0, last = -1000;
+    for (int i = 1; i < 20000 && starts < 3; i++) {
+        float s = psg.generateSingleSample();
+        if (s > prev + 0.1f && i - last > 100) {
+            if (starts == 1) first = i;
+            if (starts == 2) ramp = i - first;
+            starts++;
+            last = i;
+        }
+        prev = s;
+    }
+    REQUIRE(starts == 3);
+    CHECK(ramp == Approx(256.0 * 100 * SAMPLES_PER_CLOCK).margin(1));
+}
+
+TEST_CASE("A steady level passes the output filter unchanged", "[ay8910][output]") {
+    // Sample playback writes the volume register with tone and noise off; the
+    // resampler must not change the level it was given.
+    AY8910 psg;
+    writeReg(psg, 7, 0x3F);
+    writeReg(psg, 8, 15);
+    for (int i = 0; i < 256; i++) psg.generateSingleSample();
+    CHECK(psg.generateSingleSample() == Approx(1.0f / 3.0f).margin(1e-4));
+}
+
+TEST_CASE("Tones above the host's Nyquist limit do not fold back", "[ay8910][output]") {
+    // Period 1 is 63.9kHz and period 2 is 32kHz: inaudible on the real card.
+    // A plain average of the ticks in each 48kHz sample folded them back as
+    // audible tones (32kHz came out at 16kHz).
+    for (int period : {1, 2}) {
+        INFO("period " << period);
+        AY8910 psg;
+        writeReg(psg, 0, static_cast<uint8_t>(period));
+        writeReg(psg, 7, 0x3E);
+        writeReg(psg, 8, 15);
+        CHECK(peakToPeak(psg, 4800) < 0.002f);
+    }
+
+    // An audible tone still comes through at full swing.
+    AY8910 psg;
+    writeReg(psg, 0, 100);
+    writeReg(psg, 7, 0x3E);
+    writeReg(psg, 8, 15);
+    CHECK(peakToPeak(psg, 4800) > 0.3f);
+}
+
+TEST_CASE("The I/O ports read their pins when set to input", "[ay8910][reg]") {
+    // A Mockingboard leaves IOA and IOB unconnected, so as inputs they float
+    // high; as outputs a read returns what was written.
+    AY8910 psg;
+    writeReg(psg, 14, 0x12);
+    writeReg(psg, 15, 0x34);
+    CHECK(readReg(psg, 14) == 0xFF);
+    CHECK(readReg(psg, 15) == 0xFF);
+
+    writeReg(psg, 7, 0xC0);  // both ports output
+    CHECK(readReg(psg, 14) == 0x12);
+    CHECK(readReg(psg, 15) == 0x34);
 }

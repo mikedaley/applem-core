@@ -321,3 +321,169 @@ TEST_CASE("VIA6522 reading T1CL clears T1 interrupt flag", "[via][timer1_clear]"
     via.read(REG_T1CL);
     CHECK((via.getIFR() & 0x40) == 0);
 }
+
+// ============================================================================
+// Timer 1, cycle by cycle
+// ============================================================================
+
+TEST_CASE("VIA6522 Timer 1 free-running shows $FFFF for a cycle before reloading",
+          "[via][timer1]") {
+    // A period is N + 2 cycles: N down to 0, one cycle at $FFFF, then N again.
+    VIA6522 via;
+    via.write(REG_ACR, 0x40);
+    via.write(REG_T1CL, 3);
+    via.write(REG_T1CH, 0);
+
+    const uint16_t expected[] = {3, 2, 1, 0, 0xFFFF, 3, 2, 1, 0, 0xFFFF, 3};
+    for (uint16_t value : expected) {
+        via.update(1);
+        INFO("expected " << value);
+        CHECK(via.getT1Counter() == value);
+    }
+}
+
+TEST_CASE("VIA6522 Timer 1 free-running interrupts every period", "[via][timer1]") {
+    VIA6522 via;
+    via.write(REG_IER, 0x80 | 0x40);
+    via.write(REG_ACR, 0x40);
+    via.write(REG_T1CL, 10);
+    via.write(REG_T1CH, 0);
+
+    int fired = 0;
+    for (int i = 0; i < 12 * 5; i++) {
+        via.update(1);
+        if (via.getIFR() & 0x40) {
+            fired++;
+            via.write(REG_IFR, 0x40);
+        }
+    }
+    CHECK(fired == 5);  // 60 cycles at 12 a period
+}
+
+TEST_CASE("VIA6522 changing ACR does not re-arm a one-shot timer", "[via][timer1]") {
+    // Only a write to T1CH re-arms one-shot mode.
+    VIA6522 via;
+    via.write(REG_T1CL, 10);
+    via.write(REG_T1CH, 0);
+    via.update(20);
+    REQUIRE(via.getIFR() & 0x40);
+    via.write(REG_IFR, 0x40);
+
+    via.write(REG_ACR, 0x00);
+    via.update(70000);  // past zero again
+    CHECK((via.getIFR() & 0x40) == 0);
+}
+
+TEST_CASE("VIA6522 a fired one-shot timer switched to free-running interrupts again",
+          "[via][timer1]") {
+    // Free-running mode interrupts on every underflow, whatever came before.
+    VIA6522 via;
+    via.write(REG_T1CL, 10);
+    via.write(REG_T1CH, 0);
+    via.update(20);
+    via.write(REG_IFR, 0x40);
+
+    via.write(REG_ACR, 0x40);
+    via.update(70000);
+    CHECK(via.getIFR() & 0x40);
+}
+
+// ============================================================================
+// The PSG's bus: BC1, BDIR and RESET are levels
+// ============================================================================
+
+namespace {
+
+// A VIA driving a PSG with every line an output and RESET released.
+struct Wired {
+    AY8910 psg;
+    VIA6522 via;
+    Wired() {
+        via.connectPSG(&psg);
+        via.write(REG_DDRA, 0xFF);
+        via.write(REG_DDRB, 0x07);
+        via.write(REG_ORB, 0x04);
+    }
+    void latch(uint8_t reg) {
+        via.write(REG_ORA, reg);
+        via.write(REG_ORB, 0x07);
+        via.write(REG_ORB, 0x04);
+    }
+    void write(uint8_t reg, uint8_t value) {
+        latch(reg);
+        via.write(REG_ORA, value);
+        via.write(REG_ORB, 0x06);
+        via.write(REG_ORB, 0x04);
+    }
+};
+
+} // namespace
+
+TEST_CASE("VIA6522 the standard write sequence reaches the PSG", "[via][psg]") {
+    Wired w;
+    w.write(0, 0x42);
+    w.write(8, 0x0F);
+    CHECK(w.psg.getRegister(0) == 0x42);
+    CHECK(w.psg.getRegister(8) == 0x0F);
+}
+
+TEST_CASE("VIA6522 the PSG follows the bus while WRITE is held", "[via][psg]") {
+    // A write is a level, not a strobe: change the bus during one and the
+    // register takes the new value.
+    Wired w;
+    w.latch(2);
+    w.via.write(REG_ORA, 0x11);
+    w.via.write(REG_ORB, 0x06);
+    CHECK(w.psg.getRegister(2) == 0x11);
+    w.via.write(REG_ORA, 0x22);
+    CHECK(w.psg.getRegister(2) == 0x22);
+}
+
+TEST_CASE("VIA6522 LATCH straight to WRITE writes", "[via][psg]") {
+    // The AY decodes BDIR/BC1 as they are; going from LATCH to WRITE without
+    // passing through INACTIVE is still a write.
+    Wired w;
+    w.via.write(REG_ORA, 3);
+    w.via.write(REG_ORB, 0x07);  // LATCH register 3
+    w.via.write(REG_ORA, 0x05);  // the bus changes while latching: address 5
+    w.via.write(REG_ORB, 0x06);  // WRITE
+    CHECK(w.psg.getRegister(5) == 0x05);
+    CHECK(w.psg.getRegister(3) == 0x00);
+}
+
+TEST_CASE("VIA6522 an address above 15 deselects the PSG", "[via][psg]") {
+    Wired w;
+    w.write(1, 0x03);
+    w.write(0x11, 0x0A);  // the 8910's upper address nibble is 0
+    CHECK(w.psg.getRegister(1) == 0x03);
+}
+
+TEST_CASE("VIA6522 the PSG ignores the bus while RESET is held low", "[via][psg]") {
+    Wired w;
+    w.write(8, 0x0F);
+    w.via.write(REG_ORB, 0x00);  // RESET low
+    CHECK(w.psg.getRegister(8) == 0);
+
+    // Held in reset, a latch and a write do nothing.
+    w.via.write(REG_ORA, 8);
+    w.via.write(REG_ORB, 0x03);
+    w.via.write(REG_ORB, 0x00);
+    w.via.write(REG_ORA, 0x0F);
+    w.via.write(REG_ORB, 0x02);
+    w.via.write(REG_ORB, 0x00);
+    CHECK(w.psg.getRegister(8) == 0);
+
+    // Released, it works again.
+    w.via.write(REG_ORB, 0x04);
+    w.write(8, 0x0C);
+    CHECK(w.psg.getRegister(8) == 0x0C);
+}
+
+TEST_CASE("VIA6522 releasing the RESET line's direction resets the PSG", "[via][psg]") {
+    // A line the VIA stops driving reads low here, so clearing DDRB bit 2
+    // asserts RESET just as writing it low does.
+    Wired w;
+    w.write(8, 0x0F);
+    w.via.write(REG_DDRB, 0x03);
+    CHECK(w.psg.getRegister(8) == 0);
+}

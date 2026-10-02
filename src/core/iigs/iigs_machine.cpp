@@ -296,17 +296,23 @@ int IIgsMachine::step() {
   // it. The boundary advances by exactly one frame rather than to the current
   // cycle, so it cannot drift away from where $C019 thinks vertical blanking
   // is — a program timing itself against the beam would see it wander.
+  // The slow clock's time this instruction covered. A card in a slot is
+  // clocked by the slot bus, which is the Mega II's 1.023MHz whatever speed
+  // the 65816 runs at: a Mockingboard's timers, and the rate it makes
+  // samples at, count those cycles and not the processor's.
+  const auto slowElapsed =
+      static_cast<uint32_t>(memory_->slowCycles() - soundCycle_);
+  soundCycle_ = memory_->slowCycles();
+
   if (disk_) disk_->update(cycles);
-  for (ExpansionCard *card : fittedCards_) card->update(cycles);
+  for (ExpansionCard *card : fittedCards_)
+    card->update(static_cast<int>(slowElapsed));
   memory_->tickClocks();
   // The Ensoniq runs on the machine's clock, so its oscillators reach the ends
   // of their tables — and interrupt — when the machine says, not when the host
   // next asks for a buffer.
-  memory_->sound().advance(
-      static_cast<uint32_t>(memory_->slowCycles() - soundCycle_));
-  memory_->scc().advance(
-      static_cast<uint32_t>(memory_->slowCycles() - soundCycle_));
-  soundCycle_ = memory_->slowCycles();
+  memory_->sound().advance(slowElapsed);
+  memory_->scc().advance(slowElapsed);
   video_->renderUpToCycle(memory_->slowCycles());
   raiseScanLineInterrupts();
 
