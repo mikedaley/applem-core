@@ -334,6 +334,12 @@ uint16_t Emulator::findCurrentLineStart(uint16_t lineNumber) {
   while (addr < 0xC000) {  // Reasonable upper bound
     uint16_t nextPtr = mmu_->readRAM(addr, false) | (mmu_->readRAM(addr + 1, false) << 8);
     if (nextPtr == 0) break;  // End of program
+    // Applesoft's links only ever move forward. Memory that is not a BASIC
+    // program (a machine code player, with TXTTAB left pointing into it) can
+    // link backwards or to itself, and following that went round for ever:
+    // the native BASIC window asks this every frame, under the machine lock,
+    // and froze the app at 100% CPU.
+    if (nextPtr <= addr) break;
 
     uint16_t lineNum = mmu_->readRAM(addr + 2, false) | (mmu_->readRAM(addr + 3, false) << 8);
     if (lineNum == lineNumber) {

@@ -241,3 +241,28 @@ TEST_CASE("getBasicStatementIndexForLine returns 0 for an unknown line",
 
     REQUIRE(emu.getBasicStatementIndexForLine(999, 0x0805) == 0);
 }
+
+TEST_CASE("Asking about a BASIC line over memory that is not a program returns",
+          "[emulator][basic]") {
+    // A machine code program (pt3_player) leaves TXTTAB pointing at bytes
+    // that read as line links running backwards or to themselves. The walk
+    // for a line followed them for ever, and the native BASIC window, which
+    // asks every frame under the machine lock, froze the app.
+    Emulator emu;
+    emu.init();
+    auto poke16 = [&](uint16_t addr, uint16_t value) {
+        emu.writeMemory(addr, value & 0xFF);
+        emu.writeMemory(static_cast<uint16_t>(addr + 1), value >> 8);
+    };
+    poke16(0x67, 0x0801);              // TXTTAB
+    poke16(0x0801, 0x0801);            // a line that links to itself
+    poke16(0x0803, 10);
+    CHECK(emu.getBasicStatementCountForLine(20) >= 0);
+    CHECK(emu.getBasicStatementIndexForLine(20, 0x0805) >= 0);
+
+    poke16(0x0801, 0x0900);            // forward, then back to the start
+    poke16(0x0900, 0x0801);
+    poke16(0x0902, 30);
+    CHECK(emu.getBasicStatementCountForLine(20) >= 0);
+    CHECK(emu.getBasicStatementIndexForLine(20, 0x0805) >= 0);
+}
