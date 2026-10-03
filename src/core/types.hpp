@@ -232,6 +232,9 @@ struct VideoSwitchState {
   bool an3;
 };
 
+// A display page as a memory viewer asks for one (Video::renderPage).
+enum class VideoPage : uint8_t { Text40, Text80, LoRes, DoubleLoRes, HiRes, DoubleHiRes };
+
 // Records a video switch change at a specific cycle within a frame
 struct VideoSwitchChange {
   uint32_t cycleOffset;       // Cycle offset from frame start

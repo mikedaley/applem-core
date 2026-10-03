@@ -329,6 +329,17 @@ public:
   void readSpace(const MemorySpace &space, uint32_t address, uint8_t *out, size_t count);
   bool pokeSpace(const MemorySpace &space, uint32_t address, uint8_t value);
 
+  // A display page decoded as its mode shows it, whatever the switches say,
+  // for a memory viewer: the Apple II pages through the picture's own
+  // renderer (Video::renderPage) and a IIgs's Super Hi-Res through its own.
+  // RGBA into `rgba`, a row a line, its size in width and height. False for
+  // a page the machine does not have: 80 columns and the double modes need
+  // an auxiliary bank, and only a IIgs has Super Hi-Res.
+  enum class DisplayPage { Text40, Text80, LoRes, DoubleLoRes, HiRes, DoubleHiRes, SuperHiRes };
+  bool hasDisplayPage(DisplayPage page) const;
+  bool renderDisplayPage(DisplayPage page, bool page2, VideoColorMode colours, std::vector<uint8_t> &rgba,
+                         int &width, int &height);
+
   // Every read and write the processor makes, counted per address up to 255
   // and decayed by the caller, for a memory view to light. A //e's only:
   // a IIgs's memory does not go through anything that counts.

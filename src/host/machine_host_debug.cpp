@@ -20,6 +20,8 @@
 #include "cpu/6502/cpu6502.hpp"
 #include "cpu/65816/cpu65816.hpp"
 #include "iigs/iigs_memory.hpp"
+#include "iigs/iigs_video.hpp"
+#include "video/ntsc.hpp"
 
 namespace a2e::host {
 
@@ -319,6 +321,38 @@ bool MachineHost::pokeSpace(const MemorySpace &space, uint32_t address, uint8_t 
     return false;
   }
   return false;
+}
+
+bool MachineHost::hasDisplayPage(DisplayPage page) const {
+  if (!isBuilt()) return false;
+  switch (page) {
+  case DisplayPage::SuperHiRes: return iigs_ != nullptr;
+  case DisplayPage::Text80: return profile().caps.has80Column;
+  case DisplayPage::DoubleLoRes:
+  case DisplayPage::DoubleHiRes: return profile().caps.hasDoubleHires;
+  default: return true;
+  }
+}
+
+bool MachineHost::renderDisplayPage(DisplayPage page, bool page2, VideoColorMode colours,
+                                    std::vector<uint8_t> &rgba, int &width, int &height) {
+  if (!hasDisplayPage(page)) return false;
+  if (page == DisplayPage::SuperHiRes) {
+    width = iigs::SHR_PIXELS_PER_LINE;
+    height = iigs::SHR_LINES;
+    rgba.resize(static_cast<size_t>(width) * height * 4);
+    iigs_->screen().renderSuperHiResPicture(rgba.data());
+    return true;
+  }
+  Video *v = video();
+  if (!v) return false;
+  static constexpr VideoPage PAGES[] = {VideoPage::Text40,      VideoPage::Text80, VideoPage::LoRes,
+                                        VideoPage::DoubleLoRes, VideoPage::HiRes,  VideoPage::DoubleHiRes};
+  width = ntsc::VISIBLE_DOTS;
+  height = profile().timing.visibleScanlines;
+  rgba.resize(static_cast<size_t>(width) * height * 4);
+  v->renderPage(PAGES[static_cast<int>(page)], page2, colours, rgba.data());
+  return true;
 }
 
 void MachineHost::setMemoryActivity(bool on) {

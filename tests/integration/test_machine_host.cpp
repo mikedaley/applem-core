@@ -778,3 +778,80 @@ TEST_CASE("A IIgs's memory view is a space per bank, and an edit shadows",
   REQUIRE_FALSE(host.pokeSpace(*rom, 0xFFFFFC, 0x00));
   REQUIRE_FALSE(host.pokeSpace(spaces.front(), 0x00C000, 0x00)); // I/O
 }
+
+TEST_CASE("A memory view decodes a display page whatever the switches say",
+          "[host][debugger][memory][video]") {
+  using Page = MachineHost::DisplayPage;
+  MachineHost host;
+  host.build();
+  runSeconds(host, 1.0); // to the prompt: a text screen, page 1
+  host.setPaused(true);
+  MMU &mmu = host.emulator()->getMMU();
+
+  // Seven lit pixels at the start of hi-res page 2's first line, and nothing
+  // on page 1's.
+  for (uint16_t a = 0x2000; a < 0x6000; a++) mmu.writeRAM(a, 0x00, false);
+  mmu.writeRAM(0x4000, 0x7F, false);
+
+  const std::vector<uint8_t> before(host.framebuffer(), host.framebuffer() + host.framebufferSize());
+  std::vector<uint8_t> rgba;
+  int width = 0, height = 0;
+  auto lit = [&](int x, int y) {
+    const size_t o = (static_cast<size_t>(y) * width + x) * 4;
+    return rgba[o] + rgba[o + 1] + rgba[o + 2] > 200;
+  };
+
+  REQUIRE(host.renderDisplayPage(Page::HiRes, true, VideoColorMode::MONOCHROME, rgba, width, height));
+  REQUIRE(width == 560);
+  REQUIRE(height == 192);
+  REQUIRE(lit(2, 0));      // the byte's pixels, two dots each
+  REQUIRE_FALSE(lit(2, 1)); // and only on its own line
+  REQUIRE_FALSE(lit(20, 0));
+
+  REQUIRE(host.renderDisplayPage(Page::HiRes, false, VideoColorMode::MONOCHROME, rgba, width, height));
+  REQUIRE_FALSE(lit(2, 0)); // page 1 is empty
+
+  // The screen the machine is drawing is untouched.
+  const std::vector<uint8_t> after(host.framebuffer(), host.framebuffer() + host.framebufferSize());
+  REQUIRE(before == after);
+
+  SECTION("and says which pages the machine has") {
+    REQUIRE(host.hasDisplayPage(Page::DoubleHiRes));
+    REQUIRE_FALSE(host.hasDisplayPage(Page::SuperHiRes));
+    if (Emulator::isMachineRunnable(MachineId::AppleIIPlus)) {
+      MachineHost plus;
+      REQUIRE(plus.setMachine(MachineId::AppleIIPlus));
+      plus.build();
+      REQUIRE(plus.hasDisplayPage(Page::HiRes));
+      REQUIRE_FALSE(plus.hasDisplayPage(Page::Text80));
+      REQUIRE_FALSE(plus.hasDisplayPage(Page::DoubleHiRes));
+    }
+  }
+}
+
+TEST_CASE("A IIgs's Super Hi-Res picture can be looked at while it is not shown",
+          "[host][debugger][memory][video][iigs]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  using Page = MachineHost::DisplayPage;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  host.build();
+  host.setPaused(true);
+  REQUIRE(host.hasDisplayPage(Page::SuperHiRes));
+  auto &mega = host.iigs()->memory().megaII();
+  // Line 0 in 320 mode with palette 0, whose entry 1 is pure red ($0F00),
+  // and its first pixel that colour.
+  mega.writeRAM(0x9D00, 0x00, true);
+  mega.writeRAM(0x9E02, 0x00, true);
+  mega.writeRAM(0x9E03, 0x0F, true);
+  mega.writeRAM(0x2000, 0x10, true);
+
+  std::vector<uint8_t> rgba;
+  int width = 0, height = 0;
+  REQUIRE(host.renderDisplayPage(Page::SuperHiRes, false, VideoColorMode::SOLID, rgba, width, height));
+  REQUIRE(width == 640);
+  REQUIRE(height == 200);
+  REQUIRE(rgba[0] == 0xFF);
+  REQUIRE(rgba[1] == 0x00);
+  REQUIRE(rgba[2] == 0x00);
+}

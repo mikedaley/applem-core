@@ -63,6 +63,19 @@ IIgsVideo::IIgsVideo(Video &megaII, IIgsMemory &memory)
   frame_.assign(static_cast<size_t>(width_) * height_ * 4, 0);
 }
 
+void IIgsVideo::renderSuperHiResPicture(uint8_t *out) {
+  // The screen's frame stays as it is: this draws into a frame of its own,
+  // the same size, and takes the picture out of it.
+  std::vector<uint8_t> scratch(frame_.size());
+  std::swap(frame_, scratch);
+  renderSuperHiRes();
+  for (int line = 0; line < SHR_LINES; line++) {
+    std::memcpy(out + static_cast<size_t>(line) * SHR_PIXELS_PER_LINE * 4, pictureRow(line),
+                static_cast<size_t>(SHR_PIXELS_PER_LINE) * 4);
+  }
+  std::swap(frame_, scratch);
+}
+
 uint8_t *IIgsVideo::pictureRow(int line) {
   return scanline(PICTURE_TOP + line * RASTER_LINE_DOUBLING) +
          static_cast<size_t>(PICTURE_LEFT) * 4;

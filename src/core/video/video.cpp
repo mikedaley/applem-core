@@ -578,7 +578,30 @@ void Video::endScanline(int scanline) {
   if (scanline < 0 || scanline >= machine_->timing.visibleScanlines) return;
 
   uint32_t line[ntsc::VISIBLE_DOTS];
+  decodeLine(line);
 
+  // A scanline occupies `lineDoubling` framebuffer rows (192 lines doubled to
+  // 384) and each row is one pixel per emitted dot.
+  const int rowBytes = machine_->display.pixelWidth * 4;
+  const size_t row = static_cast<size_t>(scanline) *
+                     static_cast<size_t>(machine_->display.lineDoubling) *
+                     static_cast<size_t>(rowBytes);
+  uint8_t *dst = framebuffer_.data() + row;
+  for (int x = 0; x < ntsc::VISIBLE_DOTS; x++) {
+    const uint32_t c = line[x];
+    const size_t o = static_cast<size_t>(x) * 4;
+    dst[o + 0] = (c >> 16) & 0xFF;
+    dst[o + 1] = (c >> 8) & 0xFF;
+    dst[o + 2] = c & 0xFF;
+    dst[o + 3] = (c >> 24) & 0xFF;
+  }
+  for (int copy = 1; copy < machine_->display.lineDoubling; copy++) {
+    std::memcpy(dst + static_cast<size_t>(copy) * rowBytes, dst, rowBytes);
+  }
+}
+
+// The dots emitted for a line, through whichever decoder is chosen.
+void Video::decodeLine(uint32_t *line) const {
   // A machine with a VGC draws its text rather than transmitting it, so a text
   // line is two colours and no decoder at all. Everything else on the screen,
   // including the graphics half of a mixed screen, goes the usual way — and so
@@ -627,25 +650,58 @@ void Video::endScanline(int scanline) {
       break;
     }
   }
+}
 
-  // A scanline occupies `lineDoubling` framebuffer rows (192 lines doubled to
-  // 384) and each row is one pixel per emitted dot.
-  const int rowBytes = machine_->display.pixelWidth * 4;
-  const size_t row = static_cast<size_t>(scanline) *
-                     static_cast<size_t>(machine_->display.lineDoubling) *
-                     static_cast<size_t>(rowBytes);
-  uint8_t *dst = framebuffer_.data() + row;
-  for (int x = 0; x < ntsc::VISIBLE_DOTS; x++) {
-    const uint32_t c = line[x];
-    const size_t o = static_cast<size_t>(x) * 4;
-    dst[o + 0] = (c >> 16) & 0xFF;
-    dst[o + 1] = (c >> 8) & 0xFF;
-    dst[o + 2] = c & 0xFF;
-    dst[o + 3] = (c >> 24) & 0xFF;
+void Video::renderPage(VideoPage page, bool page2, VideoColorMode colours,
+                       uint8_t *out) {
+  // What the picture in progress was in the middle of: the line being built
+  // and every flag a line sets. All of it goes back afterwards, so the frame
+  // the machine is drawing carries on as if this had not happened.
+  const auto dots = dots_;
+  const auto kind = idealKind_;
+  const auto cell = cellColour_;
+  const bool textLine = textLine_;
+  const bool doubleHiResLine = doubleHiResLine_;
+  const bool chroma = chromaEnabled_;
+  const VideoColorMode mode = colorMode_;
+
+  VideoSwitchState vs{};
+  vs.page2 = page2;
+  vs.altCharSet = mmu_.getSoftSwitches().altCharSet;
+  const bool text = page == VideoPage::Text40 || page == VideoPage::Text80;
+  vs.text = text;
+  vs.col80 = page == VideoPage::Text80 || page == VideoPage::DoubleLoRes ||
+             page == VideoPage::DoubleHiRes;
+  vs.hires = page == VideoPage::HiRes || page == VideoPage::DoubleHiRes;
+
+  colorMode_ = colours;
+  // Colour for the graphics, and none for text, as a //e's killer decides.
+  chromaEnabled_ = !text;
+  textLine_ = text;
+  const int lines = machine_->timing.visibleScanlines;
+  uint32_t line[ntsc::VISIBLE_DOTS];
+  for (int scanline = 0; scanline < lines; scanline++) {
+    beginScanline();
+    doubleHiResLine_ = false;
+    renderScanlineSegment(scanline, 0, machine_->timing.visibleColumns, vs);
+    decodeLine(line);
+    uint8_t *dst = out + static_cast<size_t>(scanline) * ntsc::VISIBLE_DOTS * 4;
+    for (int x = 0; x < ntsc::VISIBLE_DOTS; x++) {
+      const uint32_t c = line[x];
+      dst[x * 4 + 0] = (c >> 16) & 0xFF;
+      dst[x * 4 + 1] = (c >> 8) & 0xFF;
+      dst[x * 4 + 2] = c & 0xFF;
+      dst[x * 4 + 3] = 0xFF;
+    }
   }
-  for (int copy = 1; copy < machine_->display.lineDoubling; copy++) {
-    std::memcpy(dst + static_cast<size_t>(copy) * rowBytes, dst, rowBytes);
-  }
+
+  dots_ = dots;
+  idealKind_ = kind;
+  cellColour_ = cell;
+  textLine_ = textLine;
+  doubleHiResLine_ = doubleHiResLine;
+  chromaEnabled_ = chroma;
+  colorMode_ = mode;
 }
 
 // ============================================================================

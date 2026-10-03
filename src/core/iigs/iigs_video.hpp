@@ -55,6 +55,13 @@ public:
 
   size_t framebufferSize() const { return frame_.size(); }
 
+  /**
+   * The Super Hi-Res picture, whatever $C029 says, for a memory viewer: 640 x
+   * 200 RGBA, a row a line, into `out`. Drawn by the same code as the screen
+   * into a frame of its own, so the screen's is not touched.
+   */
+  void renderSuperHiResPicture(uint8_t *out);
+
   /** $C029 NEWVIDEO: bit 7 puts Super Hi-Res on screen. */
   bool superHiResEnabled() const;
 

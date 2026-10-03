@@ -112,6 +112,15 @@ public:
   bool isGreenPhosphor() const { return greenPhosphor_; }
 
   // UK character set (like the physical switch on UK Apple IIe)
+  /**
+   * A display page decoded as a mode would show it, whatever the switches
+   * say: page 2 while page 1 is on screen, the hi-res page while the machine
+   * shows text. It runs the picture's own emitters and decoders, so the two
+   * cannot disagree, and leaves the frame being drawn exactly as it was.
+   * Writes 560 x visibleScanlines RGBA, a row a scanline, into `out`.
+   */
+  void renderPage(VideoPage page, bool page2, VideoColorMode colours, uint8_t *out);
+
   void setUKCharacterSet(bool uk) { ukCharSet_ = uk; }
   bool isUKCharacterSet() const { return ukCharSet_; }
 
@@ -160,6 +169,7 @@ private:
 
   // Clear the dot buffer before a scanline's segments run.
   void beginScanline();
+  void decodeLine(uint32_t *line) const;
 
   // Decode the finished dot stream and write the scanline's two framebuffer rows.
   void endScanline(int scanline);
