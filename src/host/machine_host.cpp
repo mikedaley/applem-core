@@ -14,6 +14,7 @@
 #include "cpu/65816/cpu65816.hpp"
 #include "iigs/iigs_clock.hpp"
 #include "iigs/iigs_memory.hpp"
+#include "iigs/iigs_spec.hpp"
 
 namespace a2e::host {
 
@@ -228,6 +229,11 @@ uint64_t MachineHost::totalCycles() const {
   if (iigs_) return iigs_->slowCycles();
   if (emulator_) return emulator_->getTotalCycles();
   return 0;
+}
+
+double MachineHost::clockHz() const {
+  if (iigs_) return iigs_->memory().isFastSpeed() ? iigs::FAST_CLOCK_HZ : iigs::SLOW_CLOCK_HZ;
+  return profile().timing.cpuClockHz * speedMultiplier();
 }
 
 int MachineHost::handleRawKeyDown(int browserKeycode, bool shift, bool ctrl,

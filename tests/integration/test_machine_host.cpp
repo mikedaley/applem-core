@@ -855,3 +855,24 @@ TEST_CASE("A IIgs's Super Hi-Res picture can be looked at while it is not shown"
   REQUIRE(rgba[1] == 0x00);
   REQUIRE(rgba[2] == 0x00);
 }
+
+TEST_CASE("A machine's speed is its processor's rated clock", "[host]") {
+    // What the native status bar shows: the clock as rated, not measured.
+    // Measured, a IIgs read about 1.8MHz at the Finder, because each access
+    // to the Mega II stretches a 65816 cycle to 1MHz.
+    MachineHost host;
+    host.build();
+    CHECK(host.clockHz() == Approx(host.profile().timing.cpuClockHz));
+    host.setSpeedMultiplier(4);
+    CHECK(host.clockHz() == Approx(host.profile().timing.cpuClockHz * 4));
+
+    if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+    REQUIRE(host.setMachine(MachineId::AppleIIgs));
+    // Past the startup scan, which turns the 5.25" drive and so runs slow.
+    runSeconds(host, 8.0);
+    REQUIRE(host.iigs()->memory().isFastSpeed());
+    CHECK(host.clockHz() == Approx(iigs::FAST_CLOCK_HZ));
+    // Slow, by the speed register.
+    host.iigs()->memory().write(0xE0C036, static_cast<uint8_t>(host.iigs()->memory().read(0xE0C036) & 0x7F));
+    CHECK(host.clockHz() == Approx(iigs::SLOW_CLOCK_HZ));
+}

@@ -225,6 +225,13 @@ public:
   void forceRenderFrame();
   // The machine's own clock: a //e's CPU cycles, a IIgs's Mega II cycles.
   uint64_t totalCycles() const;
+  // The processor's clock, in Hz, as rated for what the machine is doing
+  // now, for a speed readout: a //e's clock times the speed multiplier; a
+  // IIgs's 2.8MHz while it is fast and 1.023MHz while it is slow (the speed
+  // register, or a 5.25" drive turning). A rating rather than a measurement:
+  // the 65816's cycles per second fall well below 2.8MHz while it waits on
+  // the Mega II, without the clock being any slower.
+  double clockHz() const;
 
   // Input.
   int handleRawKeyDown(int browserKeycode, bool shift, bool ctrl, bool alt,
