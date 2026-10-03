@@ -322,6 +322,7 @@ if(EMSCRIPTEN)
                 \"_getMockingboardWaveform\", \
                 \"_setMockingboardChannelMute\", \
                 \"_setMockingboardPhaseLock\", \
+                \"_setMockingboardMono\", \
                 \"_getMockingboardChannelMute\", \
                 \"_isKeyboardReady\", \
                 \"_setSpeedMultiplier\", \

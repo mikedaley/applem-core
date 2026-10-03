@@ -133,6 +133,16 @@ public:
     static void setPhaseLock(bool on) { phaseLock_ = on; }
     static bool phaseLock() { return phaseLock_; }
 
+    // Mono: both chips mixed and the mix played on both sides, for one
+    // speaker or a listener who wants the card's six voices together. A host
+    // preference, on by default and not part of a save state: most people
+    // listen on speakers close together, where two sides do not separate. Half each, so
+    // two chips playing the same notes in step are as loud as one side was;
+    // with phase lock off, a pair half a cycle apart cancels, as two real
+    // outputs wired together would.
+    static void setMono(bool on) { mono_ = on; }
+    static bool mono() { return mono_; }
+
     // ===== Debug Access =====
     const VIA6522& getVIA1() const { return via1_; }
     const VIA6522& getVIA2() const { return via2_; }
@@ -188,9 +198,11 @@ private:
     // Whether the two chips would play the same thing: the sound registers
     // and the debugger's mutes.
     bool chipsMatch() const;
-    // One frame: left and right, or the left twice (phase lock).
+    // One frame: left and right, the left twice (phase lock), or the two
+    // mixed on both sides (mono).
     void emitFrame(float *left, float *right) const;
     static inline bool phaseLock_ = true;
+    static inline bool mono_ = true;
 
     CycleCallback cycleCallback_;
     uint64_t syncedCycle_ = 0;   // the cycle the chips have been run to

@@ -170,6 +170,7 @@ bool MockingboardCard::chipsMatch() const {
 void MockingboardCard::emitFrame(float *left, float *right) const {
     *left = psg1_.sampleNow();
     *right = phaseLock_ && chipsMatch() ? *left : psg2_.sampleNow();
+    if (mono_) *left = *right = 0.5f * (*left + *right);
 }
 
 void MockingboardCard::setMachine(const MachineProfile &machine) {

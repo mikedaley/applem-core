@@ -27,12 +27,17 @@
 using namespace a2e;
 
 namespace {
-// Phase lock is on by default; a test about the chips themselves turns it off
-// for its own length and leaves it as it found it.
+// Phase lock and mono are on by default; a test about the chips themselves
+// turns them off for its own length and leaves them as it found them.
 struct PhaseLock {
     bool was = MockingboardCard::phaseLock();
     explicit PhaseLock(bool on) { MockingboardCard::setPhaseLock(on); }
     ~PhaseLock() { MockingboardCard::setPhaseLock(was); }
+};
+struct Mono {
+    bool was = MockingboardCard::mono();
+    explicit Mono(bool on) { MockingboardCard::setMono(on); }
+    ~Mono() { MockingboardCard::setMono(was); }
 };
 } // namespace
 
@@ -362,6 +367,7 @@ TEST_CASE("MockingboardCard muting a PSG 1 channel leaves PSG 2 playing",
           "[mockingboard][mute]") {
     // The mutes are the debugger's, per chip: two chips playing the same
     // notes are still two chips, and muting one must not silence the other.
+    Mono stereo(false);
     MockingboardCard card;
     card.setEnabled(true);
     auto writePSG = [&](uint8_t via, uint8_t reg, uint8_t value) {
@@ -414,6 +420,7 @@ TEST_CASE("MockingboardCard plays each PSG on its own side", "[mockingboard]") {
     // Two chips given the same registers are two oscillators: with the phase
     // lock off, the card does not substitute one chip's output for the other's.
     PhaseLock off(false);
+    Mono stereo(false);
     MockingboardCard card;
     auto writePSG = [&](uint8_t via, uint8_t reg, uint8_t value) {
         card.writeROM(via | VIA_ORA, reg);
@@ -516,6 +523,7 @@ TEST_CASE("MockingboardCard applies a register write at the cycle it was made",
     // else: the chips used to catch up only at each 48kHz sample, so the
     // answer changed with where a sample boundary fell between the two.
     PhaseLock off(false);
+    Mono stereo(false);
     for (int gap : {8, 16}) {
         for (int offset = 0; offset < 22; offset += 3) {
             INFO("gap " << gap << " cycles, written " << offset << " cycles in");
@@ -535,6 +543,7 @@ TEST_CASE("MockingboardCard locks matched chips in phase by default", "[mockingb
     // same registers play the left chip on both sides, so an inverted pair
     // cannot cancel.
     REQUIRE(MockingboardCard::phaseLock());
+    Mono stereo(false);
     ClockedCard c;
     c.writePSG(0x00, 0, 200);
     c.run(8);
@@ -542,4 +551,28 @@ TEST_CASE("MockingboardCard locks matched chips in phase by default", "[mockingb
     CHECK(c.correlation() == Approx(1.0));
     PhaseLock off(false);
     CHECK(c.correlation() < -0.9);
+}
+
+TEST_CASE("MockingboardCard plays both chips on both sides by default", "[mockingboard]") {
+    // Mono, on unless turned off: the two chips mixed, half each, and the
+    // mix on both sides. A tone on the left chip alone is heard on the right.
+    REQUIRE(MockingboardCard::mono());
+    ClockedCard c;
+    c.writePSG(0x80, 8, 0);                // the right chip silent
+    c.writePSG(0x00, 0, 200);
+    CHECK(c.correlation() == Approx(1.0));
+    // Off, the right chip is silent on its own side, once the DC filter has
+    // let go of the mix it was playing.
+    Mono off(false);
+    const int frames = 48000;
+    std::vector<float> out(frames * 2);
+    c.run(static_cast<int>(frames * 1023000.0 / 48000.0));
+    c.card.consumeStereoSamples(out.data(), frames);
+    float left = 0.0f, right = 0.0f;
+    for (int i = frames * 3 / 4; i < frames; i++) {
+        left = std::max(left, std::abs(out[i * 2]));
+        right = std::max(right, std::abs(out[i * 2 + 1]));
+    }
+    CHECK(left > 0.1f);
+    CHECK(right < 0.01f);
 }
