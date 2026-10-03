@@ -321,6 +321,7 @@ if(EMSCRIPTEN)
                 \"_isSlotEmpty\", \
                 \"_getMockingboardWaveform\", \
                 \"_setMockingboardChannelMute\", \
+                \"_setMockingboardPhaseLock\", \
                 \"_getMockingboardChannelMute\", \
                 \"_isKeyboardReady\", \
                 \"_setSpeedMultiplier\", \

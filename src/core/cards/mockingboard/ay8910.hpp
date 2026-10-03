@@ -55,6 +55,13 @@ public:
     // per-instruction incremental audio generation.
     float generateSingleSample();
 
+    // Run the chip forward by `ticks` (of clock / 8) without taking a sample,
+    // so a register write lands on the tick it happened at rather than at the
+    // next sample boundary. sampleNow() reads the output at that position.
+    void advance(double ticks);
+    float sampleNow() const;
+    double getTicksPerSample() const { return ticksPerSample_; }
+
     // Channel muting (for debug/mixing purposes)
     void setChannelMute(int channel, bool muted);
     bool isChannelMuted(int channel) const;

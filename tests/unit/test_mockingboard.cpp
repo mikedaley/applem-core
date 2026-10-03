@@ -26,6 +26,16 @@
 
 using namespace a2e;
 
+namespace {
+// Phase lock is on by default; a test about the chips themselves turns it off
+// for its own length and leaves it as it found it.
+struct PhaseLock {
+    bool was = MockingboardCard::phaseLock();
+    explicit PhaseLock(bool on) { MockingboardCard::setPhaseLock(on); }
+    ~PhaseLock() { MockingboardCard::setPhaseLock(was); }
+};
+} // namespace
+
 // VIA register offsets (within the VIA's 16-register space)
 static constexpr uint8_t VIA_ORB  = 0x00;
 static constexpr uint8_t VIA_ORA  = 0x01;
@@ -401,8 +411,9 @@ TEST_CASE("MockingboardCard clocks its PSGs from the machine", "[mockingboard][p
 }
 
 TEST_CASE("MockingboardCard plays each PSG on its own side", "[mockingboard]") {
-    // Two chips given the same registers are two oscillators: the card does
-    // not substitute one chip's output for the other's.
+    // Two chips given the same registers are two oscillators: with the phase
+    // lock off, the card does not substitute one chip's output for the other's.
+    PhaseLock off(false);
     MockingboardCard card;
     auto writePSG = [&](uint8_t via, uint8_t reg, uint8_t value) {
         card.writeROM(via | VIA_ORA, reg);
@@ -437,4 +448,98 @@ TEST_CASE("MockingboardCard plays each PSG on its own side", "[mockingboard]") {
         diff = std::max(diff, std::abs(out[i * 2] - out[i * 2 + 1]));
     }
     CHECK(diff > 0.1f);
+}
+
+namespace {
+
+// A card on a clock the test owns, with both chips set up to play tone A at
+// full volume and period 0 (toggling every tick, far above hearing).
+struct ClockedCard {
+    MockingboardCard card;
+    uint64_t now = 1000;
+
+    ClockedCard() {
+        card.setCycleCallback([this]() { return now; });
+        for (uint8_t via : {uint8_t(0x00), uint8_t(0x80)}) {
+            card.writeROM(via | VIA_DDRA, 0xFF);
+            card.writeROM(via | VIA_DDRB, 0x07);
+            card.writeROM(via | VIA_ORB, 0x04);
+            writePSG(via, 7, 0x3E);
+            writePSG(via, 8, 15);
+        }
+    }
+    void writePSG(uint8_t via, uint8_t reg, uint8_t value) {
+        card.writeROM(via | VIA_ORA, reg);
+        card.writeROM(via | VIA_ORB, 0x07);
+        card.writeROM(via | VIA_ORB, 0x04);
+        card.writeROM(via | VIA_ORA, value);
+        card.writeROM(via | VIA_ORB, 0x06);
+        card.writeROM(via | VIA_ORB, 0x04);
+    }
+    // Run the machine on, a few cycles at a time as instructions would.
+    void run(int cycles) {
+        while (cycles > 0) {
+            const int step = std::min(cycles, 4);
+            now += static_cast<uint64_t>(step);
+            card.update(step);
+            cycles -= step;
+        }
+    }
+    // How alike the two sides are once the DC filter has settled: 1 in step,
+    // -1 inverted.
+    double correlation() {
+        // A second: the filter's time constant is about 0.2s, and the last
+        // quarter is measured.
+        const int frames = 48000;
+        run(static_cast<int>(frames * 1023000.0 / 48000.0));
+        std::vector<float> out(frames * 2);
+        card.consumeStereoSamples(out.data(), frames);
+        double lr = 0, ll = 0, rr = 0;
+        for (int i = frames * 3 / 4; i < frames; i++) {
+            lr += out[i * 2] * out[i * 2 + 1];
+            ll += out[i * 2] * out[i * 2];
+            rr += out[i * 2 + 1] * out[i * 2 + 1];
+        }
+        return lr / std::sqrt(ll * rr);
+    }
+};
+
+} // namespace
+
+TEST_CASE("MockingboardCard applies a register write at the cycle it was made",
+          "[mockingboard][timing]") {
+    // A song that mirrors its notes to both chips writes the second a few
+    // cycles after the first. With the period at 0 each chip toggles every
+    // tick (8 cycles), so a chip given its new period one tick later has made
+    // one toggle more and plays inverted; two ticks later, in step again.
+    // Which happens must depend on the cycles between the writes and nothing
+    // else: the chips used to catch up only at each 48kHz sample, so the
+    // answer changed with where a sample boundary fell between the two.
+    PhaseLock off(false);
+    for (int gap : {8, 16}) {
+        for (int offset = 0; offset < 22; offset += 3) {
+            INFO("gap " << gap << " cycles, written " << offset << " cycles in");
+            ClockedCard c;
+            c.run(offset);
+            c.writePSG(0x00, 0, 200);
+            c.run(gap);
+            c.writePSG(0x80, 0, 200);
+            if (gap == 8) CHECK(c.correlation() < -0.9);
+            else CHECK(c.correlation() > 0.9);
+        }
+    }
+}
+
+TEST_CASE("MockingboardCard locks matched chips in phase by default", "[mockingboard]") {
+    // The listener's preference, on unless turned off: two chips holding the
+    // same registers play the left chip on both sides, so an inverted pair
+    // cannot cancel.
+    REQUIRE(MockingboardCard::phaseLock());
+    ClockedCard c;
+    c.writePSG(0x00, 0, 200);
+    c.run(8);
+    c.writePSG(0x80, 0, 200);
+    CHECK(c.correlation() == Approx(1.0));
+    PhaseLock off(false);
+    CHECK(c.correlation() < -0.9);
 }

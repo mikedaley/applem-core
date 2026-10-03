@@ -67,6 +67,9 @@ public:
     void update(int cycles) override;
 
     void setIRQCallback(IRQCallback callback) override;
+    // The machine's cycle count, read when a register is written so the chips
+    // are brought up to that cycle first (see syncToCycle).
+    void setCycleCallback(CycleCallback callback) override { cycleCallback_ = std::move(callback); }
 
     bool isIRQActive() const override;
 
@@ -119,6 +122,17 @@ public:
      */
     void setDebugLogging(bool enabled);
 
+    // Phase lock: play the left chip on both sides while the two hold the
+    // same registers. A host preference, on by default and not part of a
+    // save state. A song that mirrors its notes to both chips writes the
+    // second a tick or so after the first, which can leave it half a cycle
+    // behind for good; on a pair of speakers close together (a laptop's) the
+    // two sides then cancel and the shared notes fade in and out. A real
+    // Mockingboard plays its chips apart, so turning this off is the way to
+    // hear exactly what the card would.
+    static void setPhaseLock(bool on) { phaseLock_ = on; }
+    static bool phaseLock() { return phaseLock_; }
+
     // ===== Debug Access =====
     const VIA6522& getVIA1() const { return via1_; }
     const VIA6522& getVIA2() const { return via2_; }
@@ -157,6 +171,30 @@ private:
     // baseCyclesPerSample_ scaled by the emulation speed (see setSpeedMultiplier)
     double cyclesPerOutputSample_ = CYCLES_PER_SAMPLE;
     double cycleAccum_ = 0.0;                   // Fractional CPU cycle accumulator
+
+    // Run both chips forward by `cycles`, emitting a frame at each sample
+    // boundary on the way. Between boundaries the chips still advance, tick
+    // by tick, so their state at any cycle is what the card's would be.
+    void advanceCycles(double cycles);
+    // Bring both chips up to the machine's current cycle. Called before a
+    // write reaches a VIA: the CPU writes in the middle of an instruction and
+    // update() only hears about it afterwards, so without this a write landed
+    // on chips up to a sample behind. Two chips written a few cycles apart
+    // then differed by whether a sample boundary fell between the writes,
+    // and a song mirrored to both could leave them half a cycle apart for
+    // good: the two sides of a stereo pair cancelling on speakers.
+    void syncToCycle();
+
+    // Whether the two chips would play the same thing: the sound registers
+    // and the debugger's mutes.
+    bool chipsMatch() const;
+    // One frame: left and right, or the left twice (phase lock).
+    void emitFrame(float *left, float *right) const;
+    static inline bool phaseLock_ = true;
+
+    CycleCallback cycleCallback_;
+    uint64_t syncedCycle_ = 0;   // the cycle the chips have been run to
+    bool synced_ = false;        // whether syncedCycle_ means anything yet
     std::vector<float> sampleAccum_;             // Accumulated stereo samples (interleaved L/R)
     size_t sampleReadPos_ = 0;                   // Read position in accumulated buffer
 };

@@ -70,6 +70,8 @@ uint8_t MockingboardCard::readROM(uint8_t offset) {
 void MockingboardCard::writeROM(uint8_t offset, uint8_t value) {
     if (!enabled_) return;
 
+    syncToCycle();
+
     uint8_t reg = offset & 0x0F;
 
     if ((offset & 0x80) == 0) {
@@ -99,19 +101,75 @@ void MockingboardCard::update(int cycles) {
     via1_.update(cycles);
     via2_.update(cycles);
 
-    // Incremental audio generation: accumulate CPU cycles and generate
-    // audio samples at 48kHz rate. This ensures PSG register changes
-    // from VIA timer IRQ handlers are immediately reflected in output.
-    cycleAccum_ += cycles;
-    while (cycleAccum_ >= cyclesPerOutputSample_) {
-        cycleAccum_ -= cyclesPerOutputSample_;
+    // Incremental audio generation: the chips run with the CPU, so a register
+    // change from a VIA timer's IRQ handler is heard at the cycle it was made.
+    if (cycleCallback_) {
+        syncToCycle();
+    } else {
+        advanceCycles(cycles);
+    }
+}
+
+void MockingboardCard::syncToCycle() {
+    if (!cycleCallback_) return;
+    const uint64_t now = cycleCallback_();
+
+    // A cycle count that went backwards, or jumped further than any one
+    // instruction takes, is a reset, a restored state or a card that sat
+    // unclocked: take the new count as given rather than play the gap.
+    constexpr uint64_t MAX_STEP = 1024;
+    if (!synced_ || now < syncedCycle_ || now - syncedCycle_ > MAX_STEP) {
+        syncedCycle_ = now;
+        synced_ = true;
+        return;
+    }
+    advanceCycles(static_cast<double>(now - syncedCycle_));
+    syncedCycle_ = now;
+}
+
+void MockingboardCard::advanceCycles(double cycles) {
+    // The chips play at their own rate whatever the emulation speed, so the
+    // ticks a CPU cycle is worth are a sample's ticks over a sample's cycles.
+    const double ticksPerCycle1 = psg1_.getTicksPerSample() / cyclesPerOutputSample_;
+    const double ticksPerCycle2 = psg2_.getTicksPerSample() / cyclesPerOutputSample_;
+
+    while (cycles > 0.0) {
+        const double toBoundary = cyclesPerOutputSample_ - cycleAccum_;
+        if (cycles < toBoundary) {
+            psg1_.advance(cycles * ticksPerCycle1);
+            psg2_.advance(cycles * ticksPerCycle2);
+            cycleAccum_ += cycles;
+            return;
+        }
+        psg1_.advance(toBoundary * ticksPerCycle1);
+        psg2_.advance(toBoundary * ticksPerCycle2);
+        cycles -= toBoundary;
+        cycleAccum_ = 0.0;
 
         // Two independent chips, one per side, as on the card: a program that
         // writes the same notes to both gets two oscillators that are only as
         // much in step as its writes were.
-        sampleAccum_.push_back(psg1_.generateSingleSample());
-        sampleAccum_.push_back(psg2_.generateSingleSample());
+        float left, right;
+        emitFrame(&left, &right);
+        sampleAccum_.push_back(left);
+        sampleAccum_.push_back(right);
     }
+}
+
+bool MockingboardCard::chipsMatch() const {
+    // Registers 0-13; the I/O ports make no sound.
+    for (int i = 0; i < 14; i++) {
+        if (psg1_.getRegister(i) != psg2_.getRegister(i)) return false;
+    }
+    for (int ch = 0; ch < AY8910::NUM_CHANNELS; ch++) {
+        if (psg1_.isChannelMuted(ch) != psg2_.isChannelMuted(ch)) return false;
+    }
+    return true;
+}
+
+void MockingboardCard::emitFrame(float *left, float *right) const {
+    *left = psg1_.sampleNow();
+    *right = phaseLock_ && chipsMatch() ? *left : psg2_.sampleNow();
 }
 
 void MockingboardCard::setMachine(const MachineProfile &machine) {
@@ -228,8 +286,9 @@ int MockingboardCard::consumeStereoSamples(float* buffer, int frameCount) {
     // (handles slight timing drift between CPU execution and audio requests)
     if (framesToCopy < frameCount) {
         for (int i = framesToCopy; i < frameCount; i++) {
-            buffer[i * 2] = psg1_.generateSingleSample();
-            buffer[i * 2 + 1] = psg2_.generateSingleSample();
+            psg1_.advance(psg1_.getTicksPerSample());
+            psg2_.advance(psg2_.getTicksPerSample());
+            emitFrame(&buffer[i * 2], &buffer[i * 2 + 1]);
         }
     }
 

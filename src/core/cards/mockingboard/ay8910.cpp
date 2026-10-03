@@ -389,16 +389,18 @@ void AY8910::tick() {
     historyPos_ = (historyPos_ + 1) & (FILTER_TAPS - 1);
 }
 
-float AY8910::nextSample(double ticks) {
+void AY8910::advance(double ticks) {
     phaseAccumulator_ += ticks;
     while (phaseAccumulator_ >= 1.0) {
         phaseAccumulator_ -= 1.0;
         tick();
     }
+}
 
-    // phaseAccumulator_ is now how far past the newest tick the output time
-    // is. The filter is centred FILTER_TAPS / 2 ticks behind it, so every tap
-    // it needs has already been taken.
+float AY8910::sampleNow() const {
+    // phaseAccumulator_ is how far past the newest tick the output time is.
+    // The filter is centred FILTER_TAPS / 2 ticks behind it, so every tap it
+    // needs has already been taken.
     int phase = static_cast<int>(phaseAccumulator_ * FILTER_PHASES);
     if (phase >= FILTER_PHASES) phase = FILTER_PHASES - 1;
     const float* row = resampleKernel().rows[phase];
@@ -410,6 +412,11 @@ float AY8910::nextSample(double ticks) {
         out += history_[idx] * row[j];
     }
     return out;
+}
+
+float AY8910::nextSample(double ticks) {
+    advance(ticks);
+    return sampleNow();
 }
 
 void AY8910::generateSamples(float* buffer, int count, int sampleRate) {

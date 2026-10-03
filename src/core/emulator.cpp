@@ -77,6 +77,7 @@ Emulator::Emulator(MachineId machine, VideoStandard standard)
 
   // Set up Mockingboard callbacks
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
+  mockingboard_->setCycleCallback([this]() { return cpu_->getTotalCycles(); });
 
   // Whether anything is currently pulling the interrupt line down.
   //

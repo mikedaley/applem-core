@@ -857,6 +857,7 @@ bool IIgsMachine::setSlotCard(uint8_t slot, const std::string &cardId) {
   if (cardId == "mockingboard") {
     auto made = std::make_unique<MockingboardCard>();
     made->setIRQCallback([this]() { cpu_->irq(); });
+    made->setCycleCallback([this]() { return memory_->slowCycles(); });
     // Its output rate comes from the profile, through setMachine() when the
     // card goes in: a IIgs's slow side is 1.023MHz, the same clock a //e runs
     // its slots at, so the card needs telling nothing extra.
