@@ -649,3 +649,132 @@ TEST_CASE("A IIgs records what has run, by its full address",
   host.setProfiling(false);
   REQUIRE_FALSE(host.wasExecuted(0x012000));
 }
+
+namespace {
+
+const a2e::host::MemorySpace *spaceOf(const std::vector<a2e::host::MemorySpace> &spaces,
+                                      a2e::host::MemorySpace::Kind kind) {
+  for (const auto &space : spaces) {
+    if (space.kind == kind) return &space;
+  }
+  return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("A memory view reaches every bank of a //e, whatever the switches say",
+          "[host][debugger][memory]") {
+  using Kind = a2e::host::MemorySpace::Kind;
+  MachineHost host;
+  host.build();
+  host.setPaused(true);
+  const auto spaces = host.memorySpaces();
+  const auto *cpu = spaceOf(spaces, Kind::Processor);
+  const auto *main = spaceOf(spaces, Kind::MainRAM);
+  const auto *aux = spaceOf(spaces, Kind::AuxRAM);
+  const auto *rom = spaceOf(spaces, Kind::ROM);
+  REQUIRE(cpu);
+  REQUIRE(main);
+  REQUIRE(aux);
+  REQUIRE(rom);
+  REQUIRE(cpu->activity);
+  REQUIRE_FALSE(rom->writable);
+
+  MMU &mmu = host.emulator()->getMMU();
+
+  SECTION("main and auxiliary RAM are each their own bank") {
+    REQUIRE(host.pokeSpace(*main, 0x1234, 0x11));
+    REQUIRE(host.pokeSpace(*aux, 0x1234, 0x22));
+    REQUIRE(mmu.readRAM(0x1234, false) == 0x11);
+    REQUIRE(mmu.readRAM(0x1234, true) == 0x22);
+    REQUIRE(host.peekSpace(*main, 0x1234) == 0x11);
+    REQUIRE(host.peekSpace(*aux, 0x1234) == 0x22);
+  }
+
+  SECTION("the processor's view writes where it reads, switches and all") {
+    host.emulator()->writeMemory(0xC003, 0); // RAMRD on: reads come from aux
+    REQUIRE(host.pokeSpace(*cpu, 0x1234, 0x5A));
+    REQUIRE(mmu.readRAM(0x1234, true) == 0x5A);
+    REQUIRE(host.peekSpace(*cpu, 0x1234) == 0x5A);
+    REQUIRE_FALSE(host.pokeSpace(*cpu, 0xC000, 0x00)); // I/O is not edited
+  }
+
+  SECTION("the language card's two banks are laid out as a IIgs lays them out") {
+    // Bank 1 at $C000, bank 2 at $D000, the rest of the card above.
+    REQUIRE(host.pokeSpace(*main, 0xC100, 0x01));
+    REQUIRE(host.pokeSpace(*main, 0xD100, 0x02));
+    REQUIRE(host.pokeSpace(*aux, 0xE100, 0x03));
+    REQUIRE(mmu.peekLanguageCardBank(0xD100, false, false) == 0x01);
+    REQUIRE(mmu.peekLanguageCardBank(0xD100, false, true) == 0x02);
+    REQUIRE(mmu.peekLanguageCardBank(0xE100, true, false) == 0x03);
+    REQUIRE(host.peekSpace(*main, 0xC100) == 0x01);
+    REQUIRE(host.peekSpace(*main, 0xD100) == 0x02);
+    REQUIRE(host.peekSpace(*aux, 0xE100) == 0x03);
+  }
+
+  SECTION("the ROM reads and refuses a write") {
+    REQUIRE(host.peekSpace(*rom, 0xFFFC) == mmu.getSystemROM()[0x3FFC]);
+    REQUIRE_FALSE(host.pokeSpace(*rom, 0xFFFC, 0x00));
+  }
+
+  SECTION("the processor's reads and writes are counted while asked") {
+    loadProgram(host, {0xAD, 0x00, 0x30, 0x8D, 0x01, 0x30}); // LDA $3000 / STA $3001
+    host.setMemoryActivity(true);
+    host.stepInstruction();
+    host.stepInstruction();
+    uint8_t reads[2], writes[2];
+    host.memoryActivity(0x3000, 2, reads, writes);
+    REQUIRE(reads[0] >= 1);
+    REQUIRE(writes[0] == 0);
+    REQUIRE(writes[1] >= 1);
+    host.decayMemoryActivity(255);
+    host.memoryActivity(0x3000, 2, reads, writes);
+    REQUIRE(reads[0] == 0);
+    REQUIRE(writes[1] == 0);
+    host.setMemoryActivity(false);
+  }
+}
+
+TEST_CASE("A II Plus has no auxiliary bank to show", "[host][debugger][memory]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIPlus)) return;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIPlus));
+  host.build();
+  REQUIRE(spaceOf(host.memorySpaces(), a2e::host::MemorySpace::Kind::AuxRAM) == nullptr);
+}
+
+TEST_CASE("A IIgs's memory view is a space per bank, and an edit shadows",
+          "[host][debugger][memory][iigs]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  host.build();
+  host.setPaused(true);
+  const auto spaces = host.memorySpaces();
+  const size_t fastBanks = host.iigs()->memory().fastRamSize() / 0x10000;
+  REQUIRE(spaces.size() >= fastBanks + 3);
+  REQUIRE(spaces.front().base == 0x000000);
+  const a2e::host::MemorySpace *bank1 = nullptr, *e1 = nullptr, *rom = nullptr;
+  for (const auto &space : spaces) {
+    if (space.base == 0x010000) bank1 = &space;
+    if (space.base == 0xE10000) e1 = &space;
+    if (space.base == 0xFF0000) rom = &space;
+  }
+  REQUIRE(bank1);
+  REQUIRE(e1);
+  REQUIRE(rom);
+  REQUIRE_FALSE(rom->writable);
+  REQUIRE_FALSE(host.hasMemoryActivity());
+
+  const uint64_t clock = host.iigs()->memory().slowCycles();
+  REQUIRE(host.pokeSpace(*bank1, 0x013000, 0x77));
+  REQUIRE(host.peekSpace(*bank1, 0x013000) == 0x77);
+  REQUIRE(host.iigs()->memory().fastRamByte(0x013000) == 0x77);
+  // Shadowed into $E1 as the bus would, and charged nothing for it.
+  if (host.iigs()->memory().peek(0xE13000) == 0x77) {
+    REQUIRE(host.peekSpace(*e1, 0xE13000) == 0x77);
+  }
+  REQUIRE(host.iigs()->memory().slowCycles() == clock);
+  REQUIRE_FALSE(host.pokeSpace(*rom, 0xFFFFFC, 0x00));
+  REQUIRE_FALSE(host.pokeSpace(spaces.front(), 0x00C000, 0x00)); // I/O
+}

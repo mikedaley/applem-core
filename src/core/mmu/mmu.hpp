@@ -71,6 +71,15 @@ public:
   // Non-side-effecting read for debugger/memory viewer
   uint8_t peek(uint16_t address) const;
 
+  // Write the byte peek() would read, touching no switch and ignoring the
+  // language card's write protect. False where peek() reads I/O or ROM.
+  bool poke(uint16_t address, uint8_t value);
+
+  // Either bank of either half of the language card, $D000-$FFFF, whatever
+  // the switches say: all 16K of each half, for a debugger.
+  uint8_t peekLanguageCardBank(uint16_t address, bool aux, bool bank2) const;
+  void pokeLanguageCardBank(uint16_t address, uint8_t value, bool aux, bool bank2);
+
   // Non-side-effecting read of auxiliary memory (for text selection in 80-col mode)
   uint8_t peekAux(uint16_t address) const;
 
@@ -276,6 +285,7 @@ private:
   // Soft switch handling
   uint8_t readSoftSwitch(uint16_t address);
   uint8_t peekSoftSwitch(uint16_t address) const;
+  bool peekReadsAux(uint16_t address) const;
   void writeSoftSwitch(uint16_t address, uint8_t value);
 
   // Floating bus - returns value video hardware is currently reading

@@ -126,6 +126,27 @@ struct CycleCost {
 // C++ with no host in it, and both the browser bindings and the native app sit
 // on top.
 //
+// A run of the machine's memory, as a memory viewer browses it. The
+// processor's view is what a program sees now, switches and all; the others
+// are a //e's banks themselves, whatever the switches say. A //e's main and
+// auxiliary RAM are each laid out as a IIgs lays out a bank: $0000-$BFFF as
+// it is, the language card's bank 1 at $C000, and bank 2 and the rest of the
+// card at $D000-$FFFF, so all 64K of each half is in one place.
+// A IIgs has a space per bank, each its processor's view of that bank.
+struct MemorySpace {
+  enum class Kind { Processor, MainRAM, AuxRAM, ROM };
+  Kind kind = Kind::Processor;
+  std::string name;
+  uint32_t base = 0; // the first address, bank included
+  uint32_t size = 0x10000;
+  bool writable = true;
+  // Its addresses are the processor's: the PC, the stack and breakpoints
+  // mean something in it.
+  bool processor = true;
+  // Reads and writes are counted while activity is on (setMemoryActivity).
+  bool activity = false;
+};
+
 // Nothing here is thread safe. A host that runs the machine on its own thread
 // serialises access around it.
 class MachineHost {
@@ -296,6 +317,22 @@ public:
   // A byte, as a debugger reads one: no soft switch is touched and no card
   // is told. A //e ignores the bank.
   uint8_t peek(uint32_t address);
+
+  // The machine's memory, as a memory viewer browses it (MemorySpace). A read
+  // or a write outside the space's addresses wraps into it. A write answers
+  // whether it landed: I/O and ROM refuse.
+  std::vector<MemorySpace> memorySpaces();
+  uint8_t peekSpace(const MemorySpace &space, uint32_t address);
+  void readSpace(const MemorySpace &space, uint32_t address, uint8_t *out, size_t count);
+  bool pokeSpace(const MemorySpace &space, uint32_t address, uint8_t value);
+
+  // Every read and write the processor makes, counted per address up to 255
+  // and decayed by the caller, for a memory view to light. A //e's only:
+  // a IIgs's memory does not go through anything that counts.
+  bool hasMemoryActivity() const { return emulator_ != nullptr; }
+  void setMemoryActivity(bool on);
+  void memoryActivity(uint32_t address, size_t count, uint8_t *reads, uint8_t *writes);
+  void decayMemoryActivity(uint8_t amount);
 
   // One instruction at an address, at the processor's current widths.
   Instruction disassemble(uint32_t address);

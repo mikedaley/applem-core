@@ -96,6 +96,14 @@ public:
   /** As the debugger sees it: no soft switch is touched by looking. */
   uint8_t peek(uint32_t address) const;
 
+  /**
+   * As the debugger edits it: the byte peek() reads, written, and shadowed to
+   * the Mega II as a write there would be, but with no clock charged, no
+   * switch touched and the language card's write protect not asked. False
+   * for I/O, ROM and banks that are not fitted.
+   */
+  bool poke(uint32_t address, uint8_t value);
+
   // ===== The slow clock =====
   //
   // The Mega II's 1.023MHz, and the one the video and the drive are counted

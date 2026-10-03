@@ -387,44 +387,9 @@ uint8_t MMU::peek(uint16_t address) const {
   // Non-side-effecting read for debugger/memory viewer
   // Same logic as read() but without any state changes or callbacks
 
-  // Zero page and stack
-  if (address < 0x0200) {
-    if (switches_.altzp) {
-      return auxRAM_[address];
-    }
-    return mainRAM_[address];
-  }
-
-  // Main RAM: $0200-$BFFF
+  // Zero page, stack and main RAM: $0000-$BFFF
   if (address < 0xC000) {
-    // Text page 1: $0400-$07FF
-    if (address >= 0x0400 && address < 0x0800) {
-      if (switches_.store80) {
-        return switches_.page2 ? auxRAM_[address] : mainRAM_[address];
-      }
-      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
-    }
-
-    // Text page 2: $0800-$0BFF
-    if (address >= 0x0800 && address < 0x0C00) {
-      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
-    }
-
-    // HiRes page 1: $2000-$3FFF
-    if (address >= 0x2000 && address < 0x4000) {
-      if (switches_.store80 && switches_.hires) {
-        return switches_.page2 ? auxRAM_[address] : mainRAM_[address];
-      }
-      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
-    }
-
-    // HiRes page 2: $4000-$5FFF
-    if (address >= 0x4000 && address < 0x6000) {
-      return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
-    }
-
-    // All other main RAM
-    return switches_.ramrd ? auxRAM_[address] : mainRAM_[address];
+    return peekReadsAux(address) ? auxRAM_[address] : mainRAM_[address];
   }
 
   // I/O and soft switches: $C000-$C0FF
@@ -499,6 +464,53 @@ uint8_t MMU::peek(uint16_t address) const {
     }
   }
   return systemROM_[address - 0xC000];
+}
+
+// Which bank a read below $C000 comes from, as the switches stand: ALTZP for
+// the zero page and stack, 80STORE with PAGE2 (and HIRES) for the display
+// pages it takes over, and RAMRD for the rest.
+bool MMU::peekReadsAux(uint16_t address) const {
+  if (address < 0x0200) return switches_.altzp;
+  if (address >= 0x0400 && address < 0x0800 && switches_.store80) return switches_.page2;
+  if (address >= 0x2000 && address < 0x4000 && switches_.store80 && switches_.hires) {
+    return switches_.page2;
+  }
+  return switches_.ramrd;
+}
+
+// Where peek() reads, written: a debugger editing what it is shown changes
+// what it is shown. No switch is touched and the language card's write
+// protect is not asked, because a debugger's edit is not a bus cycle.
+bool MMU::poke(uint16_t address, uint8_t value) {
+  if (address < 0xC000) {
+    (peekReadsAux(address) ? auxRAM_ : mainRAM_)[address] = value;
+    return true;
+  }
+  if (address < 0xD000 || !switches_.lcram) return false; // I/O, or ROM
+  pokeLanguageCardBank(address, value, switches_.altzp, switches_.lcram2);
+  return true;
+}
+
+uint8_t MMU::peekLanguageCardBank(uint16_t address, bool aux, bool bank2) const {
+  if (address < 0xD000) return 0xFF;
+  if (address < 0xE000) {
+    const uint16_t offset = address - 0xD000;
+    if (bank2) return aux ? auxLcBank2_[offset] : lcBank2_[offset];
+    return aux ? auxLcBank1_[offset] : lcBank1_[offset];
+  }
+  const uint16_t offset = address - 0xE000;
+  return aux ? auxLcHighRAM_[offset] : lcHighRAM_[offset];
+}
+
+void MMU::pokeLanguageCardBank(uint16_t address, uint8_t value, bool aux, bool bank2) {
+  if (address < 0xD000) return;
+  if (address < 0xE000) {
+    const uint16_t offset = address - 0xD000;
+    if (bank2) (aux ? auxLcBank2_ : lcBank2_)[offset] = value;
+    else (aux ? auxLcBank1_ : lcBank1_)[offset] = value;
+    return;
+  }
+  (aux ? auxLcHighRAM_ : lcHighRAM_)[address - 0xE000] = value;
 }
 
 uint8_t MMU::peekAux(uint16_t address) const {

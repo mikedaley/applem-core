@@ -306,6 +306,40 @@ uint8_t IIgsMemory::peek(uint32_t address) const {
   return 0x00;
 }
 
+bool IIgsMemory::poke(uint32_t address, uint8_t value) {
+  const uint8_t bank = static_cast<uint8_t>(address >> 16);
+  const uint16_t offset = static_cast<uint16_t>(address);
+  const SoftSwitches &sw = megaII_->getSoftSwitches();
+
+  switch (regionFor(address, bank, offset)) {
+  case Region::MegaII:
+    if (offset >= LANGUAGE_CARD_BASE) {
+      if ((stateRegister() & STATE_RDROM) != 0) return false;
+      megaII_->pokeLanguageCardBank(offset, value, bank == SLOW_BANK_AUX, sw.lcram2);
+      return true;
+    }
+    megaII_->writeRAM(offset, value, bank == SLOW_BANK_AUX);
+    return true;
+  case Region::FastRAM: {
+    const uint8_t at = effectiveBank(bank, offset, false);
+    if (offset >= LANGUAGE_CARD_BASE && (at == 0x00 || at == 0x01) &&
+        ioAndLanguageCardVisible()) {
+      if ((stateRegister() & STATE_RDROM) != 0) return false;
+      fastRam_[fastLanguageCardAddress(at, offset)] = value;
+      return true;
+    }
+    fastRam_[static_cast<size_t>(at) * BANK_SIZE + offset] = value;
+    shadowWrite(at, offset, value);
+    return true;
+  }
+  case Region::IO:
+  case Region::ROM:
+  case Region::Unpopulated:
+    return false;
+  }
+  return false;
+}
+
 uint8_t IIgsMemory::effectiveBank(uint8_t bank, uint16_t offset,
                                   bool write) const {
   if (bank != 0x00) return bank;

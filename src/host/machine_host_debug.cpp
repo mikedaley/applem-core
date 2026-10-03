@@ -12,6 +12,7 @@
 #include "machine_host.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <initializer_list>
 
 #include "../core/disassembler/disasm_align.hpp"
@@ -205,6 +206,144 @@ uint32_t MachineHost::stepOut() {
 uint8_t MachineHost::peek(uint32_t address) {
   if (iigs_) return iigs_->memory().peek(address & 0xFFFFFF);
   return emulator_ ? emulator_->peekMemory(static_cast<uint16_t>(address & 0xFFFF)) : 0;
+}
+
+std::vector<MemorySpace> MachineHost::memorySpaces() {
+  std::vector<MemorySpace> spaces;
+  auto add = [&](MemorySpace::Kind kind, const std::string &name, uint32_t base, uint32_t size,
+                 bool writable, bool processor, bool activity) {
+    MemorySpace space;
+    space.kind = kind;
+    space.name = name;
+    space.base = base;
+    space.size = size;
+    space.writable = writable;
+    space.processor = processor;
+    space.activity = activity;
+    spaces.push_back(space);
+  };
+  using K = MemorySpace::Kind;
+  if (iigs_) {
+    char name[48];
+    const size_t fastBanks = iigs_->memory().fastRamSize() / 0x10000;
+    for (size_t i = 0; i < fastBanks; i++) {
+      std::snprintf(name, sizeof name, "$%02X  Fast RAM", static_cast<unsigned>(i));
+      add(K::Processor, name, static_cast<uint32_t>(i) << 16, 0x10000, true, true, false);
+    }
+    add(K::Processor, "$E0  Mega II main", uint32_t{iigs::SLOW_BANK_MAIN} << 16, 0x10000, true, true, false);
+    add(K::Processor, "$E1  Mega II auxiliary", uint32_t{iigs::SLOW_BANK_AUX} << 16, 0x10000, true, true, false);
+    size_t romSize = 0;
+    Emulator::systemROMFor(machineId_, romSize);
+    const size_t romBanks = romSize / 0x10000;
+    for (size_t i = 0; i < romBanks; i++) {
+      const unsigned bank = 0x100 - static_cast<unsigned>(romBanks) + static_cast<unsigned>(i);
+      std::snprintf(name, sizeof name, "$%02X  ROM", bank);
+      add(K::Processor, name, bank << 16, 0x10000, false, true, false);
+    }
+    return spaces;
+  }
+  if (!emulator_) return spaces;
+  add(K::Processor, "Processor", 0, 0x10000, true, true, true);
+  add(K::MainRAM, "Main RAM", 0, 0x10000, true, false, false);
+  if (profile().caps.hasAuxRam) add(K::AuxRAM, "Auxiliary RAM", 0, 0x10000, true, false, false);
+  add(K::ROM, "ROM", MMU::ROM_WINDOW_BASE, 0x4000, false, false, false);
+  return spaces;
+}
+
+namespace {
+
+// Where a //e bank's address lands in the language card, laid out as a IIgs
+// bank: bank 2 at $D000 with the rest of the card, and bank 1 at $C000.
+bool cardBank1(uint16_t &address) {
+  if (address < 0xD000) {
+    address = static_cast<uint16_t>(address + 0x1000);
+    return true;
+  }
+  return false;
+}
+
+uint32_t inSpace(const MemorySpace &space, uint32_t address) {
+  return space.base + ((address - space.base) % space.size);
+}
+
+} // namespace
+
+uint8_t MachineHost::peekSpace(const MemorySpace &space, uint32_t address) {
+  address = inSpace(space, address);
+  if (iigs_ || space.kind == MemorySpace::Kind::Processor) return peek(address);
+  if (!emulator_) return 0;
+  MMU &mmu = emulator_->getMMU();
+  uint16_t at = static_cast<uint16_t>(address);
+  switch (space.kind) {
+  case MemorySpace::Kind::MainRAM:
+  case MemorySpace::Kind::AuxRAM: {
+    const bool aux = space.kind == MemorySpace::Kind::AuxRAM;
+    if (at < 0xC000) return mmu.readRAM(at, aux);
+    const bool bank2 = !cardBank1(at);
+    return mmu.peekLanguageCardBank(at, aux, bank2);
+  }
+  case MemorySpace::Kind::ROM:
+    return mmu.getSystemROM()[at - MMU::ROM_WINDOW_BASE];
+  case MemorySpace::Kind::Processor:
+    break;
+  }
+  return 0;
+}
+
+void MachineHost::readSpace(const MemorySpace &space, uint32_t address, uint8_t *out, size_t count) {
+  for (size_t i = 0; i < count; i++) out[i] = peekSpace(space, address + static_cast<uint32_t>(i));
+}
+
+bool MachineHost::pokeSpace(const MemorySpace &space, uint32_t address, uint8_t value) {
+  if (!space.writable) return false;
+  address = inSpace(space, address);
+  if (iigs_) return iigs_->memory().poke(address, value);
+  if (!emulator_) return false;
+  MMU &mmu = emulator_->getMMU();
+  uint16_t at = static_cast<uint16_t>(address);
+  switch (space.kind) {
+  case MemorySpace::Kind::Processor:
+    return mmu.poke(at, value);
+  case MemorySpace::Kind::MainRAM:
+  case MemorySpace::Kind::AuxRAM: {
+    const bool aux = space.kind == MemorySpace::Kind::AuxRAM;
+    if (at < 0xC000) {
+      mmu.writeRAM(at, value, aux);
+      return true;
+    }
+    const bool bank2 = !cardBank1(at);
+    mmu.pokeLanguageCardBank(at, value, aux, bank2);
+    return true;
+  }
+  case MemorySpace::Kind::ROM:
+    return false;
+  }
+  return false;
+}
+
+void MachineHost::setMemoryActivity(bool on) {
+  if (!emulator_) return;
+  MMU &mmu = emulator_->getMMU();
+  if (on && !mmu.isTrackingEnabled()) mmu.clearTracking();
+  mmu.enableTracking(on);
+}
+
+void MachineHost::memoryActivity(uint32_t address, size_t count, uint8_t *reads, uint8_t *writes) {
+  if (!emulator_) {
+    std::fill(reads, reads + count, 0);
+    std::fill(writes, writes + count, 0);
+    return;
+  }
+  const MMU &mmu = emulator_->getMMU();
+  for (size_t i = 0; i < count; i++) {
+    const uint16_t at = static_cast<uint16_t>(address + i);
+    reads[i] = mmu.getReadCounts()[at];
+    writes[i] = mmu.getWriteCounts()[at];
+  }
+}
+
+void MachineHost::decayMemoryActivity(uint8_t amount) {
+  if (emulator_) emulator_->getMMU().decayTracking(amount);
 }
 
 Instruction MachineHost::disassemble(uint32_t address) {
