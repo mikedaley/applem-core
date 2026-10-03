@@ -769,6 +769,24 @@ TEST_CASE("An oscillator plays what is in the sound RAM", "[iigs][sound]") {
     REQUIRE(loudest(quiet) == 0.0f);
   }
 
+  SECTION("and a muted one is silent but carries on exactly as before") {
+    sound.setOscillatorMuted(0, true);
+    REQUIRE(sound.oscillatorMuted(0));
+    const uint32_t before = sound.oscillator(0).accumulator;
+    std::vector<float> muted(512 * 2, 0.0f);
+    // Twice, as below: the first buffer opens on a frame made before.
+    render(sound, muted, 512);
+    render(sound, muted, 512);
+    REQUIRE(loudest(muted) == 0.0f);
+    REQUIRE(sound.oscillator(0).accumulator != before); // still walking its table
+    REQUIRE_FALSE(sound.oscillatorHalted(0));
+
+    sound.setOscillatorMuted(0, false);
+    render(sound, muted, 512);
+    render(sound, muted, 512);
+    REQUIRE(loudest(muted) > 0.0f);
+  }
+
   SECTION("volume scales it") {
     setDocRegister(sound, IIgsSound::DOC_VOLUME, 0x40);
     std::vector<float> quieter(512 * 2, 0.0f);

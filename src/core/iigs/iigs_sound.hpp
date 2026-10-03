@@ -140,6 +140,17 @@ public:
   Oscillator oscillator(int index) const;
   bool oscillatorHalted(int index) const;
 
+  /**
+   * Leave an oscillator out of the mix without stopping it: it still walks
+   * its table, reads, halts, hands over and interrupts exactly as before, so
+   * nothing the program can see changes. For a debugger listening to one
+   * voice at a time. A host preference, like the Mockingboard's channel
+   * mutes, and not part of a save state. An odd oscillator in AM mode is
+   * never heard directly, so muting it changes nothing either.
+   */
+  void setOscillatorMuted(int index, bool muted);
+  bool oscillatorMuted(int index) const;
+
   uint16_t address() const { return address_; }
   bool addressesRam() const { return (control_ & CONTROL_RAM) != 0; }
   bool autoIncrements() const { return (control_ & CONTROL_AUTO_INCREMENT) != 0; }
@@ -224,6 +235,7 @@ private:
   int oscillatorsEnabled_ = 1;
   uint8_t enableRegister_ = 0;
   uint8_t interruptRegister_ = 0xFF;
+  uint32_t mutes_ = 0; // A bit an oscillator
 
   std::array<uint8_t, SOUND_RAM_SIZE> ram_{};
   uint16_t address_ = 0;

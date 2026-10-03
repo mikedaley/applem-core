@@ -290,7 +290,7 @@ void IIgsSound::scan() {
       const float weight = (index == oscillatorsEnabled_ - 1) ? 3.0f : 1.0f;
       // Which channel it is assigned to makes no difference without a card to
       // separate them: it reaches the same pin either way.
-      mono += sample * weight;
+      if (!(mutes_ & (1u << index))) mono += sample * weight;
     }
 
     if (position >= length - 1) haltOscillator(index, true, v.control);
@@ -392,6 +392,16 @@ IIgsSound::Oscillator IIgsSound::oscillator(int index) const {
   osc.data = v.data;
   osc.interruptPending = v.interruptPending;
   return osc;
+}
+
+void IIgsSound::setOscillatorMuted(int index, bool muted) {
+  if (index < 0 || index >= DOC_OSCILLATOR_COUNT) return;
+  const uint32_t bit = 1u << index;
+  mutes_ = muted ? (mutes_ | bit) : (mutes_ & ~bit);
+}
+
+bool IIgsSound::oscillatorMuted(int index) const {
+  return index >= 0 && index < DOC_OSCILLATOR_COUNT && (mutes_ & (1u << index)) != 0;
 }
 
 bool IIgsSound::oscillatorHalted(int index) const {
