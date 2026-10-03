@@ -14,6 +14,7 @@
 #include "../debug/machine_debug.hpp"
 #include "../input/joyport.hpp"
 #include "../disk-image/disk_converter.hpp"
+#include "../cards/iwm/iwm.hpp"
 
 #include <string>
 
@@ -219,6 +220,18 @@ public:
   // machine's own firmware rather than a ROM on a card.
 
   DiskController &disk() { return *disk_; }
+
+  /**
+   * The IWM's 3.5" port: two Apple 3.5" drives, which is where an 800K disk
+   * goes. The machine's own slot 5 firmware drives them, through the same
+   * chip as the 5.25" drives with $C031 pointing it at the other port, and
+   * GS/OS's driver does the same without the firmware. See IWM and SonyDrive.
+   */
+  IWM &iwm() { return *iwm_; }
+  bool insert35Disk(int drive, const uint8_t *data, size_t size,
+                    const std::string &filename);
+  void eject35Disk(int drive);
+  bool has35Disk(int drive) const;
 
   /**
    * The SmartPort, which is slot 5 and is part of the machine.
@@ -437,6 +450,7 @@ private:
   // run since, which insertBlockImage needs to know.
   uint64_t resetSlowCycle_ = 0;
   DiskController *disk_ = nullptr;   // Owned by the Mega II's slot
+  IWM *iwm_ = nullptr;               // The same chip, as itself
   SmartPortCard *smartPort_ = nullptr; // ...and so is this
 
   // The cards the user fitted, by slot, so they can be stepped and asked
@@ -478,7 +492,7 @@ private:
   // Caps Lock as the last key-down reported it; a key-up cannot say.
   bool capsLockOn_ = false;
 
-  int samplesGenerated_ = 0;
+  int framesCompleted_ = 0; // since consumeFrameSamples last asked
   uint64_t lastFrameCycle_ = 0;
   bool frameReady_ = false;
   // How many of this frame's lines the beam has finished, for the VGC's

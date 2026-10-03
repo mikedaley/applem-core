@@ -272,16 +272,21 @@ public:
   uint8_t slotOverrideMask() const { return slotOverrideMask_; }
 
   /**
-   * $C031 DISKREG: which drive the one IWM is talking to.
+   * $C031 DISKREG: which port the one IWM is talking to.
    *
-   * A IIgs has a single disk chip and four drives to point it at — two 3.5"
-   * and two 5.25" — so this register is the pointer. Bit 7 chooses 3.5" over
-   * 5.25" and bit 6 chooses the second drive of the pair. The firmware polls
-   * it early and often, and a machine that answers the floating bus here never
-   * gets as far as looking for a disk.
+   * A IIgs has a single disk chip and two ports for it, the 5.25" one and the
+   * 3.5" one, each with two drives that the IWM's own SELECT chooses between.
+   * Bit 6 points the chip at the 3.5" port, and bit 7 is that port's SEL line,
+   * the fourth bit of a 3.5" drive's command selector. The register is the
+   * IWM's to act on (setDiskRegisterCallback); it is kept here because it
+   * reads back from here.
    */
   uint8_t diskSelectRegister() const { return diskSelect_; }
   void setDiskSelectRegister(uint8_t value) { diskSelect_ = value; }
+  using DiskRegisterCallback = std::function<void(uint8_t)>;
+  void setDiskRegisterCallback(DiskRegisterCallback callback) {
+    diskRegisterChanged_ = std::move(callback);
+  }
   bool selects35Inch() const { return (diskSelect_ & DISK_SELECT_35) != 0; }
 
   /**
@@ -369,6 +374,8 @@ public:
   struct Beam { int line; int column; };
   using BeamQuery = std::function<Beam()>;
   void setBeamQuery(BeamQuery query) { beamQuery_ = std::move(query); }
+  // Where the beam is, as the machine says ($C02E's source).
+  Beam beam() const { return beamQuery_ ? beamQuery_() : Beam{0, 0}; }
 
   /**
    * $C02E VERTCNT and $C02F HORIZCNT, composed as the Mega II's scanner has
@@ -520,8 +527,8 @@ public:
   static constexpr uint8_t VGC_ANY_PENDING = 0x80;
   static constexpr uint8_t NEW_VIDEO_SHR = 0x80;
   static constexpr uint8_t NEW_VIDEO_MONO_DHGR = 0x20; // double hi-res in black and white
-  static constexpr uint8_t DISK_SELECT_35 = 0x80;
-  static constexpr uint8_t DISK_SELECT_DRIVE2 = 0x40;
+  static constexpr uint8_t DISK_SELECT_35 = 0x40;  // the 3.5" port
+  static constexpr uint8_t DISK_SELECT_SEL = 0x80;  // its SEL line
 
   // State register bits.
   static constexpr uint8_t STATE_ALTZP = 0x80;
@@ -689,6 +696,7 @@ private:
   uint8_t newVideo_ = 0;
   uint8_t slotSelect_ = 0;
   uint8_t diskSelect_ = 0;
+  DiskRegisterCallback diskRegisterChanged_;
 
   // The VGC's two colour registers. The firmware overwrites both at startup;
   // white on black until it does is what a machine with no settings shows.

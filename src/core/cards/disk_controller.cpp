@@ -452,6 +452,10 @@ void DiskController::clockLSS() {
 }
 
 void DiskController::catchUpLSS(uint64_t currentCycle) {
+    if (!fiveInchSelected()) {
+        lastLSSCycle_ = currentCycle;
+        return;
+    }
     if (!isMotorOn() || !hasDisk(selectedDrive_)) return;
     if (currentCycle <= lastLSSCycle_) {
         lastLSSCycle_ = currentCycle;

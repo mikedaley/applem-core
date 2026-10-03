@@ -63,8 +63,11 @@ IIgsMachine::IIgsMachine(size_t fastRamSize)
     auto iwm = std::make_unique<IWM>();
       iwm->setCycleCallback([this]() { return memory_->slowCycles(); });
     disk_ = iwm.get();
+    iwm_ = iwm.get();
     memory_->megaII().insertCard(6, std::move(iwm));
   }
+  // $C031 points the chip at the 5.25" port or the 3.5" one.
+  memory_->setDiskRegisterCallback([this](uint8_t value) { iwm_->setDiskRegister(value); });
 
   // $C036's motor detect bits: the one drive this machine has is the IWM's, in
   // slot 6, and a IIgs with it turning is a 1.023MHz machine whatever the
@@ -124,7 +127,9 @@ IIgsMachine::IIgsMachine(size_t fastRamSize)
   });
 
   memory_->setSlotMotorQuery([this](int slot) {
-    return slot == 6 && disk_ && disk_->isMotorOn();
+    // A 5.25" drive turning. The 3.5" port runs at any speed: its data path
+    // is the IWM's own, latched and handshaken, and the firmware reads it fast.
+    return slot == 6 && iwm_ && iwm_->isFiveInchMotorOn();
   });
 
   // Slot 5 is the SmartPort. On a real IIgs that means the machine's own
@@ -242,7 +247,8 @@ void IIgsMachine::reset() {
   speakerGain_ = 0.0f;
   speakerNibble_ = 0;
   frameReady_ = false;
-  samplesGenerated_ = 0;
+  framesCompleted_ = 0;
+  screen_->restartFrame();
 
   // The Joyport lets go of PB0/PB1 for a moment: both idle high, which is a
   // held Open and Closed Apple to the firmware deciding how to start.
@@ -316,15 +322,22 @@ int IIgsMachine::step() {
   video_->renderUpToCycle(memory_->slowCycles());
   raiseScanLineInterrupts();
 
+  // The picture follows the beam a line at a time, after the Mega II's video
+  // above, whose lines it reads.
   const auto &timing = machineProfile(MachineId::AppleIIgs).timing;
+  screen_->drawLinesTo(static_cast<int>(
+      (memory_->slowCycles() - lastFrameCycle_) / timing.cyclesPerScanline));
+
   if (memory_->slowCycles() - lastFrameCycle_ >=
       static_cast<uint64_t>(timing.cyclesPerFrame())) {
     lastFrameCycle_ += timing.cyclesPerFrame();
     linesFinished_ = 0;
     video_->renderFrame();
+    screen_->finishFrame();
     video_->beginNewFrame(lastFrameCycle_);
     memory_->signalVerticalBlank();
     frameReady_ = true;
+    framesCompleted_++;
   }
   return cycles;
 }
@@ -419,7 +432,6 @@ void IIgsMachine::setPaused(bool paused) {
     debug_.skipNextBreakpoint();
   }
   debug_.clearHits();
-  if (!paused && paused_) samplesGenerated_ = 0;
   paused_ = paused;
 }
 
@@ -569,10 +581,12 @@ void IIgsMachine::warmReset() {
   memory_->warmReset();
   audio_->reset();
   if (disk_) disk_->stopMotor();
+  // $C031 and the chip agree about which port is selected.
+  if (iwm_) iwm_->setDiskRegister(memory_->diskSelectRegister());
   linesFinished_ = 0;
   volumeChanges_.clear();
   frameReady_ = false;
-  samplesGenerated_ = 0;
+  framesCompleted_ = 0;
   debug_.reset();
   paused_ = false;
 
@@ -659,6 +673,19 @@ void IIgsMachine::ejectDisk(int drive) {
 
 bool IIgsMachine::hasDisk(int drive) const {
   return disk_ && disk_->hasDisk(drive);
+}
+
+bool IIgsMachine::insert35Disk(int drive, const uint8_t *data, size_t size,
+                               const std::string &filename) {
+  return iwm_ && iwm_->sonyDrive(drive).insert(data, size, filename);
+}
+
+void IIgsMachine::eject35Disk(int drive) {
+  if (iwm_) iwm_->sonyDrive(drive).eject();
+}
+
+bool IIgsMachine::has35Disk(int drive) const {
+  return iwm_ && iwm_->sonyDrive(drive).hasDisk();
 }
 
 int IIgsMachine::handleRawKeyDown(int browserKeycode, bool shift, bool ctrl,
@@ -926,8 +953,6 @@ int IIgsMachine::generateStereoAudioSamples(float *buffer, int sampleCount) {
       sampleCount * profile.timing.cyclesPerSample(AUDIO_SAMPLE_RATE));
   runCycles(cyclesToRun);
 
-  samplesGenerated_ += sampleCount;
-
   // ...and then ask both of the machine's sound sources what they are playing.
   // The speaker writes the buffer and the Ensoniq is added on top, because a
   // IIgs has one amplifier and everything reaches the same one.
@@ -980,12 +1005,12 @@ int IIgsMachine::generateStereoAudioSamples(float *buffer, int sampleCount) {
 }
 
 int IIgsMachine::consumeFrameSamples() {
-  // A frame's worth of samples at the rate the host mixes at: the same
-  // arithmetic Emulator does, and the same answer, because both machines put
-  // sixty frames a second on the same screen.
-  constexpr int SAMPLES_PER_FRAME = AUDIO_SAMPLE_RATE / 60;
-  const int frames = samplesGenerated_ / SAMPLES_PER_FRAME;
-  samplesGenerated_ %= SAMPLES_PER_FRAME;
+  // The frames the beam finished since the last call, as Emulator counts
+  // them. Counting 800-sample blocks instead published a picture wherever the
+  // beam happened to be, and a refill is twenty cycles longer than a frame,
+  // so that place crept down the screen.
+  const int frames = framesCompleted_;
+  framesCompleted_ = 0;
   return frames;
 }
 
@@ -997,6 +1022,7 @@ size_t IIgsMachine::framebufferSize() const {
   return screen_->framebufferSize();
 }
 
-const uint8_t *IIgsMachine::framebuffer() { return screen_->render(); }
+// The last frame the beam finished, never one it is part way down.
+const uint8_t *IIgsMachine::framebuffer() { return screen_->frame(); }
 
 } // namespace a2e::iigs

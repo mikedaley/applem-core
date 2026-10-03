@@ -47,9 +47,22 @@ public:
   // Progressive rendering: render all scanlines up to the current CPU cycle
   void renderUpToCycle(uint64_t currentCycle);
 
-  // Get the framebuffer (RGBA, 560x384)
-  const uint8_t *getFramebuffer() const { return framebuffer_.data(); }
-  uint8_t *getFramebuffer() { return framebuffer_.data(); }
+  // The last frame the beam finished (RGBA, 560x384), which is what a host
+  // publishes. Never the frame in progress: one drawn into while it is shown
+  // is two frames at once, split where the beam had got to, and since a host
+  // does not publish in step with the frame the split walks down the screen.
+  const uint8_t *getFramebuffer() const { return shown_.data(); }
+  uint8_t *getFramebuffer() { return shown_.data(); }
+
+  // The frame the beam is drawing: its lines above the beam are this frame's
+  // and the rest the last one's. A IIgs reads the Mega II's picture from here
+  // a line at a time, just after each line is drawn.
+  const uint8_t *frameInProgress() const { return framebuffer_.data(); }
+
+  // Show the frame in progress as it stands, for a machine that has stopped
+  // part way down one (a breakpoint): what is on the screen is then where the
+  // beam is.
+  void showFrameInProgress() { shown_ = framebuffer_; }
 
   // Framebuffer size
   static constexpr size_t getFramebufferSize() { return FRAMEBUFFER_SIZE; }
@@ -248,8 +261,10 @@ private:
   // Reference to MMU for memory access
   MMU &mmu_;
 
-  // Framebuffer (RGBA, 560x384)
+  // The frame being drawn, and the last one finished, which is the one shown
+  // (RGBA, 560x384).
   std::array<uint8_t, FRAMEBUFFER_SIZE> framebuffer_{};
+  std::array<uint8_t, FRAMEBUFFER_SIZE> shown_{};
 
   // Frame state
   bool frameDirty_ = true;

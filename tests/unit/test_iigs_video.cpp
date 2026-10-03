@@ -10,11 +10,14 @@
 #define CATCH_CONFIG_MAIN
 #include "catch.hpp"
 
+#include "cpu/65816/cpu65816.hpp"
 #include "iigs_machine.hpp"
 #include "iigs_memory.hpp"
 #include "iigs_video.hpp"
 #include "mmu/mmu.hpp"
 #include "video/video.hpp"
+
+#include <cstring>
 
 using namespace a2e;
 using namespace a2e::iigs;
@@ -415,4 +418,124 @@ TEST_CASE("$C029 bit 5 shows double hi-res in black and white",
     anyGreen = frame[at + 1] > frame[at] && frame[at + 1] > frame[at + 2];
   }
   REQUIRE(anyGreen);
+}
+
+namespace {
+
+// A machine whose 65816 sits in BRA * with interrupts off, so nothing but
+// the test touches the screen while the beam runs.
+void park(IIgsMachine &machine) {
+  machine.memory().write(0x001000, 0x80);  // BRA *
+  machine.memory().write(0x001001, 0xFE);
+  CPU65816 &cpu = machine.cpu();
+  cpu.setEmulation(true);
+  cpu.setP(0x34);  // interrupts off
+  cpu.setPBR(0x00);
+  cpu.setPC(0x1000);
+}
+
+constexpr int LINE_CYCLES = 65;
+constexpr int FRAME_CYCLES = 65 * 262;
+
+// Run to the start of the next frame, a line at a time.
+void runToFrameStart(IIgsMachine &machine) {
+  machine.consumeFrameSamples();
+  for (int i = 0; i < 300 && machine.consumeFrameSamples() == 0; i++) {
+    machine.runCycles(LINE_CYCLES);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("A IIgs publishes whole frames, never one the beam is part way down",
+          "[iigs][video][beam]") {
+  // The host takes a picture after each refill, about twenty cycles more than
+  // a frame, so the moment creeps through the frame. A picture drawn into
+  // while it was shown was two frames at once, split where the beam had got
+  // to, and on a screen that changed every frame the split walked down it.
+  IIgsMachine machine;
+  park(machine);
+  // Lo-res, which needs no character ROM: the whole screen one colour.
+  machine.memory().write(bankAddress(0xE0, 0xC050), 0);  // graphics
+  machine.memory().write(bankAddress(0xE0, 0xC052), 0);  // full screen
+  machine.memory().write(bankAddress(0xE0, 0xC056), 0);  // lo-res
+  machine.memory().write(bankAddress(0xE0, 0xC00C), 0);  // 40 columns
+  machine.memory().write(bankAddress(0xE0, 0xC000), 0);  // 80STORE off
+  auto fill = [&](uint8_t colours) {
+    for (uint16_t a = 0x0400; a < 0x0800; a++) machine.memory().write(bankAddress(0xE0, a), colours);
+  };
+
+  // The whole screen changes colour at every frame boundary; pictures are
+  // read at a point that drifts through the frame, as the host's are.
+  uint8_t letter = 0x11;  // red
+  fill(letter);
+  runToFrameStart(machine);
+  int checked = 0, torn = 0;
+  const int drift = 17;  // cycles further into the frame for each picture
+  for (int frame = 0; frame < 120; frame++) {
+    letter = letter == 0x11 ? 0x66 : 0x11;  // red, blue
+    fill(letter);
+    const int into = (frame * drift * 7) % FRAME_CYCLES;
+    machine.runCycles(into);
+    const uint8_t *picture = machine.framebuffer();
+    // The top and bottom rows of the picture are the same colour in one
+    // frame; from two frames, they are not.
+    const size_t rowBytes = static_cast<size_t>(RASTER_WIDTH) * 4;
+    bool same = true;
+    for (int r = 0; r < 16; r++) {
+      const uint8_t *top = picture + static_cast<size_t>(MEGAII_TOP + r) * rowBytes;
+      const uint8_t *bottom = picture + static_cast<size_t>(MEGAII_TOP + 23 * 16 + r) * rowBytes;
+      if (std::memcmp(top, bottom, rowBytes) != 0) same = false;
+    }
+    checked++;
+    if (!same) torn++;
+    machine.runCycles(FRAME_CYCLES - into);
+    runToFrameStart(machine);
+  }
+  INFO(torn << " of " << checked << " pictures were two frames at once");
+  CHECK(torn == 0);
+}
+
+TEST_CASE("A IIgs draws Super Hi-Res as the beam passes each line", "[iigs][video][beam]") {
+  // A palette changed part way down the screen changes the lines the beam has
+  // not reached yet and leaves the ones it has drawn, which is how programs
+  // put more than sixteen colours on a screen. Drawn all at once when the
+  // picture was taken, every line took whichever palette was there then.
+  IIgsMachine machine;
+  park(machine);
+  machine.memory().write(bankAddress(0xE0, 0xC029), IIgsMemory::NEW_VIDEO_SHR);
+  auto poke = [&](uint16_t at, uint8_t value) { machine.memory().write(bankAddress(0xE1, at), value); };
+  for (int line = 0; line < SHR_LINES; line++) {
+    poke(static_cast<uint16_t>(SHR_SCB_BASE + line), 0x00);  // 320, palette 0
+    for (int b = 0; b < SHR_BYTES_PER_LINE; b++) {
+      poke(static_cast<uint16_t>(SHR_PIXEL_BASE + line * SHR_BYTES_PER_LINE + b), 0x11);
+    }
+  }
+  auto setColour1 = [&](uint16_t colour) {
+    poke(static_cast<uint16_t>(SHR_PALETTE_BASE + 2), static_cast<uint8_t>(colour));
+    poke(static_cast<uint16_t>(SHR_PALETTE_BASE + 3), static_cast<uint8_t>(colour >> 8));
+  };
+
+  setColour1(0x0F00);  // red
+  runToFrameStart(machine);
+  // Ten cycles into line 100, by the machine's own beam.
+  for (int i = 0; i < FRAME_CYCLES; i++) {
+    const IIgsMemory::Beam beam = machine.memory().beam();
+    if (beam.line == 100 && beam.column >= 10) break;
+    machine.runCycles(1);
+  }
+  REQUIRE(machine.memory().beam().line == 100);
+  setColour1(0x000F);  // blue
+  runToFrameStart(machine);
+
+  const uint8_t *picture = machine.framebuffer();
+  auto red = [&](int line) {
+    const uint8_t *p = picture + (static_cast<size_t>(PICTURE_TOP + line * RASTER_LINE_DOUBLING) * RASTER_WIDTH +
+                                  PICTURE_LEFT + 100) * 4;
+    return p[0] == 0xFF && p[2] == 0x00;
+  };
+  CHECK(red(0));
+  CHECK(red(99));
+  CHECK_FALSE(red(100));
+  CHECK_FALSE(red(199));
 }

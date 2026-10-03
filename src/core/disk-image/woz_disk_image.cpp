@@ -530,6 +530,34 @@ bool WozDiskImage::createFromTrackBits(const std::vector<BitTrack> &tracks) {
   return anyData;
 }
 
+bool WozDiskImage::createFrom35Tracks(const std::vector<BitTrack> &tracks, int sides) {
+  createBlank();
+  info_.disk_type = 2;           // 3.5"
+  info_.disk_sides = static_cast<uint8_t>(sides);
+  info_.optimal_bit_timing = 16; // 2 microseconds
+
+  const int count = std::min<int>(static_cast<int>(tracks.size()), QUARTER_TRACK_COUNT);
+  tracks_.clear();
+  tracks_.resize(static_cast<size_t>(count));
+  tmap_.fill(NO_TRACK);
+  bool anyData = false;
+  size_t largestBlocks = 0;
+  for (int i = 0; i < count; i++) {
+    const BitTrack &src = tracks[static_cast<size_t>(i)];
+    if (src.bit_count == 0 || src.bits.empty()) continue;
+    tracks_[static_cast<size_t>(i)].bits = src.bits;
+    tracks_[static_cast<size_t>(i)].bit_count = src.bit_count;
+    tracks_[static_cast<size_t>(i)].valid = true;
+    tmap_[static_cast<size_t>(i)] = static_cast<uint8_t>(i);
+    largestBlocks = std::max(largestBlocks, (src.bits.size() + 511) / 512);
+    anyData = true;
+  }
+  info_.largest_track = static_cast<uint16_t>(largestBlocks);
+  loaded_ = anyData;
+  modified_ = false;
+  return anyData;
+}
+
 bool WozDiskImage::isLoaded() const { return loaded_; }
 
 DiskImage::Format WozDiskImage::getFormat() const { return format_; }

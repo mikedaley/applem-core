@@ -34,7 +34,8 @@ enum Kind : uint8_t {
   DATA_PROLOGUE = 5, // D5 AA AD
   DATA = 6,          // 342 or 410 nibbles and a checksum
   DATA_EPILOGUE = 7, // DE AA EB
-  OTHER = 8,         // A valid disk byte in no standard field
+  OTHER = 8,         // A valid disk byte in no standard field, or in fields of
+                     // a format the analyser does not know (unknown)
   INVALID = 9,       // Not a byte a disk could hold: noise, or no flux
   KIND_COUNT = 10,
 };
@@ -79,7 +80,18 @@ struct TrackAnalysis {
  * round and the second revolution kept: its nibbles are the ones a program
  * would see, and a field that runs across the end of the track reads whole.
  */
-TrackAnalysis analyzeTrack(const uint8_t *bits, uint32_t bit_count);
+enum class Recording : uint8_t { FiveInch, ThreeAndAHalf };
+
+/**
+ * A 3.5" disk uses the same prologues and nibble table, but its address
+ * field is five 6-and-2 nibbles (track, sector, side, format, checksum) and
+ * its data field is the sector number and 703 nibbles of a 524-byte sector,
+ * so the fields are read the 3.5" way when the caller says the disk is one.
+ * A 3.5" Sector's volume is its side, and its bytes are the first 256 of the
+ * block.
+ */
+TrackAnalysis analyzeTrack(const uint8_t *bits, uint32_t bit_count,
+                           Recording recording = Recording::FiveInch);
 
 /*
  * The buffers the Disk Inspector window reads. Both are little-endian and
@@ -117,6 +129,13 @@ constexpr int TRACK_VERSION = 1;
 constexpr int QUARTER_TRACKS = 160;
 
 std::vector<uint8_t> buildOverview(DiskImage &image, int buckets);
+
+/**
+ * One side of a 3.5" disk in the same layout, so the same platter draws it:
+ * the 80 tracks spread over the 160 rings, two rings to a track, track 0
+ * outermost. The image's entries are a 3.5" WOZ's, track * 2 + side.
+ */
+std::vector<uint8_t> buildOverview35(DiskImage &image, int side, int buckets);
 std::vector<uint8_t> buildTrackDetail(DiskImage &image, int quarter_track,
                                       int timing_buckets);
 

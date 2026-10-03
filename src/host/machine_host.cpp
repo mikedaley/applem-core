@@ -223,6 +223,9 @@ bool MachineHost::takeFrameReady() {
 
 void MachineHost::forceRenderFrame() {
   if (Video *v = video()) v->forceRenderFrame();
+  // A IIgs's picture is composed from the Mega II's and Super Hi-Res, so it is
+  // drawn again from both rather than waiting for the beam's next frame.
+  if (iigs_) iigs_->screen().render();
 }
 
 uint64_t MachineHost::totalCycles() const {
@@ -350,6 +353,78 @@ bool MachineHost::isDiskModified(int drive) {
   if (!disk || !disk->hasDisk(drive)) return false;
   const DiskImage *image = disk->getDiskImage(drive);
   return image && image->isModified();
+}
+
+// ---------------------------------------------------------------------------
+// 3.5" drives
+// ---------------------------------------------------------------------------
+
+namespace {
+SonyDrive *sonyDrive(iigs::IIgsMachine *iigs, int drive) {
+  if (!iigs || drive < 0 || drive > 1) return nullptr;
+  return &iigs->iwm().sonyDrive(drive);
+}
+} // namespace
+
+bool MachineHost::insert35Disk(int drive, const uint8_t *data, size_t size,
+                               const char *filename) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony && sony->insert(data, size, filename ? filename : "");
+}
+
+void MachineHost::eject35Disk(int drive) {
+  if (SonyDrive *sony = sonyDrive(iigs_.get(), drive)) sony->eject();
+}
+
+bool MachineHost::is35DiskInserted(int drive) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony && sony->hasDisk();
+}
+
+bool MachineHost::is35DiskModified(int drive) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony && sony->isModified();
+}
+
+std::string MachineHost::disk35Filename(int drive) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony ? sony->filename() : std::string();
+}
+
+const uint8_t *MachineHost::export35Disk(int drive, size_t *size) {
+  *size = 0;
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony ? sony->exportData(size) : nullptr;
+}
+
+bool MachineHost::is35MotorOn(int drive) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony && sony->hasDisk() && sony->isMotorOn(iigs_->slowCycles());
+}
+
+int MachineHost::disk35Track(int drive) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony ? sony->track() : 0;
+}
+
+int MachineHost::disk35Side(int drive) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony ? sony->side() : 0;
+}
+
+bool MachineHost::has35Ejected(int drive) {
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony && sony->hasEjected();
+}
+
+const uint8_t *MachineHost::export35Ejected(int drive, size_t *size) {
+  *size = 0;
+  SonyDrive *sony = sonyDrive(iigs_.get(), drive);
+  return sony ? sony->exportEjected(size) : nullptr;
+}
+
+void MachineHost::clear35Ejected(int drive) {
+  if (SonyDrive *sony = sonyDrive(iigs_.get(), drive)) sony->clearEjected();
 }
 
 const char *MachineHost::diskFilename(int drive) const {

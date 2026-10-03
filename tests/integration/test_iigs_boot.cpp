@@ -1458,3 +1458,126 @@ TEST_CASE("Ejecting the last image leaves the SmartPort's ROM until reset",
   machine.warmReset();
   REQUIRE_FALSE(machine.smartPort().hasROM());
 }
+
+TEST_CASE("A IIgs boots ProDOS from a 3.5\" disk through its own firmware",
+          "[iigs][boot][disk35]") {
+  // Nothing in slot 5 but the machine's own firmware, which finds a Sony
+  // drive on the IWM's 3.5" port, reads block 0 off it in 3.5" GCR and boots.
+  // The volume is the 140K ProDOS in public/disks laid at the front of an
+  // 800K disk: a ProDOS volume says how big it is, and a smaller one on a
+  // bigger disk is as bootable as any.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the 3.5\" boot test");
+    return;
+  }
+  std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the 3.5\" boot test");
+    return;
+  }
+  image.resize(819200, 0);
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insert35Disk(0, image.data(), image.size(), "prodos.po"));
+
+  for (int i = 0; i < 60000000 && !machine.cpu().isStopped(); i++) {
+    machine.step();
+  }
+
+  const std::string text = screenText(machine) + screenText80(machine);
+  INFO("screen:\n" << text);
+  INFO("track " << machine.iwm().sonyDrive(0).track() << " side "
+                << machine.iwm().sonyDrive(0).side() << " PC "
+                << std::hex << machine.cpu().getPC());
+  REQUIRE(text.find("BITSY.BOOT") != std::string::npos);
+}
+
+TEST_CASE("A IIgs writes a block to a 3.5\" disk through its own firmware",
+          "[iigs][boot][disk35]") {
+  // The firmware's ProDOS entry, called the way ProDOS calls it, writes a
+  // block in asynchronous mode — the IWM shifting each byte out itself and the
+  // handshake register asking for the next — and reads it back. Then the disk
+  // is saved, which decodes the tracks back into blocks: the block must be in
+  // the image, and every other block exactly as it went in.
+  if (!romAvailable()) {
+    WARN("IIgs ROM not built in; skipping the 3.5\" write test");
+    return;
+  }
+  std::vector<uint8_t> image = loadFile("public/disks/ProDOS 2.4.3.po");
+  if (image.empty()) {
+    WARN("ProDOS image not found; skipping the 3.5\" write test");
+    return;
+  }
+  image.resize(819200, 0);
+
+  IIgsMachine machine;
+  machine.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE,
+               roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+  REQUIRE(machine.insert35Disk(0, image.data(), image.size(), "prodos.po"));
+  for (int i = 0; i < 60000000 && !machine.cpu().isStopped(); i++) {
+    machine.step();
+  }
+  REQUIRE(screenText(machine).find("BITSY.BOOT") != std::string::npos);
+
+  // Block 1000 is past the 280 the volume uses, on track 50, side 1 or 0.
+  constexpr uint16_t BLOCK = 1000;
+  auto &memory = machine.memory();
+  for (int i = 0; i < 512; i++) {
+    memory.write(0x001000 + i, static_cast<uint8_t>(i * 7 + 3));
+  }
+  // The ProDOS block call: command, unit (slot 5, drive 1), buffer, block.
+  const uint8_t program[] = {
+      0xA9, 0x02, 0x85, 0x42, // LDA #2 (write)  STA $42
+      0xA9, 0x50, 0x85, 0x43, // LDA #$50        STA $43
+      0xA9, 0x00, 0x85, 0x44, // buffer $1000
+      0xA9, 0x10, 0x85, 0x45,
+      0xA9, BLOCK & 0xFF, 0x85, 0x46,
+      0xA9, BLOCK >> 8, 0x85, 0x47,
+      0x20, 0x0A, 0xC5,       // JSR $C50A
+      0x8D, 0x00, 0x03,       // STA $0300 (the error code)
+      0xA9, 0x01, 0x85, 0x42, // read it back: every parameter again,
+      0xA9, 0x50, 0x85, 0x43, // because the call is free to use them
+      0xA9, 0x00, 0x85, 0x44,
+      0xA9, 0x20, 0x85, 0x45, // into $2000
+      0xA9, BLOCK & 0xFF, 0x85, 0x46,
+      0xA9, BLOCK >> 8, 0x85, 0x47,
+      0x20, 0x0A, 0xC5,       // JSR $C50A
+      0x8D, 0x01, 0x03,       // STA $0301
+      0x4C, 0x3E, 0x03,       // JMP * (at $033E)
+  };
+  for (size_t i = 0; i < sizeof(program); i++) {
+    memory.write(0x000302 + static_cast<uint32_t>(i), program[i]);
+  }
+  REQUIRE(0x0302 + sizeof(program) - 3 == 0x033E);
+  memory.write(0x000300, 0xEE);
+  memory.write(0x000301, 0xEE);
+  CPU65816 &cpu = machine.cpu();
+  cpu.setEmulation(true);
+  cpu.setP(0x34);
+  cpu.setPBR(0x00);
+  cpu.setPC(0x0302);
+  for (int i = 0; i < 20000000 && cpu.getPC() != 0x033E; i++) machine.step();
+
+  REQUIRE(cpu.getPC() == 0x033E);
+  INFO("write $" << std::hex << (int)memory.peek(0x000300) << ", read $"
+                 << (int)memory.peek(0x000301));
+  REQUIRE(memory.peek(0x000300) == 0x00);
+  REQUIRE(memory.peek(0x000301) == 0x00);
+  for (int i = 0; i < 512; i++) {
+    REQUIRE(memory.peek(0x002000 + i) == static_cast<uint8_t>(i * 7 + 3));
+  }
+
+  SonyDrive &drive = machine.iwm().sonyDrive(0);
+  REQUIRE(drive.isModified());
+  size_t size = 0;
+  const uint8_t *saved = drive.exportData(&size);
+  REQUIRE(size == image.size());
+  for (int i = 0; i < 512; i++) {
+    image[BLOCK * 512 + i] = static_cast<uint8_t>(i * 7 + 3);
+  }
+  size_t different = 0;
+  for (size_t i = 0; i < size; i++) different += saved[i] != image[i];
+  REQUIRE(different == 0);
+}

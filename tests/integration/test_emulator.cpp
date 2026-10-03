@@ -854,3 +854,54 @@ TEST_CASE("A breakpoint in a skipped frame shows the frame it stopped in",
     REQUIRE(skipped.getTotalCycles() == drawn.getTotalCycles());
     REQUIRE(sameFramebuffer(skipped, drawn));
 }
+
+TEST_CASE("A //e publishes whole frames, never one the beam is part way down",
+          "[emulator][video][beam]") {
+    // The host takes a picture after each refill, which ends wherever in the
+    // frame it happens to, and the moment drifts. A picture drawn into while
+    // it was shown was two frames at once, split where the beam had got to,
+    // and on a screen that changed every frame the split walked down it.
+    Emulator emu;
+    emu.init();
+    emu.writeMemory(0x6000, 0x78);  // SEI
+    emu.writeMemory(0x6001, 0x4C);  // JMP $6001
+    emu.writeMemory(0x6002, 0x01);
+    emu.writeMemory(0x6003, 0x60);
+    emu.setPC(0x6000);
+    emu.writeMemory(0xC050, 0);  // graphics
+    emu.writeMemory(0xC052, 0);  // full screen
+    emu.writeMemory(0xC054, 0);  // page 1
+    emu.writeMemory(0xC056, 0);  // lo-res
+    auto fill = [&](uint8_t colours) {
+        for (uint16_t a = 0x0400; a < 0x0800; a++) emu.writeMemory(a, colours);
+    };
+
+    const auto &timing = emu.getMachine().timing;
+    const int lineCycles = timing.cyclesPerScanline;
+    const int frameCycles = timing.cyclesPerFrame();
+    auto runToFrameStart = [&] {
+        emu.consumeFrameSamples();
+        for (int i = 0; i < 300 && emu.consumeFrameSamples() == 0; i++) emu.runCycles(lineCycles);
+    };
+
+    uint8_t colours = 0x11;  // red
+    fill(colours);
+    runToFrameStart();
+    runToFrameStart();
+    const size_t rowBytes = 560 * 4;
+    int torn = 0;
+    for (int frame = 0; frame < 120; frame++) {
+        colours = colours == 0x11 ? 0x66 : 0x11;  // red, blue
+        fill(colours);
+        const int into = (frame * 17 * 7) % frameCycles;
+        emu.runCycles(into);
+        // The top and bottom rows are the same colour in one frame; from two
+        // frames, they are not.
+        const uint8_t *picture = emu.getFramebuffer();
+        if (std::memcmp(picture, picture + static_cast<size_t>(383) * rowBytes, rowBytes) != 0) torn++;
+        emu.runCycles(frameCycles - into);
+        runToFrameStart();
+    }
+    INFO(torn << " of 120 pictures were two frames at once");
+    CHECK(torn == 0);
+}

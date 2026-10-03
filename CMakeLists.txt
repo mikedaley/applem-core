@@ -60,6 +60,8 @@ set(CORE_SOURCES
     src/core/cards/disk_controller.cpp
     src/core/cards/disk2/disk2_card.cpp
     src/core/cards/iwm/iwm.cpp
+    src/core/cards/iwm/sony_drive.cpp
+    src/core/disk-image/gcr35.cpp
     src/core/cards/thunderclock/thunderclock_card.cpp
     src/core/cards/mouse/mouse_card.cpp
     src/core/cards/smartport/block_device.cpp
@@ -462,6 +464,19 @@ if(EMSCRIPTEN)
                 \"_getBasicErrorTxtptr\", \
                 \"_getBasicErrorCode\", \
                 \"_clearBasicError\", \
+                \"_has35Drives\", \
+                \"_insert35Disk\", \
+                \"_eject35Disk\", \
+                \"_is35DiskInserted\", \
+                \"_is35DiskModified\", \
+                \"_get35DiskFilename\", \
+                \"_export35Disk\", \
+                \"_is35MotorOn\", \
+                \"_get35DiskTrack\", \
+                \"_get35DiskSide\", \
+                \"_has35Ejected\", \
+                \"_export35Ejected\", \
+                \"_clear35Ejected\", \
                 \"_insertSmartPortImage\", \
                 \"_ejectSmartPortImage\", \
                 \"_isSmartPortROMPending\", \
@@ -643,6 +658,8 @@ else()
         src/core/cards/smartport/block_device.cpp
         src/core/cards/disk_controller.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -655,6 +672,8 @@ else()
         src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/cards/thunderclock/thunderclock_card.cpp
         src/core/cards/mouse/mouse_card.cpp
         src/core/cards/smartport/block_device.cpp
@@ -763,6 +782,9 @@ else()
         src/core/cards/smartport/block_device.cpp
         src/core/cards/disk_controller.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -816,6 +838,9 @@ else()
         src/core/debug/debug_log.cpp
         src/core/cards/disk_controller.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/cards/smartport/smartport_card.cpp
         src/core/cards/smartport/block_device.cpp
         src/core/cards/mockingboard/mockingboard_card.cpp
@@ -858,6 +883,9 @@ else()
         src/core/cards/smartport/block_device.cpp
         src/core/cards/disk_controller.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -901,6 +929,9 @@ else()
         src/core/cards/smartport/block_device.cpp
         src/core/cards/disk_controller.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -1117,6 +1148,9 @@ else()
         src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -1135,6 +1169,22 @@ else()
         src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
+        src/core/disk-image/dsk_disk_image.cpp
+        src/core/disk-image/woz_disk_image.cpp
+        src/core/disk-image/gcr_encoding.cpp
+    )
+
+    # The Apple 3.5" drive, its recording, and the IWM's 3.5" port
+    add_catch2_test(test_disk35
+        tests/unit/test_disk35.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/cards/disk_controller.cpp
+        src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -1151,6 +1201,7 @@ else()
     add_catch2_test(test_disk_inspection
         tests/unit/test_disk_inspection.cpp
         src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/disk-image/dsk_disk_image.cpp
         src/core/disk-image/woz_disk_image.cpp
         src/core/disk-image/gcr_encoding.cpp
@@ -1237,6 +1288,9 @@ else()
         src/core/cards/disk_controller.cpp
         src/core/cards/disk2/disk2_card.cpp
         src/core/cards/iwm/iwm.cpp
+        src/core/cards/iwm/sony_drive.cpp
+        src/core/disk-image/disk_inspection.cpp
+        src/core/disk-image/gcr35.cpp
         src/core/cards/mockingboard/mockingboard_card.cpp
         src/core/cards/thunderclock/thunderclock_card.cpp
         src/core/cards/mouse/mouse_card.cpp

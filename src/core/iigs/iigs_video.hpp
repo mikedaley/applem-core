@@ -50,8 +50,35 @@ class IIgsVideo {
 public:
   IIgsVideo(Video &megaII, IIgsMemory &memory);
 
-  /** Draw the current screen and return it. RGBA, 736x448. */
+  /**
+   * Draw the whole screen from the machine as it is now, make that the frame
+   * shown, and return it. RGBA, 736x448. For a picture wanted at once (a
+   * paused machine redrawn, a test); a running machine draws its frames as
+   * the beam goes, below.
+   */
   const uint8_t *render();
+
+  /**
+   * The last frame the beam finished, which is what a host publishes. Never
+   * a frame in progress: one drawn into while it is shown is two frames at
+   * once, split where the beam had got to, and since a host does not publish
+   * in step with the frame the split walks down the screen.
+   */
+  const uint8_t *frame() const { return shown_.data(); }
+
+  /**
+   * The beam's progress: `finished` lines of the 262-line frame are done.
+   * Each line is drawn as the beam leaves it, from the machine as it is at
+   * that moment, so a palette, a line's control byte, the border colour or
+   * $C029 changed part-way down the screen is shown where it changed. Lines
+   * 0-199 are the picture, 200-211 the border below it, and 250-261 the
+   * border above the next picture, which the monitor shows above it.
+   */
+  void drawLinesTo(int finished);
+  /** The frame is finished: the lines left are drawn and it is shown. */
+  void finishFrame();
+  /** Start drawing a frame from its top, as a reset does. */
+  void restartFrame() { linesDrawn_ = 0; }
 
   size_t framebufferSize() const { return frame_.size(); }
 
@@ -98,6 +125,11 @@ public:
 private:
   void renderSuperHiRes();
   void renderMegaII();
+  // One line of the frame, as the beam leaves it (see drawLinesTo).
+  void drawFrameLine(int line);
+  void drawSuperHiResLine(int line);
+  void drawMegaIILine(int line);
+  void fillRasterLine(int rasterLine, uint32_t colour);
   void fillFrame(uint32_t colour);
   void drawLine320(int line, const uint8_t *pixels, const uint16_t *palette,
                    bool fillMode);
@@ -108,7 +140,10 @@ private:
 
   Video &megaII_;
   IIgsMemory &memory_;
+  // The frame being drawn, and the last one finished, which is the one shown.
   std::vector<uint8_t> frame_;
+  std::vector<uint8_t> shown_;
+  int linesDrawn_ = 0; // lines of the frame being drawn that are done
   int width_ = 0;
   int height_ = 0;
 };

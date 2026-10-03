@@ -120,6 +120,16 @@ public:
   bool createFromTrackBits(const std::vector<BitTrack> &tracks);
 
   /**
+   * Build a 3.5" disk from encoded tracks, one per side of each track and
+   * indexed track * 2 + side, which is how a 3.5" WOZ's map is laid out.
+   * An entry with no bits is a side the disk does not have.
+   *
+   * @param sides 1 for a 400K disk, 2 for an 800K one
+   * @return true if at least one track had data
+   */
+  bool createFrom35Tracks(const std::vector<BitTrack> &tracks, int sides);
+
+  /**
    * Get the disk type from INFO chunk
    * @return 1 = 5.25", 2 = 3.5"
    */

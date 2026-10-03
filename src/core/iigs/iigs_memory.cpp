@@ -545,6 +545,7 @@ void IIgsMemory::writeIO(uint16_t offset, uint8_t value) {
     return;
   case REG_DISK_SELECT:
     diskSelect_ = value;
+    if (diskRegisterChanged_) diskRegisterChanged_(value);
     return;
   case REG_CLOCK_DATA:
     clock_.writeData(value);

@@ -6,6 +6,7 @@
  */
 
 #include "disk_inspection.hpp"
+#include "gcr35.hpp"
 #include "gcr_encoding.hpp"
 
 #include <algorithm>
@@ -85,7 +86,69 @@ uint8_t trackFlags(const DiskImage::TrackView &view,
 
 } // namespace
 
-TrackAnalysis analyzeTrack(const uint8_t *bits, uint32_t bit_count) {
+namespace {
+
+// The fields of a 3.5" disk, after the prologues the scan found. See
+// GCR35 for the layout.
+void readFields35(std::vector<Nibble> &nibs, TrackAnalysis &result) {
+  const size_t count = nibs.size();
+  auto at = [&](size_t i) -> uint8_t { return nibs[i % count].value; };
+  auto mark = [&](size_t i, size_t n, uint8_t kind, uint8_t sector) {
+    for (size_t k = 0; k < n; k++) {
+      Nibble &nib = nibs[(i + k) % count];
+      nib.kind = kind;
+      nib.sector = sector;
+    }
+  };
+  constexpr size_t DATA_35_NIBBLES = 1 + GCR35::ENCODED_SECTOR_NIBBLES; // sector, then the sector
+  if (count < DATA_35_NIBBLES + 16) return;
+
+  for (size_t i = 0; i < count && result.sectors.size() < NO_SECTOR; i++) {
+    if (nibs[i].kind != NONE) continue;
+    if (at(i) != 0xD5 || at(i + 1) != 0xAA || at(i + 2) != 0x96) continue;
+
+    uint8_t f[5];
+    bool valid = true;
+    for (int k = 0; k < 5; k++) {
+      f[k] = GCR35::decodeNibble(at(i + 3 + k));
+      valid = valid && f[k] != 0xFF;
+    }
+    Sector sector;
+    sector.address_nibble = static_cast<uint32_t>(i);
+    sector.track = static_cast<uint8_t>((f[0] & 0x3F) | ((f[2] & 1) << 6));
+    sector.sector = f[1];
+    sector.volume = (f[2] >> 5) & 1; // the side
+    sector.address_ok = valid && ((f[0] ^ f[1] ^ f[2] ^ f[3]) & 0x3F) == f[4];
+    sector.sectors_per_track = static_cast<uint8_t>(
+        sector.track < GCR35::TRACKS ? GCR35::sectorsOnTrack(sector.track) : 12);
+
+    const uint8_t index = static_cast<uint8_t>(result.sectors.size());
+    mark(i, 3, ADDR_PROLOGUE, index);
+    mark(i + 3, 5, ADDR | (sector.address_ok ? 0 : BAD), index);
+    if (at(i + 8) == 0xDE && at(i + 9) == 0xAA) mark(i + 8, 2, ADDR_EPILOGUE, index);
+
+    for (size_t j = i + 8; j < i + 8 + DATA_SEARCH_NIBBLES; j++) {
+      if (at(j) != 0xD5 || at(j + 1) != 0xAA) continue;
+      if (at(j + 2) != 0xAD) break;
+      sector.data_nibble = static_cast<uint32_t>(j % count);
+      uint8_t field[GCR35::ENCODED_SECTOR_NIBBLES];
+      for (int k = 0; k < GCR35::ENCODED_SECTOR_NIBBLES; k++) field[k] = at(j + 4 + k);
+      uint8_t raw[GCR35::RAW_SECTOR_BYTES];
+      sector.data = GCR35::decodeSector(field, raw) ? DataState::Good : DataState::Bad;
+      std::copy(raw + GCR35::TAG_BYTES, raw + GCR35::TAG_BYTES + 256, sector.bytes.begin());
+      mark(j, 3, DATA_PROLOGUE, index);
+      mark(j + 3, DATA_35_NIBBLES, DATA | (sector.data == DataState::Bad ? BAD : 0), index);
+      const size_t tail = j + 3 + DATA_35_NIBBLES;
+      if (at(tail) == 0xDE && at(tail + 1) == 0xAA) mark(tail, 2, DATA_EPILOGUE, index);
+      break;
+    }
+    result.sectors.push_back(sector);
+  }
+}
+
+} // namespace
+
+TrackAnalysis analyzeTrack(const uint8_t *bits, uint32_t bit_count, Recording recording) {
   TrackAnalysis result;
   result.bit_count = bit_count;
   if (!bits || bit_count == 0) return result;
@@ -138,7 +201,9 @@ TrackAnalysis analyzeTrack(const uint8_t *bits, uint32_t bit_count) {
     }
   };
 
-  if (count >= 16) {
+  if (recording == Recording::ThreeAndAHalf) {
+    readFields35(nibs, result);
+  } else if (count >= 16) {
     for (size_t i = 0; i < count && result.sectors.size() < NO_SECTOR; i++) {
       if (nibs[i].kind != NONE) continue;
       if (at(i) != 0xD5 || at(i + 1) != 0xAA) continue;
@@ -200,6 +265,25 @@ TrackAnalysis analyzeTrack(const uint8_t *bits, uint32_t bit_count) {
     }
   }
 
+  // ---- A format the analyser does not know ---------------------------------
+  // Address marks with not one address field that verifies are not a disk
+  // full of damage: they are a format of the disk's own, a fast loader's or
+  // a copy protection's, that happens to use the standard marks. Its fields
+  // are not decoded as standard ones (which named every sector 255) or
+  // painted as failed checksums; they are unknown, and the track has no
+  // standard sectors. A standard track with a damaged sector still has the
+  // others to verify, and keeps its bad checksum.
+  const bool anyAddressOk = std::any_of(result.sectors.begin(), result.sectors.end(),
+                                        [](const Sector &s) { return s.address_ok; });
+  if (!result.sectors.empty() && !anyAddressOk) {
+    for (Nibble &nib : nibs) {
+      if (nib.sector == NO_SECTOR) continue;
+      nib.kind = OTHER;
+      nib.sector = NO_SECTOR;
+    }
+    result.sectors.clear();
+  }
+
   // ---- Everything else ----------------------------------------------------
   for (Nibble &nib : nibs) {
     if (nib.kind != NONE) continue;
@@ -215,7 +299,13 @@ TrackAnalysis analyzeTrack(const uint8_t *bits, uint32_t bit_count) {
   return result;
 }
 
-std::vector<uint8_t> buildOverview(DiskImage &image, int buckets) {
+namespace {
+
+// The overview with each ring read from the image's entry `entryFor` names
+// (-1 for none), and the fields read as `recording` says.
+template <typename EntryFor>
+std::vector<uint8_t> overviewOf(DiskImage &image, int buckets, EntryFor entryFor,
+                                Recording recording) {
   buckets = std::max(16, std::min(buckets, 2048));
   const int record = 12 + buckets * 3;
 
@@ -234,7 +324,8 @@ std::vector<uint8_t> buildOverview(DiskImage &image, int buckets) {
 
   for (int qt = 0; qt < QUARTER_TRACKS; qt++) {
     DiskImage::TrackView view;
-    if (!image.inspectQuarterTrack(qt, view)) {
+    const int entry = entryFor(qt);
+    if (entry < 0 || !image.inspectQuarterTrack(entry, view)) {
       out.insert(out.end(), record, 0);
       out[out.size() - record + 1] = 0xFF; // no track id
       continue;
@@ -245,7 +336,7 @@ std::vector<uint8_t> buildOverview(DiskImage &image, int buckets) {
       continue;
     }
 
-    TrackAnalysis analysis = analyzeTrack(view.bits.data(), view.bit_count);
+    TrackAnalysis analysis = analyzeTrack(view.bits.data(), view.bit_count, recording);
     std::vector<uint8_t> rec;
     rec.reserve(record);
     Writer r{rec};
@@ -313,6 +404,18 @@ std::vector<uint8_t> buildOverview(DiskImage &image, int buckets) {
     done.emplace(view.track_id, std::move(rec));
   }
   return out;
+}
+
+} // namespace
+
+std::vector<uint8_t> buildOverview(DiskImage &image, int buckets) {
+  return overviewOf(image, buckets, [](int qt) { return qt; }, Recording::FiveInch);
+}
+
+std::vector<uint8_t> buildOverview35(DiskImage &image, int side, int buckets) {
+  return overviewOf(
+      image, buckets, [side](int ring) { return (ring / 2) * 2 + (side & 1); },
+      Recording::ThreeAndAHalf);
 }
 
 std::vector<uint8_t> buildTrackDetail(DiskImage &image, int quarter_track,

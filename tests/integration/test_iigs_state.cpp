@@ -269,3 +269,42 @@ TEST_CASE("A state carries the sockets and the Control Panel's slot settings",
   restored.memory().write(0x00C02D, 0x00);
   REQUIRE_FALSE(restored.isSlotInternal(4));
 }
+
+TEST_CASE("A IIgs state carries the 3.5\" disks and where the head is", "[iigs][state][disk35]") {
+  IIgsMachine machine(256 * 1024);
+  machine.init(nullptr, 0);
+  std::vector<uint8_t> image(819200, 0);
+  for (size_t i = 0; i < image.size(); i++) image[i] = static_cast<uint8_t>(i * 31 + i / 512);
+  REQUIRE(machine.insert35Disk(1, image.data(), image.size(), "work.po"));
+
+  // Select drive 2 on the 3.5" port and step it in a few tracks, the way the
+  // firmware does: the head's place is the mechanism's, not the disk's.
+  auto &memory = machine.memory();
+  memory.write(0x00C031, 0x40);        // the 3.5" port
+  memory.write(0x00C0EB, 0);           // drive 2
+  memory.write(0x00C0E9, 0);           // ENABLE
+  auto strobe = [&](bool ca0, bool ca1, bool ca2) {
+    memory.write(ca0 ? 0x00C0E1 : 0x00C0E0, 0);
+    memory.write(ca1 ? 0x00C0E3 : 0x00C0E2, 0);
+    memory.write(ca2 ? 0x00C0E5 : 0x00C0E4, 0);
+    memory.write(0x00C0E7, 0);         // LSTRB on and off
+    memory.write(0x00C0E6, 0);
+  };
+  strobe(false, false, false);         // step inward
+  for (int i = 0; i < 5; i++) strobe(true, false, false);
+  REQUIRE(machine.iwm().sonyDrive(1).track() == 5);
+
+  auto state = exported(machine);
+  IIgsMachine restored(256 * 1024);
+  restored.init(nullptr, 0);
+  REQUIRE(restored.importState(state.data(), state.size()));
+  REQUIRE_FALSE(restored.has35Disk(0));
+  REQUIRE(restored.has35Disk(1));
+  SonyDrive &drive = restored.iwm().sonyDrive(1);
+  REQUIRE(drive.filename() == "work.po");
+  REQUIRE(drive.track() == 5);
+  size_t size = 0;
+  const uint8_t *data = drive.exportData(&size);
+  REQUIRE(size == image.size());
+  REQUIRE(std::equal(image.begin(), image.end(), data));
+}

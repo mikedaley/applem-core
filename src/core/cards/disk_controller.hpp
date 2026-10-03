@@ -155,6 +155,13 @@ public:
     bool isMotorOn() const;
 
     /**
+     * A 5.25" drive turning, which is what a host's drive light shows. The
+     * same as isMotorOn() except on an IWM pointed at a IIgs's 3.5" port,
+     * where ENABLE is a 3.5" drive's and the 5.25" drives are still.
+     */
+    virtual bool isFiveInchMotorOn() const { return isMotorOn(); }
+
+    /**
      * The drive ENABLE line, as the CPU last set it.
      *
      * This is not `isMotorOn()`. That one answers "is the disk still turning",
@@ -330,6 +337,13 @@ protected:
      * @return byte value for reads
      */
     uint8_t handleSoftSwitch(uint8_t offset, bool isWrite);
+
+    /**
+     * Whether the 5.25" drives are what the controller is talking to. A IIgs's
+     * IWM can be pointed at its 3.5" port instead ($C031), and then the 5.25"
+     * sequencer stands still and the phase lines go elsewhere.
+     */
+    virtual bool fiveInchSelected() const { return true; }
 
     /**
      * Clock the Logic State Sequencer by one tick (runs at 2x CPU rate).

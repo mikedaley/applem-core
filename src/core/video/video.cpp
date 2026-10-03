@@ -14,6 +14,7 @@ namespace a2e {
 Video::Video(MMU &mmu) : mmu_(mmu), machine_(&mmu.getMachine()) {
   // Initialize framebuffer to black
   std::memset(framebuffer_.data(), 0, framebuffer_.size());
+  std::memset(shown_.data(), 0, shown_.size());
 }
 
 VideoMode Video::getCurrentMode() const {
@@ -861,6 +862,9 @@ void Video::renderFrame() {
     renderScanlineWithChanges(lastRenderedScanline_);
   }
 
+  // The frame is finished, so it is the one shown. A skipped frame drew
+  // nothing, and the frame shown is still the last one that was drawn.
+  if (!skipFrame_) shown_ = framebuffer_;
   frameDirty_ = true;
 }
 
@@ -889,6 +893,8 @@ void Video::forceRenderFrame() {
     renderScanlineSegment(scanline, 0, visibleColumns, vs);
     endScanline(scanline);
   }
+  // Drawn whole and at once, so it is shown at once.
+  shown_ = framebuffer_;
   frameDirty_ = true;
 }
 

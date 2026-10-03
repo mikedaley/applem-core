@@ -277,6 +277,27 @@ public:
   bool canExportDiskAs(int drive, DiskSaveFormat format);
   DiskSaveFormat diskNativeFormat(int drive);
 
+  // 3.5" drives, which a IIgs has on its IWM's second port: an 800K or
+  // 400K block image, a 2MG holding one, or a 3.5" WOZ. Every other machine
+  // has none, and answers so.
+  bool has35Drives() const { return iigs_ != nullptr; }
+  bool insert35Disk(int drive, const uint8_t *data, size_t size, const char *filename);
+  void eject35Disk(int drive);
+  bool is35DiskInserted(int drive);
+  bool is35DiskModified(int drive);
+  std::string disk35Filename(int drive);
+  // The disk in the format it arrived in.
+  const uint8_t *export35Disk(int drive, size_t *size);
+  bool is35MotorOn(int drive);
+  // The track under the head, and which side.
+  int disk35Track(int drive);
+  int disk35Side(int drive);
+  // The machine ejected a disk (GS/OS does, and the Finder's Eject). It is
+  // out of the drive but kept until the host has saved it and cleared it.
+  bool has35Ejected(int drive);
+  const uint8_t *export35Ejected(int drive, size_t *size);
+  void clear35Ejected(int drive);
+
   // Block devices on the SmartPort. On a IIgs an image inserted while the
   // machine runs takes over slot 5 only at the next reset.
   bool insertBlockImage(int device, const uint8_t *data, size_t size,

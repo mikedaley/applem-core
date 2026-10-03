@@ -33,7 +33,13 @@ static constexpr uint32_t STATE_MAGIC = 0x53324541; // "A2ES"
  * well as a socket, so a state has to carry both what the user fitted and the
  * Control Panel's setting that says which of the two answers.
  */
-static constexpr uint32_t STATE_VERSION = 2;
+static constexpr uint32_t STATE_VERSION = 3;
+/*
+ * Version 3: the 3.5" drives' disks, at the end. Their mechanism is the IWM's
+ * card state, which a version 2 state ends without, so one restores as a
+ * machine with both 3.5" drives empty.
+ */
+static constexpr uint32_t STATE_VERSION_WITHOUT_35 = 2;
 
 const uint8_t *IIgsMachine::exportState(size_t *size) {
   stateBuffer_.clear();
@@ -79,7 +85,7 @@ const uint8_t *IIgsMachine::exportState(size_t *size) {
   // The machine's own counters: where the frame is, what the Ensoniq has
   // been fed, and the speaker's amplifier.
   w.u64(lastFrameCycle_);
-  w.u32(static_cast<uint32_t>(samplesGenerated_));
+  w.u32(0); // was the host's sample count; frames are counted now, and not kept
   w.i32(linesFinished_);
   w.u64(soundCycle_);
   w.f32(speakerGain_);
@@ -123,6 +129,17 @@ const uint8_t *IIgsMachine::exportState(size_t *size) {
   }
   w.u8(memory_->slotOverrideMask());
 
+  // The 3.5" disks, in the format each arrived in.
+  for (int drive = 0; drive < 2; drive++) {
+    SonyDrive &sony = iwm_->sonyDrive(drive);
+    w.boolean(sony.hasDisk());
+    if (!sony.hasDisk()) continue;
+    size_t bytes = 0;
+    const uint8_t *image = sony.exportData(&bytes);
+    w.blob(image, image ? bytes : 0);
+    w.string(sony.filename());
+  }
+
   *size = stateBuffer_.size();
   return stateBuffer_.data();
 }
@@ -130,7 +147,8 @@ const uint8_t *IIgsMachine::exportState(size_t *size) {
 bool IIgsMachine::importState(const uint8_t *data, size_t size) {
   StateReader r(data, size);
   if (r.u32() != STATE_MAGIC) return false;
-  if (r.u32() != STATE_VERSION) return false;
+  const uint32_t version = r.u32();
+  if (version != STATE_VERSION && version != STATE_VERSION_WITHOUT_35) return false;
   if (r.u32() != static_cast<uint32_t>(MachineId::AppleIIgs)) return false;
   if (r.failed()) return false;
 
@@ -163,7 +181,8 @@ bool IIgsMachine::importState(const uint8_t *data, size_t size) {
   if (!memory_->deserialize(r)) return false;
 
   lastFrameCycle_ = r.u64();
-  samplesGenerated_ = static_cast<int>(r.u32());
+  r.u32(); // the old sample count (see above)
+  framesCompleted_ = 0;
   linesFinished_ = r.i32();
   soundCycle_ = r.u64();
   speakerGain_ = r.f32();
@@ -205,9 +224,29 @@ bool IIgsMachine::importState(const uint8_t *data, size_t size) {
     if (overrides & (1u << slot)) setSlotInternal(slot, slotSettings[slot]);
   }
 
+  // The 3.5" disks. The mechanism came back with the IWM above, so the disk
+  // goes back under the head where it was rather than being inserted afresh.
+  for (int drive = 0; drive < 2; drive++) {
+    SonyDrive &sony = iwm_->sonyDrive(drive);
+    if (version == STATE_VERSION_WITHOUT_35 || !r.boolean()) {
+      sony.restoreEmpty();
+      continue;
+    }
+    size_t bytes = 0;
+    const uint8_t *image = r.blob(bytes);
+    const std::string filename = r.string();
+    if (r.failed() || !image || !sony.restore(image, bytes, filename)) return false;
+  }
+  if (r.failed()) return false;
+
   // The video decodes from the switches as they are now, and the frame that
   // was in flight is gone.
   video_->onVideoSwitchChanged();
+  // The screen shows the restored machine at once, drawn whole; the beam then
+  // carries on from where the frame was, drawing the lines it has passed.
+  video_->forceRenderFrame();
+  screen_->render();
+  screen_->restartFrame();
   frameReady_ = true;
   debug_.clearHits();
   paused_ = false;

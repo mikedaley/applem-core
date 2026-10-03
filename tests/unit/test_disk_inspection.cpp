@@ -43,10 +43,10 @@ struct TrackBuilder {
         for (int i = 0; i < n; ++i) nibble(0xFF, 2);
     }
     void sector(uint8_t volume, uint8_t track, uint8_t sector,
-                const uint8_t *data, int corruptData = -1) {
+                const uint8_t *data, int corruptData = -1, bool badAddress = false) {
         for (uint8_t v : {0xD5, 0xAA, 0x96}) nibble(v);
-        for (uint8_t value : {volume, track, sector,
-                              static_cast<uint8_t>(volume ^ track ^ sector)}) {
+        const uint8_t sum = static_cast<uint8_t>(volume ^ track ^ sector ^ (badAddress ? 0x55 : 0));
+        for (uint8_t value : {volume, track, sector, sum}) {
             auto pair = GCR::encode4and4(value);
             nibble(pair.first);
             nibble(pair.second);
@@ -134,6 +134,44 @@ TEST_CASE("analyzeTrack reports a data field that fails its checksum", "[inspect
             badMarked = true;
         }
     }
+    REQUIRE(badMarked);
+}
+
+TEST_CASE("A track whose address fields never verify is in an unknown format", "[inspect]") {
+    // A fast loader's or a copy protection's own format, using the standard
+    // marks: not a track of failed checksums, and not sector 255 sixteen times.
+    auto data = pattern(4);
+    TrackBuilder t;
+    t.sync(40);
+    for (uint8_t s = 0; s < 4; s++) {
+        t.sector(254, 9, s, data.data(), -1, true);
+        t.sync(20);
+    }
+    auto a = analyzeTrack(t.bits.data(), t.count);
+    REQUIRE(a.sectors.empty());
+    int unknown = 0;
+    for (const Nibble &n : a.nibbles) {
+        REQUIRE((n.kind & BAD) == 0);
+        REQUIRE(n.sector == NO_SECTOR);
+        unknown += (n.kind & KIND_MASK) == OTHER;
+    }
+    REQUIRE(unknown >= 4 * (3 + 8 + 3 + 3 + 343 + 3));
+}
+
+TEST_CASE("A standard track with one damaged address field keeps it bad", "[inspect]") {
+    // The others verify, so the format is known and the damage is real.
+    auto data = pattern(5);
+    TrackBuilder t;
+    t.sync(40);
+    for (uint8_t s = 0; s < 4; s++) {
+        t.sector(254, 9, s, data.data(), -1, s == 2);
+        t.sync(20);
+    }
+    auto a = analyzeTrack(t.bits.data(), t.count);
+    REQUIRE(a.sectors.size() == 4);
+    REQUIRE_FALSE(a.sectors[2].address_ok);
+    bool badMarked = false;
+    for (const Nibble &n : a.nibbles) badMarked |= (n.kind & KIND_MASK) == ADDR && (n.kind & BAD);
     REQUIRE(badMarked);
 }
 

@@ -362,13 +362,18 @@ void Emulator::runCycles(int cycles) {
   if (paused_)
     return;
 
-  runUntil(cpu_->getTotalCycles() + cycles);
+  const uint64_t target = cpu_->getTotalCycles() + cycles;
+  runUntil(target);
 
   // A run that stopped early, at a breakpoint or a watchpoint, may have
   // stopped in a frame nobody was going to see. Now somebody will, so it is
-  // drawn as far as the beam has gone. A run that went the whole way ends in
-  // a frame that was drawn, and this does nothing.
-  video_->drawSkippedFrame();
+  // drawn as far as the beam has gone, and shown that way: the screen of a
+  // machine stopped part way down a frame is where its beam is. A run that
+  // went the whole way shows the last frame it finished.
+  if (cpu_->getTotalCycles() < target) {
+    video_->drawSkippedFrame();
+    video_->showFrameInProgress();
+  }
 }
 
 // A frame starts. If another whole frame will finish after it before this run
