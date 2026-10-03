@@ -303,6 +303,10 @@ public:
   // a real battery would. Empty on any other machine.
   std::vector<uint8_t> batteryRam();
   void setBatteryRam(const std::vector<uint8_t> &bytes);
+  // A IIgs's settings back to the firmware's defaults: battery RAM cleared and
+  // the power cycled, so the firmware finds no valid checksum and writes its
+  // own. False on a machine that has none.
+  bool resetBatteryRam();
   // Whether anything has written to it since this was last asked.
   bool takeBatteryRamChanged();
 

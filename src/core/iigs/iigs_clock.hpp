@@ -87,6 +87,16 @@ public:
   const uint8_t *batteryRamBytes() const { return batteryRam_.data(); }
   static constexpr size_t batteryRamSize() { return BATTERY_RAM_SIZE; }
 
+  /**
+   * A flat battery: every byte zero, which the firmware's checksum rejects,
+   * so it writes its own defaults at the next start, as it does for a new
+   * clock chip. Marked as a change, so a host keeping the bytes keeps this.
+   */
+  void clearBatteryRam() {
+    batteryRam_.fill(0);
+    batteryRamChanged_ = true;
+  }
+
   void loadBatteryRam(const uint8_t *bytes, size_t size) {
     if (!bytes) return;
     const size_t count = size < BATTERY_RAM_SIZE ? size : BATTERY_RAM_SIZE;

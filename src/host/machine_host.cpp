@@ -457,6 +457,13 @@ void MachineHost::setBatteryRam(const std::vector<uint8_t> &bytes) {
   if (iigs_ && !bytes.empty()) iigs_->memory().clock().loadBatteryRam(bytes.data(), bytes.size());
 }
 
+bool MachineHost::resetBatteryRam() {
+  if (!iigs_) return false;
+  iigs_->memory().clock().clearBatteryRam();
+  iigs_->reset();
+  return true;
+}
+
 bool MachineHost::takeBatteryRamChanged() {
   return iigs_ && iigs_->memory().clock().takeBatteryRamChanged();
 }

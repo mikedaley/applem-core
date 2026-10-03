@@ -876,3 +876,24 @@ TEST_CASE("A machine's speed is its processor's rated clock", "[host]") {
     host.iigs()->memory().write(0xE0C036, static_cast<uint8_t>(host.iigs()->memory().read(0xE0C036) & 0x7F));
     CHECK(host.clockHz() == Approx(iigs::SLOW_CLOCK_HZ));
 }
+
+TEST_CASE("Resetting a IIgs's battery RAM brings back the firmware's defaults", "[host][iigs]") {
+    // Cleared and power cycled, the firmware finds no valid checksum and
+    // writes its own settings: a white on blue screen with a blue border.
+    MachineHost host;
+    host.build();
+    REQUIRE_FALSE(host.resetBatteryRam());          // a //e has none
+    if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+    REQUIRE(host.setMachine(MachineId::AppleIIgs));
+    runSeconds(host, 5.0);
+    const std::vector<uint8_t> defaults = host.batteryRam();
+    host.takeBatteryRamChanged();
+
+    REQUIRE(host.resetBatteryRam());
+    REQUIRE(host.takeBatteryRamChanged());          // the host keeps the cleared bytes
+    for (uint8_t b : host.batteryRam()) REQUIRE(b == 0);
+    runSeconds(host, 5.0);
+    CHECK(host.batteryRam() == defaults);
+    CHECK(host.iigs()->memory().textColourRegister() == 0xF6);
+    CHECK(host.iigs()->memory().borderColour() == 0x6);
+}
