@@ -252,6 +252,11 @@ void MachineHost::releaseModifiers() {
   if (emulator_) emulator_->releaseModifiers();
 }
 
+std::string MachineHost::screenText() {
+  if (iigs_) return iigs_->screenText();
+  return emulator_ ? std::string(emulator_->readScreenText(0, 0, 23, 79)) : std::string();
+}
+
 size_t MachineHost::pasteText(const char *utf8) {
   return emulator_ ? emulator_->pasteText(utf8) : 0;
 }

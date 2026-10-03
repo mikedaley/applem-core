@@ -233,6 +233,9 @@ public:
                       bool meta, int keyLocation);
   void releaseModifiers();
   size_t pasteText(const char *utf8);
+  // The text screen as text, a line to a row with trailing spaces trimmed:
+  // forty or eighty columns as the machine shows them, empty in graphics.
+  std::string screenText();
   bool pastePending() const;
   void setButton(int button, bool pressed);
   void setPaddleValue(int paddle, int value);
