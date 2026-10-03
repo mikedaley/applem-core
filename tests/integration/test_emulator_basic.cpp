@@ -266,3 +266,42 @@ TEST_CASE("Asking about a BASIC line over memory that is not a program returns",
     CHECK(emu.getBasicStatementCountForLine(20) >= 0);
     CHECK(emu.getBasicStatementIndexForLine(20, 0x0805) >= 0);
 }
+
+TEST_CASE("Emulator knows when Applesoft is waiting at its prompt", "[emulator][basic]") {
+    // The BASIC window offers Run, Read and Write only there. The prompt
+    // character alone is no test: $33 stays ] while a program runs and while
+    // machine code started from the prompt runs.
+    Emulator emu;
+    emu.init();
+    emu.reset();
+    emu.runCycles(1000000);
+    emu.warmReset();                       // no disk: Control-Reset into BASIC
+    emu.runCycles(500000);
+    REQUIRE(emu.isAtBasicPrompt());
+
+    // A program running is not at the prompt, and stopping it is.
+    emu.pasteText("10 GOTO 10\rRUN\r");
+    emu.runCycles(3000000);
+    CHECK_FALSE(emu.isAtBasicPrompt());
+    CHECK(emu.isBasicProgramRunning());
+    emu.warmReset();
+    emu.runCycles(500000);
+    CHECK(emu.isAtBasicPrompt());
+
+    // Machine code started from the prompt leaves it, though $33 still
+    // holds the ].
+    emu.pasteText("CALL -151\r");
+    emu.runCycles(2000000);
+    CHECK(emu.peekMemory(0x33) != 0xDD);   // the monitor's * prompt
+    CHECK_FALSE(emu.isAtBasicPrompt());
+    emu.writeMemory(0x0300, 0x4C);         // $300: JMP $300, for ever
+    emu.writeMemory(0x0301, 0x00);
+    emu.writeMemory(0x0302, 0x03);
+    emu.warmReset();
+    emu.runCycles(500000);
+    REQUIRE(emu.isAtBasicPrompt());
+    emu.pasteText("CALL 768\r");
+    emu.runCycles(2000000);
+    CHECK(emu.peekMemory(0x33) == 0xDD);
+    CHECK_FALSE(emu.isAtBasicPrompt());
+}

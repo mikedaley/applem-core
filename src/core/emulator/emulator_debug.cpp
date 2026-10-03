@@ -195,6 +195,27 @@ void Emulator::stepBasicStatement() {
   basicBreakLine_ = 0;
 }
 
+bool Emulator::isAtBasicPrompt() const {
+  // RESTART ($D43C) puts the ] in X and calls INLIN at $D441; the line it
+  // reads is taken at $D444. So Applesoft is at its prompt exactly while
+  // that call is open, which leaves its return address, $D443, on the stack
+  // (low byte first). A line typed there (RUN, BRUN, CALL -151) has already
+  // returned from it, and its bytes are below the stack pointer, where the
+  // scan does not look. The prompt character is checked as well, since a
+  // stack can hold anything. Direct mode is not: CURLIN keeps a stopped
+  // program's line until the next line is typed, so Control-Reset out of a
+  // program is at the prompt with CURLIN saying otherwise. Nothing is
+  // tracked, so a state restored at the prompt is at the prompt.
+  if (mmu_->readRAM(0x33, false) != 0xDD) return false;  // the ] prompt
+  for (unsigned a = 0x100u + cpu_->getSP() + 1; a < 0x1FF; a++) {
+    if (mmu_->readRAM(static_cast<uint16_t>(a), false) == 0x43 &&
+        mmu_->readRAM(static_cast<uint16_t>(a + 1), false) == 0xD4) {
+      return true;
+    }
+  }
+  return false;
+}
+
 uint16_t Emulator::getBasicTxtptr() const {
   // Read TXTPTR respecting current ALTZP state - BASIC writes to whichever
   // bank is active, so we need to read from the same bank

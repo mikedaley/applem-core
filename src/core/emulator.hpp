@@ -262,6 +262,10 @@ public:
   uint8_t getBasicErrorCode() const { return basicErrorCode_; }
   void clearBasicError() { basicErrorHit_ = false; }
   uint16_t getBasicTxtptr() const;  // Get current TXTPTR for statement highlighting
+  // Whether Applesoft is waiting for a line at its ] prompt: inside the call
+  // RESTART makes to read the line. A program running, a
+  // machine code program started from the prompt, or the monitor is not.
+  bool isAtBasicPrompt() const;
   int getBasicStatementIndex();     // Get current statement index (0-based)
 
   // Statement geometry for an arbitrary line, for the debugger UI. These use
