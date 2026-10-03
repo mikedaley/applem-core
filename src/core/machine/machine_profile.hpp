@@ -140,6 +140,13 @@ struct MachineCharRom {
   // Rows to rotate each eight-byte cell upwards, moving a leading blank
   // scanline to the end where the renderer expects it.
   int rowRotate;
+  // Where in the image the US set and the UK set begin. The //e's 8KB part
+  // (342-0273) holds the UK set in its lower half and the US set in its
+  // upper half, which is the one a US machine shows; a part with one set
+  // starts it at zero. Reading the lower half as the US set put a pound sign
+  // where every # belongs, and made the UK switch work backwards.
+  uint16_t usSetOffset = 0;
+  uint16_t ukSetOffset = 0;
 };
 
 struct MachineMemory {
@@ -311,7 +318,7 @@ inline constexpr MachineProfile APPLE_IIE_PROFILE = {
         16 * 1024, // romSize — $C000-$FFFF, including the internal slot ROM
         0xC000,    // romBaseAddress
         8 * 1024,  // charRomSize — US and UK sets
-        {false, 0}, // charRom: bit 0 leftmost, blank scanline last
+        {false, 0, 0x1000, 0x0000}, // charRom: bit 0 leftmost, blank scanline last; US set upper
         4 * 1024,  // lcBankSize
         8 * 1024,  // lcHighSize
     },
@@ -614,7 +621,7 @@ inline constexpr MachineProfile APPLE_IIGS_PROFILE = {
         64 * 1024,  // romSize — the part of ROM that answers in a 16-bit space
         0x0000,     // romBaseAddress — a IIgs's ROM is banked, not based
         4 * 1024,   // charRomSize
-        {false, 0}, // charRom: as a //e's
+        {false, 0, 0x1000, 0x1000}, // charRom: the //e's part, and its US set only
         4 * 1024,   // lcBankSize
         8 * 1024,   // lcHighSize
     },

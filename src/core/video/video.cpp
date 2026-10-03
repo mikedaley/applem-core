@@ -200,14 +200,13 @@ Video::CharROMInfo Video::getCharROMInfo(uint8_t ch, bool inverse, bool flash,
     needsXor = false;
   }
 
-  // The UK set is a second bank inside the same character ROM. A machine whose
-  // generator holds only one set has nothing at that offset, and reading there
-  // returns blanks for every glyph — a screen with nothing on it but the
-  // cursor, which is the inverse of a blank and so still solid.
-  if (ukCharSet_ && machine_->caps.hasUkCharSet) {
-    constexpr uint16_t UK_CHAR_SET_OFFSET = 0x1000;
-    romOffset += UK_CHAR_SET_OFFSET;
-  }
+  // Which set: the profile says where each begins in the image. A machine
+  // whose generator holds only one set ignores the switch, because reading
+  // where a second set would be returns blanks for every glyph: a screen
+  // with nothing on it but the cursor, which is the inverse of a blank and
+  // so still solid.
+  const MachineCharRom &sets = machine_->memory.charRom;
+  romOffset += (ukCharSet_ && machine_->caps.hasUkCharSet) ? sets.ukSetOffset : sets.usSetOffset;
 
   // Handle flash - toggle inverse state when flash is active
   if (flash && flashState_ && !vs.altCharSet) {

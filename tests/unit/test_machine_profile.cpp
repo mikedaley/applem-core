@@ -14,6 +14,7 @@
 #include "audio/audio.hpp"
 #include "cards/thunderclock/thunderclock_card.hpp"
 #include "emulator.hpp"
+#include "iigs/iigs_machine.hpp"
 #include "iigs/iigs_spec.hpp"
 #include "machine/machine_profile.hpp"
 #include "mmu/mmu.hpp"
@@ -21,6 +22,7 @@
 #include "roms.cpp"
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1081,11 +1083,11 @@ TEST_CASE("Character ROMs are normalised to one layout", "[machine][video]") {
 
 TEST_CASE("A machine with one character set ignores the UK switch",
           "[machine][video]") {
-    // The UK set is a second bank inside the //e's 8KB character ROM, reached
-    // by adding 0x1000 to the glyph offset. A II+'s generator is 2KB and holds
-    // a single set, so that offset lands past the end of the image and every
-    // glyph comes back blank — a screen showing nothing but the cursor, which
-    // survives because it is the inverse of a blank and so still solid.
+    // The UK set is the other half of the //e's 8KB character ROM. A II+'s
+    // generator is 2KB and holds a single set, so reading where a second set
+    // would be lands past the end of the image and every glyph comes back
+    // blank: a screen showing nothing but the cursor, which survives because
+    // it is the inverse of a blank and so still solid.
     if (!Emulator::isMachineRunnable(MachineId::AppleIIPlus)) {
         WARN("II+ ROMs not built in; skipping the UK character set test");
         return;
@@ -1131,6 +1133,56 @@ TEST_CASE("A machine with one character set ignores the UK switch",
         iie.getVideo().setUKCharacterSet(true);
         REQUIRE(rendersText(iie) > 100); // Still legible, just a different set
         REQUIRE(us > 100);
+    }
+}
+
+TEST_CASE("A US machine shows # where the UK set shows a pound sign", "[machine][video]") {
+    // The two sets differ in one glyph, the one at $A3: # in the US set and
+    // a pound sign in the UK set. A # has the same two strokes on its first
+    // two rows; a pound sign's top is a curve, so its first two rows differ.
+    // The //e's 8KB part keeps the UK set in its lower half, and reading that
+    // half as the US set made the switch work backwards and put a pound sign
+    // on a IIgs, which has no switch at all.
+    constexpr uint16_t HASH_CELL = 35 * 8; // $A3, normal text
+    auto isHash = [](const MMU &mmu, uint16_t set) {
+        return mmu.readCharROM(static_cast<uint16_t>(set + HASH_CELL)) ==
+                   mmu.readCharROM(static_cast<uint16_t>(set + HASH_CELL + 1)) &&
+               mmu.readCharROM(static_cast<uint16_t>(set + HASH_CELL)) != 0;
+    };
+
+    for (int i = 0; i < MACHINE_COUNT; i++) {
+        const MachineProfile &profile = machineProfileAt(i);
+        if (!Emulator::isMachineRunnable(profile.id)) continue;
+        if (profile.family == MachineFamily::AppleIIgs) {
+            iigs::IIgsMachine gs;
+            gs.init(roms::ROM_SYSTEM_IIGS, roms::ROM_SYSTEM_IIGS_SIZE, roms::ROM_CHAR, roms::ROM_CHAR_SIZE);
+            INFO(profile.name);
+            CHECK(isHash(gs.memory().megaII(), profile.memory.charRom.usSetOffset));
+            continue;
+        }
+        Emulator e(profile.id);
+        e.init();
+        INFO(profile.name);
+        CHECK(isHash(e.getMMU(), profile.memory.charRom.usSetOffset));
+        if (profile.caps.hasUkCharSet) {
+            CHECK_FALSE(isHash(e.getMMU(), profile.memory.charRom.ukSetOffset));
+        }
+    }
+
+    SECTION("and the //e's switch picks the pound sign, on the screen") {
+        Emulator iie(MachineId::AppleIIe);
+        iie.init();
+        iie.getMMU().writeRAM(0x400, 0xA3);
+        auto rowsMatch = [&] {
+            iie.getVideo().forceRenderFrame();
+            const uint8_t *fb = iie.getVideo().getFramebuffer();
+            const size_t stride = static_cast<size_t>(iie.getMachine().display.pixelWidth) * 4;
+            // Glyph rows are doubled, so glyph row 0 is lines 0-1 and row 1 is 2-3.
+            return std::memcmp(fb, fb + stride * 2, 14 * 4) == 0;
+        };
+        REQUIRE(rowsMatch()); // US: #
+        iie.getVideo().setUKCharacterSet(true);
+        REQUIRE_FALSE(rowsMatch()); // UK: the pound sign
     }
 }
 
