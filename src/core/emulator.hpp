@@ -391,6 +391,9 @@ public:
 
   // Soft switch state (64-bit packed state)
   uint64_t getSoftSwitchState() const;
+  // What a soft switch breakpoint's source holds: the packed word, or the
+  // byte a peek reads at a register's address (MachineDebug).
+  uint64_t readSwitchSource(uint32_t source) const;
 
   // Screen text extraction (for text selection / copy)
   static int screenCodeToAscii(uint8_t code);

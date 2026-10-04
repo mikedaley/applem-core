@@ -210,6 +210,52 @@ uint8_t MachineHost::peek(uint32_t address) {
   return emulator_ ? emulator_->peekMemory(static_cast<uint16_t>(address & 0xFFFF)) : 0;
 }
 
+std::vector<SoftSwitchInfo> MachineHost::softSwitches() const {
+  return softSwitchCatalog(profile());
+}
+
+uint64_t MachineHost::softSwitchValue(uint32_t source) {
+  if (iigs_) return iigs_->readSwitchSource(source);
+  return emulator_ ? emulator_->readSwitchSource(source) : 0;
+}
+
+std::string MachineHost::switchHitText() {
+  MachineDebug *d = debug();
+  if (!d || !d->isSwitchBreakpointHit()) return {};
+
+  // A flag is named by its bit; a register by its address, whatever mask
+  // the breakpoint put over it.
+  const std::vector<SoftSwitchInfo> catalog = softSwitches();
+  const SoftSwitchInfo *entry = nullptr;
+  for (const SoftSwitchInfo &s : catalog) {
+    if (s.source != d->switchHitSource()) continue;
+    if (s.isRegister() || s.mask() == d->switchHitMask()) {
+      entry = &s;
+      break;
+    }
+  }
+
+  char where[16];
+  const uint32_t pc = d->switchHitPC();
+  if (profile().cpu == CPUVariant::CMOS_65C816) {
+    std::snprintf(where, sizeof where, "%02X/%04X", pc >> 16, pc & 0xFFFF);
+  } else {
+    std::snprintf(where, sizeof where, "$%04X", pc & 0xFFFF);
+  }
+
+  char text[96];
+  const char *name = entry ? entry->name : "Switch";
+  if (entry && !entry->isRegister()) {
+    std::snprintf(text, sizeof text, "%s %s, by %s", name,
+                  d->switchHitAfter() ? "on" : "off", where);
+  } else {
+    std::snprintf(text, sizeof text, "%s $%02X to $%02X, by %s", name,
+                  static_cast<unsigned>(d->switchHitBefore()),
+                  static_cast<unsigned>(d->switchHitAfter()), where);
+  }
+  return text;
+}
+
 std::vector<MemorySpace> MachineHost::memorySpaces() {
   std::vector<MemorySpace> spaces;
   auto add = [&](MemorySpace::Kind kind, const std::string &name, uint32_t base, uint32_t size,

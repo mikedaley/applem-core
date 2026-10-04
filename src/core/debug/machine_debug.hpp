@@ -163,6 +163,95 @@ public:
 
   static constexpr size_t MAX_BEAM_BREAKPOINTS = 16;
 
+  // ===== Soft switch breakpoints =====
+  //
+  // A breakpoint on the machine's state rather than on what the processor is
+  // doing: stop when a switch changes, or when it comes to hold a value. A
+  // switch is read from a *source*, which is either the packed switch word
+  // (SWITCH_FLAGS, the bits packSoftSwitchState lays out) or a register named
+  // by its I/O address ($C029, say), and a mask picks out the bits that
+  // matter. The machine reads the source; this class decides.
+  //
+  // They are checked after every instruction, and only while one exists, so
+  // a machine with none pays a single test. Checking the state rather than
+  // hooking the switches' addresses is deliberate: a switch moves by a read as
+  // often as by a write, by a register that sets eight of them at once
+  // ($C068), and by the machine itself (the vertical blank), and a change
+  // from any of them is the change the user asked about.
+  //
+  // **Both conditions fire on entry**, like the ranges above: Changes when
+  // the masked bits differ from the last check, Equals when they come to
+  // hold the value having not held it. A switch already at the value does
+  // not stop the machine the moment it resumes, and one held there does not
+  // stop it on every instruction after. The first check after a breakpoint is
+  // added, or after a reset, only records where things are.
+
+  static constexpr uint32_t SWITCH_FLAGS = 0;
+  enum class SwitchCondition : uint8_t { Changes = 0, Equals = 1 };
+
+  /** Returns the new breakpoint's id. */
+  int32_t addSwitchBreakpoint(uint32_t source, uint64_t mask,
+                              SwitchCondition condition, uint64_t value);
+  void removeSwitchBreakpoint(int32_t id);
+  void enableSwitchBreakpoint(int32_t id, bool enabled);
+  void clearSwitchBreakpoints();
+  bool hasSwitchBreakpoints() const { return !switchBreakpoints_.empty(); }
+
+  bool isSwitchBreakpointHit() const { return switchHit_; }
+  int32_t switchBreakpointHitId() const { return switchHitId_; }
+  // The masked bits before and after, and where the instruction that moved
+  // them began.
+  uint64_t switchHitBefore() const { return switchHitBefore_; }
+  uint64_t switchHitAfter() const { return switchHitAfter_; }
+  uint32_t switchHitPC() const { return switchHitPC_; }
+  // What the breakpoint that fired was watching.
+  uint32_t switchHitSource() const { return switchHitSource_; }
+  uint64_t switchHitMask() const { return switchHitMask_; }
+
+  /**
+   * Should the machine stop, now that the instruction at `pc` has run?
+   *
+   * `read(source)` answers what a source holds now. With `report` false the
+   * values are only recorded, which is what a single step wants: it stops
+   * anyway, and the change it made must not fire again on the next Run.
+   */
+  template <typename Read>
+  bool checkSwitches(Read &&read, uint32_t pc, bool report = true) {
+    bool fired = false;
+    bool haveFlags = false;
+    uint64_t flags = 0;
+    for (SwitchBreakpoint &bp : switchBreakpoints_) {
+      uint64_t now;
+      if (bp.source == SWITCH_FLAGS) {
+        if (!haveFlags) {
+          flags = read(SWITCH_FLAGS);
+          haveFlags = true;
+        }
+        now = flags & bp.mask;
+      } else {
+        now = read(bp.source) & bp.mask;
+      }
+      const uint64_t before = bp.last;
+      const bool primed = bp.primed;
+      bp.last = now;
+      bp.primed = true;
+      if (!report || !primed || !bp.enabled || fired || switchHit_) continue;
+      const bool hit = bp.condition == SwitchCondition::Changes
+                           ? now != before
+                           : now == bp.value && before != bp.value;
+      if (!hit) continue;
+      fired = true;
+      switchHit_ = true;
+      switchHitId_ = bp.id;
+      switchHitBefore_ = before;
+      switchHitAfter_ = now;
+      switchHitPC_ = pc & 0xFFFFFF;
+      switchHitSource_ = bp.source;
+      switchHitMask_ = bp.mask;
+    }
+    return fired;
+  }
+
   // ===== The trace ring =====
 
   /**
@@ -267,6 +356,26 @@ private:
   int32_t beamHitId_ = -1;
   int16_t beamHitScanline_ = -1;
   int16_t beamHitHPos_ = -1;
+
+  struct SwitchBreakpoint {
+    int32_t id;
+    uint32_t source;
+    uint64_t mask;
+    SwitchCondition condition;
+    uint64_t value; // already masked
+    bool enabled;
+    bool primed;
+    uint64_t last;
+  };
+  std::vector<SwitchBreakpoint> switchBreakpoints_;
+  int32_t nextSwitchId_ = 1;
+  bool switchHit_ = false;
+  int32_t switchHitId_ = -1;
+  uint64_t switchHitBefore_ = 0;
+  uint64_t switchHitAfter_ = 0;
+  uint32_t switchHitPC_ = 0;
+  uint32_t switchHitSource_ = 0;
+  uint64_t switchHitMask_ = 0;
 
   std::vector<TraceEntry> traceBuffer_;
   size_t traceHead_ = 0;

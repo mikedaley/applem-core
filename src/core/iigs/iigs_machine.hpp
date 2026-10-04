@@ -125,6 +125,16 @@ public:
   /** One instruction, whether or not a breakpoint sits on it. */
   void stepInstruction();
 
+  /**
+   * The soft switches as one word (packSoftSwitchState): the Mega II's, with
+   * the pushbuttons as $C061-$C063 read them and the ADB's keyboard latch.
+   */
+  uint64_t getSoftSwitchState() const;
+  // What a soft switch breakpoint's source holds: that word, or the byte a
+  // peek reads at a register's I/O address, from bank $E0, where the I/O
+  // page is whatever $C035 says about banks $00 and $01.
+  uint64_t readSwitchSource(uint32_t source) const;
+
   // Which addresses have run an instruction, for a debugger's listing to
   // grey out the bytes that never have: a bit per address over the whole
   // 24-bit space (2MB), held only while it is switched on. A //e counts

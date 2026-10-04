@@ -622,6 +622,9 @@ void Emulator::runUntil(uint64_t targetCycles) {
     // Profile: record PC before execution
     uint16_t profilePC = profileEnabled_ ? cpu_->getPC() : 0;
 
+    // Where this instruction began, for a switch breakpoint to report
+    const uint16_t instructionPC = cpu_->getPC();
+
     // Execute one instruction
     cpu_->executeInstruction();
 
@@ -673,6 +676,15 @@ void Emulator::runUntil(uint64_t targetCycles) {
 
     // A watchpoint hit during the instruction, through the MMU's callbacks
     if (debug_.isWatchpointHit()) return;
+
+    // A soft switch the instruction moved, by whatever means it moved it
+    if (debug_.hasSwitchBreakpoints() &&
+        debug_.checkSwitches(
+            [this](uint32_t source) { return readSwitchSource(source); },
+            instructionPC)) {
+      paused_ = true;
+      return;
+    }
 
     // Beam breakpoints, measured from the start of the frame in progress
     if (debug_.hasBeamBreakpoints()) {
@@ -1089,6 +1101,14 @@ void Emulator::stepInstruction() {
     frameReady_ = true;
     framesCompleted_++;
   }
+
+  // A step stops anyway, so a switch it moved is only noted: otherwise the
+  // change would fire on the first instruction of the next Run.
+  if (debug_.hasSwitchBreakpoints()) {
+    debug_.checkSwitches(
+        [this](uint32_t source) { return readSwitchSource(source); },
+        cpu_->getPC(), false);
+  }
 }
 
 uint8_t Emulator::readMemory(uint16_t address) const {
@@ -1112,6 +1132,11 @@ uint64_t Emulator::getSoftSwitchState() const {
   return packSoftSwitchState(mmu_->getSoftSwitches(), buttonState_[0],
                              buttonState_[1], buttonState_[2],
                              (keyboardLatch_ & 0x80) != 0);
+}
+
+uint64_t Emulator::readSwitchSource(uint32_t source) const {
+  if (source == MachineDebug::SWITCH_FLAGS) return getSoftSwitchState();
+  return mmu_->peek(static_cast<uint16_t>(source));
 }
 
 uint8_t Emulator::cpuRead(uint16_t address) { return mmu_->read(address); }

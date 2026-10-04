@@ -300,6 +300,45 @@ bool MachineDebug::shouldBreakAtBeam(uint64_t frameBaseCycle, int scanline,
 }
 
 // ============================================================================
+// Soft switch breakpoints
+// ============================================================================
+
+int32_t MachineDebug::addSwitchBreakpoint(uint32_t source, uint64_t mask,
+                                          SwitchCondition condition,
+                                          uint64_t value) {
+  const int32_t id = nextSwitchId_++;
+  switchBreakpoints_.push_back(
+      {id, source, mask, condition, value & mask, true, false, 0});
+  return id;
+}
+
+void MachineDebug::removeSwitchBreakpoint(int32_t id) {
+  for (auto it = switchBreakpoints_.begin(); it != switchBreakpoints_.end();
+       ++it) {
+    if (it->id == id) {
+      switchBreakpoints_.erase(it);
+      if (switchHit_ && switchHitId_ == id) switchHit_ = false;
+      return;
+    }
+  }
+}
+
+void MachineDebug::enableSwitchBreakpoint(int32_t id, bool enabled) {
+  for (SwitchBreakpoint &bp : switchBreakpoints_) {
+    if (bp.id == id) {
+      bp.enabled = enabled;
+      return;
+    }
+  }
+}
+
+void MachineDebug::clearSwitchBreakpoints() {
+  switchBreakpoints_.clear();
+  switchHit_ = false;
+  switchHitId_ = -1;
+}
+
+// ============================================================================
 // The trace ring
 // ============================================================================
 
@@ -329,6 +368,8 @@ void MachineDebug::clearHits() {
   watchpointHit_ = false;
   beamHit_ = false;
   beamHitId_ = -1;
+  switchHit_ = false;
+  switchHitId_ = -1;
 }
 
 void MachineDebug::reset() {
@@ -343,6 +384,9 @@ void MachineDebug::reset() {
     bp.lastFireFrame = UINT64_MAX;
     bp.lastFireScanline = -1;
   }
+  // A reset puts the switches back as the machine does, which is not the
+  // program changing them, so each one starts again from what it finds.
+  for (SwitchBreakpoint &bp : switchBreakpoints_) bp.primed = false;
 }
 
 // ============================================================================

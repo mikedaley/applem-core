@@ -897,3 +897,102 @@ TEST_CASE("Resetting a IIgs's battery RAM brings back the firmware's defaults", 
     CHECK(host.iigs()->memory().textColourRegister() == 0xF6);
     CHECK(host.iigs()->memory().borderColour() == 0x6);
 }
+
+TEST_CASE("A switch breakpoint stops every machine on the instruction that moved it",
+          "[host][debugger][switch]") {
+  // STA $C054 / STA $C055 / NOP / JMP $2007: PAGE2 off, then on, then a loop.
+  const std::vector<uint8_t> code = {0x8D, 0x54, 0xC0, 0x8D, 0x55, 0xC0,
+                                     0xEA, 0x4C, 0x07, 0x20};
+  const MachineId machines[] = {MachineId::AppleIIe, MachineId::AppleIIPlus,
+                                MachineId::AppleIIc, MachineId::AppleIIgs};
+  for (MachineId id : machines) {
+    const MachineProfile &profile = machineProfile(id);
+    DYNAMIC_SECTION(profile.name) {
+      if (!Emulator::isMachineRunnable(id)) {
+        WARN(profile.name << " ROM not built in; skipping");
+        continue;
+      }
+      MachineHost host;
+      REQUIRE(host.setMachine(id));
+      host.build();
+      runSeconds(host, 1.5);
+      host.setPaused(true);
+      if (host.iigs()) {
+        // Bank zero, eight-bit registers, and no interrupts: a handler that
+        // saves and restores the switches would move PAGE2 itself.
+        a2e::CPU65816 &cpu = host.iigs()->cpu();
+        cpu.setEmulation(true);
+        cpu.setPBR(0);
+        cpu.setDBR(0);
+        cpu.setP(0x34);
+        for (size_t i = 0; i < code.size(); i++) {
+          host.iigs()->memory().write(0x2000 + static_cast<uint32_t>(i), code[i]);
+        }
+        cpu.setPC(0x2000);
+      } else {
+        for (size_t i = 0; i < code.size(); i++) {
+          host.emulator()->writeMemory(static_cast<uint16_t>(0x2000 + i), code[i]);
+        }
+        host.setRegister(a2e::host::CpuRegister::P, 0x34);
+        host.setRegister(a2e::host::CpuRegister::PC, 0x2000);
+      }
+
+      const auto catalog = host.softSwitches();
+      const SoftSwitchInfo *page2 = findSoftSwitch(catalog, "page2");
+      REQUIRE(page2);
+      MachineDebug &debug = *host.debug();
+      debug.addSwitchBreakpoint(page2->source, page2->mask(),
+                                MachineDebug::SwitchCondition::Changes, 0);
+
+      host.setPaused(false);
+      runSeconds(host, 0.1);
+      REQUIRE(host.isPaused());
+      REQUIRE(debug.isSwitchBreakpointHit());
+      REQUIRE(debug.switchHitPC() == 0x2003);
+      REQUIRE(host.softSwitchValue(page2->source) & page2->mask());
+      const std::string where = host.iigs() ? "00/2003" : "$2003";
+      REQUIRE(host.switchHitText() == "PAGE2 on, by " + where);
+
+      // Running on, nothing moves it again.
+      host.setPaused(false);
+      runSeconds(host, 0.1);
+      REQUIRE_FALSE(host.isPaused());
+    }
+  }
+}
+
+TEST_CASE("A IIgs register breakpoint stops on the value under its mask",
+          "[host][debugger][switch][iigs]") {
+  if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIgs));
+  host.build();
+  runSeconds(host, 1.5);
+  host.setPaused(true);
+
+  // LDA #$00 / STA $C034 / LDA #$06 / STA $C034 / BRA -2: a black border,
+  // then a blue one, without starting a clock transaction.
+  const std::vector<uint8_t> code = {0xA9, 0x00, 0x8D, 0x34, 0xC0, 0xA9, 0x06,
+                                     0x8D, 0x34, 0xC0, 0x80, 0xFE};
+  a2e::CPU65816 &cpu = host.iigs()->cpu();
+  cpu.setEmulation(true);
+  cpu.setPBR(0);
+  cpu.setDBR(0);
+  cpu.setP(0x34);
+  for (size_t i = 0; i < code.size(); i++) {
+    host.iigs()->memory().write(0x2000 + static_cast<uint32_t>(i), code[i]);
+  }
+  cpu.setPC(0x2000);
+
+  const auto catalog = host.softSwitches();
+  const SoftSwitchInfo *border = findSoftSwitch(catalog, "border");
+  REQUIRE(border);
+  host.debug()->addSwitchBreakpoint(border->source, 0x0F,
+                                    MachineDebug::SwitchCondition::Equals, 0x06);
+  host.setPaused(false);
+  runSeconds(host, 0.1);
+  REQUIRE(host.isPaused());
+  REQUIRE(host.debug()->switchHitPC() == 0x2007);
+  REQUIRE((host.softSwitchValue(border->source) & 0x0F) == 0x06);
+  REQUIRE(host.switchHitText() == "BORDER $00 to $06, by 00/2007");
+}

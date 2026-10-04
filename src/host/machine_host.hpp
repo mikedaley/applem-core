@@ -10,6 +10,7 @@
 #include "../core/emulator.hpp"
 #include "../core/debug/condition_evaluator.hpp"
 #include "../core/debug/machine_debug.hpp"
+#include "../core/debug/soft_switch_catalog.hpp"
 #include "../core/disassembler/disassembler.hpp"
 #include "../core/machine/machine_profile.hpp"
 #include "iigs/iigs_machine.hpp"
@@ -416,6 +417,15 @@ public:
   bool wasExecuted(uint32_t address);
   // The hottest address's count, and the total, for scaling a heat map.
   void profileTotals(uint32_t &max, uint64_t &total);
+
+  // The soft switches and registers this machine has (soft_switch_catalog),
+  // what one of them holds now, and the stop a switch breakpoint made, said
+  // in words, naming the instruction that moved it: "PAGE2 on, by $0803",
+  // "NEWVIDEO $01 to $C1, by 00/2041".
+  // Empty when the machine is not stopped on one.
+  std::vector<SoftSwitchInfo> softSwitches() const;
+  uint64_t softSwitchValue(uint32_t source);
+  std::string switchHitText();
 
   // A breakpoint condition, against the machine as it stands. The error is
   // the last expression's, or empty.

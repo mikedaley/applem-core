@@ -1,5 +1,6 @@
 /*
- * test_machine_debug.cpp - Execution ranges and stack pointer breakpoints
+ * test_machine_debug.cpp - Execution ranges, stack pointer and soft switch
+ * breakpoints, and the switch catalog
  *
  * Both are ranges that fire on *entry*: the check before each instruction
  * stops the machine when the value moves from outside a range to inside it,
@@ -12,6 +13,9 @@
 #include "catch.hpp"
 
 #include "debug/machine_debug.hpp"
+#include "debug/soft_switch_catalog.hpp"
+
+#include <string>
 
 using namespace a2e;
 
@@ -143,4 +147,218 @@ TEST_CASE("clearBreakpoints takes ranges and stack breakpoints too",
   REQUIRE_FALSE(debug.shouldBreakBefore(0x1000, 0xFF));
   debug.clearBreakpoints();
   REQUIRE_FALSE(debug.shouldBreakBefore(0x2000, 0x10));
+}
+
+// ============================================================================
+// Soft switch breakpoints
+//
+// Checked after each instruction against what the machine reads back, so
+// here a "machine" is a value the test moves by hand between checks.
+// ============================================================================
+
+namespace {
+constexpr uint32_t FLAGS = MachineDebug::SWITCH_FLAGS;
+constexpr uint64_t PAGE2 = 1ULL << 2;
+constexpr uint64_t TEXT = 1ULL << 0;
+using Cond = MachineDebug::SwitchCondition;
+} // namespace
+
+TEST_CASE("A switch breakpoint on a change fires when the switch moves",
+          "[debug][breakpoint][switch]") {
+  MachineDebug debug;
+  uint64_t flags = TEXT;
+  auto read = [&](uint32_t) { return flags; };
+  const int32_t id = debug.addSwitchBreakpoint(FLAGS, PAGE2, Cond::Changes, 0);
+  REQUIRE(debug.hasSwitchBreakpoints());
+
+  // The first check only records where things are.
+  REQUIRE_FALSE(debug.checkSwitches(read, 0x2000));
+  // A switch the breakpoint does not watch moves nothing.
+  flags = 0;
+  REQUIRE_FALSE(debug.checkSwitches(read, 0x2001));
+
+  flags |= PAGE2;
+  REQUIRE(debug.checkSwitches(read, 0x2004));
+  REQUIRE(debug.isSwitchBreakpointHit());
+  REQUIRE(debug.switchBreakpointHitId() == id);
+  REQUIRE(debug.switchHitBefore() == 0);
+  REQUIRE(debug.switchHitAfter() == PAGE2);
+  REQUIRE(debug.switchHitPC() == 0x2004);
+  REQUIRE(debug.switchHitSource() == FLAGS);
+  REQUIRE(debug.switchHitMask() == PAGE2);
+
+  // Resuming does not fire again while it holds, and does when it goes back.
+  debug.clearHits();
+  REQUIRE_FALSE(debug.checkSwitches(read, 0x2007));
+  flags &= ~PAGE2;
+  REQUIRE(debug.checkSwitches(read, 0x2008));
+  REQUIRE(debug.switchHitAfter() == 0);
+}
+
+TEST_CASE("A switch breakpoint on a value fires when the value arrives",
+          "[debug][breakpoint][switch]") {
+  MachineDebug debug;
+  uint64_t flags = 0;
+  auto read = [&](uint32_t) { return flags; };
+  debug.addSwitchBreakpoint(FLAGS, TEXT, Cond::Equals, TEXT); // TEXT on
+
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  flags = TEXT;
+  REQUIRE(debug.checkSwitches(read, 0));
+  debug.clearHits();
+  // Held there, it does not stop every instruction; going off is not the value.
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  flags = 0;
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  flags = TEXT;
+  REQUIRE(debug.checkSwitches(read, 0));
+}
+
+TEST_CASE("A switch already at its value does not stop the machine on resume",
+          "[debug][breakpoint][switch]") {
+  MachineDebug debug;
+  uint64_t flags = TEXT;
+  auto read = [&](uint32_t) { return flags; };
+  debug.addSwitchBreakpoint(FLAGS, TEXT, Cond::Equals, TEXT);
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+}
+
+TEST_CASE("A register breakpoint reads its own source under its mask",
+          "[debug][breakpoint][switch]") {
+  MachineDebug debug;
+  uint8_t newVideo = 0x01;
+  uint64_t flags = 0;
+  int flagReads = 0;
+  auto read = [&](uint32_t source) -> uint64_t {
+    if (source == FLAGS) {
+      flagReads++;
+      return flags;
+    }
+    REQUIRE(source == 0xC029);
+    return newVideo;
+  };
+  // Super Hi-Res on: bit 7 set, whatever the others hold.
+  debug.addSwitchBreakpoint(0xC029, 0x80, Cond::Equals, 0xFF);
+  const int32_t text = debug.addSwitchBreakpoint(FLAGS, TEXT, Cond::Changes, 0);
+  debug.addSwitchBreakpoint(FLAGS, PAGE2, Cond::Changes, 0);
+
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  // The word is read once per check however many breakpoints look at it.
+  REQUIRE(flagReads == 1);
+
+  newVideo = 0x41; // linear video, not Super Hi-Res
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  newVideo = 0xC1;
+  REQUIRE(debug.checkSwitches(read, 0x2010));
+  REQUIRE(debug.switchHitBefore() == 0x00);
+  REQUIRE(debug.switchHitAfter() == 0x80);
+  REQUIRE(debug.switchHitSource() == 0xC029);
+
+  // Disabled, a breakpoint keeps up with the machine and does not fire.
+  debug.clearHits();
+  debug.enableSwitchBreakpoint(text, false);
+  flags = TEXT;
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  debug.enableSwitchBreakpoint(text, true);
+  REQUIRE_FALSE(debug.checkSwitches(read, 0)); // nothing moved since
+}
+
+TEST_CASE("A step notes a switch it moved without stopping on it next time",
+          "[debug][breakpoint][switch]") {
+  MachineDebug debug;
+  uint64_t flags = 0;
+  auto read = [&](uint32_t) { return flags; };
+  debug.addSwitchBreakpoint(FLAGS, PAGE2, Cond::Changes, 0);
+  debug.checkSwitches(read, 0);
+
+  flags = PAGE2;
+  REQUIRE_FALSE(debug.checkSwitches(read, 0, false)); // the step
+  REQUIRE_FALSE(debug.isSwitchBreakpointHit());
+  REQUIRE_FALSE(debug.checkSwitches(read, 0)); // the Run after it
+}
+
+TEST_CASE("A reset starts every switch breakpoint afresh",
+          "[debug][breakpoint][switch]") {
+  MachineDebug debug;
+  uint64_t flags = PAGE2;
+  auto read = [&](uint32_t) { return flags; };
+  const int32_t id = debug.addSwitchBreakpoint(FLAGS, PAGE2, Cond::Changes, 0);
+  debug.checkSwitches(read, 0);
+
+  // The machine putting its switches back is not the program moving them.
+  debug.reset();
+  flags = 0;
+  REQUIRE_FALSE(debug.checkSwitches(read, 0));
+  REQUIRE(debug.hasSwitchBreakpoints());
+
+  flags = PAGE2;
+  REQUIRE(debug.checkSwitches(read, 0));
+  debug.removeSwitchBreakpoint(id);
+  REQUIRE_FALSE(debug.isSwitchBreakpointHit());
+  REQUIRE_FALSE(debug.hasSwitchBreakpoints());
+}
+
+// ============================================================================
+// The catalog
+// ============================================================================
+
+TEST_CASE("Each machine lists the switches it has and no others",
+          "[debug][switch][machine]") {
+  auto has = [](MachineId id, const char *key) {
+    const auto catalog = softSwitchCatalog(machineProfile(id));
+    return findSoftSwitch(catalog, key) != nullptr;
+  };
+
+  for (const char *key : {"text", "mixed", "page2", "hires", "an0", "an3",
+                          "lcbank2", "btn0", "keyavail"}) {
+    INFO(key);
+    REQUIRE(has(MachineId::AppleIIe, key));
+    REQUIRE(has(MachineId::AppleIIPlus, key));
+    REQUIRE(has(MachineId::AppleIIc, key));
+    REQUIRE(has(MachineId::AppleIIgs, key));
+  }
+
+  // A II+ has no auxiliary bank, no 80 columns, no $C019 and no IOU.
+  for (const char *key : {"col80", "altchar", "dhires", "store80", "ramrd",
+                          "altzp", "intcxrom", "vblbar", "ioudis"}) {
+    INFO(key);
+    REQUIRE_FALSE(has(MachineId::AppleIIPlus, key));
+    REQUIRE(has(MachineId::AppleIIe, key));
+  }
+
+  // Only a II+ and a //e have a cassette port.
+  REQUIRE(has(MachineId::AppleIIPlus, "cassout"));
+  REQUIRE(has(MachineId::AppleIIe, "cassin"));
+  REQUIRE_FALSE(has(MachineId::AppleIIc, "cassout"));
+  REQUIRE_FALSE(has(MachineId::AppleIIgs, "cassin"));
+
+  // Only a IIgs has its registers.
+  REQUIRE(has(MachineId::AppleIIgs, "newvideo"));
+  REQUIRE(has(MachineId::AppleIIgs, "shadow"));
+  REQUIRE_FALSE(has(MachineId::AppleIIe, "newvideo"));
+}
+
+TEST_CASE("A catalog's flags are the bits the packed word holds",
+          "[debug][switch]") {
+  for (const MachineProfile *each : MACHINE_PROFILES) {
+    const MachineProfile &profile = *each;
+    const auto catalog = softSwitchCatalog(profile);
+    for (const SoftSwitchInfo &s : catalog) {
+      INFO(profile.name << " " << s.key);
+      if (s.isRegister()) {
+        REQUIRE(s.source >= 0xC000);
+        REQUIRE(s.source <= 0xC0FF);
+        REQUIRE(s.mask() == 0xFF);
+      } else {
+        // Every switch sits in the low half, which is what the bindings pass.
+        REQUIRE(s.bit < 32);
+        REQUIRE(s.mask() == (1ULL << s.bit));
+      }
+      // Keys are unique: a saved breakpoint names one switch.
+      int same = 0;
+      for (const SoftSwitchInfo &t : catalog) same += std::string(t.key) == s.key;
+      REQUIRE(same == 1);
+    }
+  }
 }

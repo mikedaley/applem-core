@@ -25,6 +25,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CORE_SOURCES
     src/core/emulator.cpp
     src/core/debug/machine_debug.cpp
+    src/core/debug/soft_switch_catalog.cpp
     src/core/emulator/emulator_state.cpp
     src/core/emulator/emulator_debug.cpp
     src/core/cpu/6502/cpu6502.cpp
@@ -536,6 +537,15 @@ if(EMSCRIPTEN)
                 \"_setUKCharacterSet\", \
                 \"_isUKCharacterSet\", \
                 \"_getSoftSwitchStateHigh\", \
+                \"_getSoftSwitchCatalogJSON\", \
+                \"_getSoftSwitchValue\", \
+                \"_addSwitchBreakpoint\", \
+                \"_removeSwitchBreakpoint\", \
+                \"_enableSwitchBreakpoint\", \
+                \"_clearSwitchBreakpoints\", \
+                \"_isSwitchBreakpointHit\", \
+                \"_getSwitchBreakpointHitId\", \
+                \"_getSwitchHitText\", \
                 \"_disassembleWithFlowAnalysis\", \
                 \"_disassembleWithFlowAnalysisMultiEntry\", \
                 \"_getBasicDebugInfo\", \
@@ -1370,10 +1380,12 @@ else()
         ${CORE_TEST_SOURCES}
     )
 
-    # Execution ranges and stack pointer breakpoints (MachineDebug alone)
+    # Execution ranges, stack pointer and soft switch breakpoints
+    # (MachineDebug alone), and the switch catalog every host shows
     add_catch2_test(test_machine_debug
         tests/unit/test_machine_debug.cpp
         src/core/debug/machine_debug.cpp
+        src/core/debug/soft_switch_catalog.cpp
     )
 
     # Debug log sink (only debug_log.cpp)

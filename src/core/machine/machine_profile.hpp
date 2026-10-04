@@ -226,6 +226,9 @@ struct MachineCapabilities {
   // without it, a //c's empty slot 5 would look like somewhere to put a clock.
   bool hasExpansionSlots;
   bool inhibitsBurstInText;   // Video generator kills burst on text lines
+  // A cassette port, $C020 out and $C060 in. A II+ and a //e have one; a //c
+  // and a IIgs answer at neither address.
+  bool hasCassette;
 };
 
 // ----------------------------------------------------------------------------
@@ -345,6 +348,7 @@ inline constexpr MachineProfile APPLE_IIE_PROFILE = {
         true,  // hasInternalSlotRom
         true,  // hasExpansionSlots
         true,  // inhibitsBurstInText
+        true,  // hasCassette
     },
     1, // firstSlot
     7, // lastSlot
@@ -443,6 +447,7 @@ inline constexpr MachineProfile APPLE_II_PLUS_PROFILE = {
         false, // hasInternalSlotRom — nothing answers at $C100-$CFFF
         true,  // hasExpansionSlots — eight of them, and nothing fitted
         false, // inhibitsBurstInText — burst on every line, so text fringes
+        true,  // hasCassette
     },
     0, // firstSlot — slot 0 exists, and is where a language card goes
     7, // lastSlot
@@ -547,6 +552,7 @@ inline constexpr MachineProfile APPLE_IIC_PROFILE = {
         true,  // hasInternalSlotRom — $C100-$CFFF is all firmware
         false, // hasExpansionSlots — soldered down, every one of them
         true,  // inhibitsBurstInText
+        false, // hasCassette — a //c has no cassette port
     },
     1, // firstSlot
     7, // lastSlot
@@ -652,6 +658,7 @@ inline constexpr MachineProfile APPLE_IIGS_PROFILE = {
         true,  // hasInternalSlotRom
         true,  // hasExpansionSlots — seven, and each can be a card or the port
         true,  // inhibitsBurstInText
+        false, // hasCassette
     },
     1, // firstSlot
     7, // lastSlot

@@ -392,12 +392,22 @@ void IIgsMachine::runCycles(int slowCyclesToRun) {
       return;
     }
     if (debug_.isTraceEnabled()) recordTrace();
-    if (!coverage_.empty()) markExecuted(cpu_->getPCFull());
+    const uint32_t instructionPC = cpu_->getPCFull();
+    if (!coverage_.empty()) markExecuted(instructionPC);
 
     step();
 
     // A watchpoint fired inside the instruction, through the CPU's own bus.
     if (debug_.isWatchpointHit()) {
+      paused_ = true;
+      return;
+    }
+
+    // A soft switch or register the instruction moved
+    if (debug_.hasSwitchBreakpoints() &&
+        debug_.checkSwitches(
+            [this](uint32_t source) { return readSwitchSource(source); },
+            instructionPC)) {
       paused_ = true;
       return;
     }
@@ -440,6 +450,25 @@ void IIgsMachine::stepInstruction() {
   if (debug_.isTraceEnabled()) recordTrace();
   if (!coverage_.empty()) markExecuted(cpu_->getPCFull());
   step();
+  // A step stops anyway, so a switch it moved is only noted: otherwise the
+  // change would fire on the first instruction of the next Run.
+  if (debug_.hasSwitchBreakpoints()) {
+    debug_.checkSwitches(
+        [this](uint32_t source) { return readSwitchSource(source); },
+        cpu_->getPCFull(), false);
+  }
+}
+
+uint64_t IIgsMachine::getSoftSwitchState() const {
+  return packSoftSwitchState(memory_->megaII().getSoftSwitches(),
+                             buttonLine(0) != 0, buttonLine(1) != 0,
+                             buttonLine(2) != 0,
+                             (memory_->adb().keyboardLatch() & 0x80) != 0);
+}
+
+uint64_t IIgsMachine::readSwitchSource(uint32_t source) const {
+  if (source == MachineDebug::SWITCH_FLAGS) return getSoftSwitchState();
+  return memory_->peek(0xE00000 | (source & 0xFFFF));
 }
 
 void IIgsMachine::setCoverageEnabled(bool enabled) {
