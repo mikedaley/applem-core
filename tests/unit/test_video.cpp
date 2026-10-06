@@ -814,6 +814,38 @@ TEST_CASE("Solid: a lone double lo-res cell is one colour in every column",
     }
 }
 
+TEST_CASE("Double lo-res shows page 2 when PAGE2 is set without 80STORE",
+          "[video][page]") {
+    // Page 1 black and page 2 white in both banks, so the picture says which
+    // page was read. French Touch's DD2 draws its title in double lo-res on
+    // page 2, and showed the boot text instead while this read page 1.
+    auto render = [](bool page2, bool store80) {
+        VideoTestFixture f;
+        f.mmu.read(0xC050);
+        f.mmu.read(0xC052);
+        f.mmu.read(0xC056);
+        f.mmu.write(0xC00D, 0);
+        f.mmu.read(0xC05E);
+        f.mmu.write(store80 ? 0xC001 : 0xC000, 0);
+        f.mmu.read(page2 ? 0xC055 : 0xC054);
+        for (uint16_t a = 0x0400; a < 0x0800; a++) {
+            f.mmu.writeRAM(a, 0x00, true);
+            f.mmu.writeRAM(a, 0x00, false);
+            f.mmu.writeRAM(a + 0x0400, 0xFF, true);
+            f.mmu.writeRAM(a + 0x0400, 0xFF, false);
+        }
+        f.video->setColorMode(VideoColorMode::SOLID);
+        f.video->forceRenderFrame();
+        return pixelAt(*f.video, 280, 100);
+    };
+
+    CHECK(render(false, false) == 0xFF000000u);
+    CHECK(render(true, false) != 0xFF000000u);
+    // With 80STORE on, PAGE2 picks the bank to write and the display stays
+    // on page 1.
+    CHECK(render(true, true) == 0xFF000000u);
+}
+
 TEST_CASE("Solid: a lone lo-res cell is one colour in every column",
           "[video][solid]") {
     for (int v = 1; v < 16; v++) {

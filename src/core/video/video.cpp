@@ -478,8 +478,10 @@ void Video::emitDoubleLoResScanline(int scanline, int startCol, int endCol,
   int lineInRow = scanline % 8;
   if (textRow >= 24) return;
 
+  uint16_t pageOffset = (vs.page2 && !vs.store80) ? 0x0400 : 0x0000;
+
   for (int col = startCol; col < endCol; col++) {
-    uint16_t addr = getTextAddress(textRow, col);
+    uint16_t addr = getTextAddress(textRow, col) + pageOffset;
 
     uint8_t auxByte = mmu_.readRAM(addr, true);
     uint8_t mainByte = mmu_.readRAM(addr, false);
