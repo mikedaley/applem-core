@@ -71,6 +71,12 @@ step.
   breakpoints. None of them is about an instruction set, so none belongs to a
   machine. `beamPosition()` is the beam arithmetic, which both derive from
   their own profile's timing. The //e's older 16-bit methods forward to it.
+- **The Profiler is shared** (`core/debug/profiler.hpp`, in `MachineDebug`):
+  a call tree kept by a shadow stack popped by the stack pointer, a frame by
+  frame timeline, and time per address in banks allocated as code runs in
+  them, which is what lets a IIgs have it. Both machines feed it one
+  instruction at a time while it is enabled; the //e in CPU cycles, the IIgs
+  in the slow clock's time. `docs/NATIVE.md` describes the window.
 - **Two things are deliberately not shared.** Cycle profiling is a counter per
   address — 256KB for a 6502 and 64MB for a 65816 — so it stays //e-only and
   the host's heat overlay simply switches itself off. A IIgs records

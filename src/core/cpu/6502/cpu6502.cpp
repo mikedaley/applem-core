@@ -46,6 +46,7 @@ void CPU6502::executeInstruction() {
     }
     pc_ = read_(0xFFFA) | (read_(0xFFFB) << 8);
     totalCycles_ += 7;
+    interruptsTaken_++;
     return;
   }
 
@@ -77,6 +78,7 @@ void CPU6502::executeInstruction() {
     }
     pc_ = read_(0xFFFE) | (read_(0xFFFF) << 8);
     totalCycles_ += 7;
+    interruptsTaken_++;
     return;
   }
 

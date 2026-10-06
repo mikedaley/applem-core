@@ -395,3 +395,42 @@ TEST_CASE("A stack pointer breakpoint stops a //e as the stack runs away",
     emu.runCycles(200);
     REQUIRE_FALSE(emu.isPaused());
 }
+
+TEST_CASE("The profiler follows a //e's calls and charges each routine its time",
+          "[emulator][debug][profiler]") {
+    Emulator emu;
+    emu.init();
+    // $0300: JSR $0320 (fast), JSR $0330 (slow), JMP $0300.
+    // $0320: RTS.  $0330: LDX #$20, DEX, BNE -3, RTS.
+    const uint8_t main[] = {0x20, 0x20, 0x03, 0x20, 0x30, 0x03, 0x4C, 0x00, 0x03};
+    for (int i = 0; i < 9; i++) emu.writeMemory(0x0300 + i, main[i]);
+    emu.writeMemory(0x0320, 0x60);
+    const uint8_t slow[] = {0xA2, 0x20, 0xCA, 0xD0, 0xFD, 0x60};
+    for (int i = 0; i < 6; i++) emu.writeMemory(0x0330 + i, slow[i]);
+    emu.setPC(0x0300);
+    emu.setSP(0xFF);
+
+    Profiler &profiler = emu.debug().profiler();
+    profiler.setEnabled(true);
+    emu.runCycles(17030 * 3);
+
+    const Profiler::Node *fast = nullptr;
+    const Profiler::Node *slowNode = nullptr;
+    for (const Profiler::Node &n : profiler.nodes()) {
+        if (n.parent == 0 && n.function == 0x0320) fast = &n;
+        if (n.parent == 0 && n.function == 0x0330) slowNode = &n;
+    }
+    REQUIRE(fast);
+    REQUIRE(slowNode);
+    // Called alternately, so as often as each other, give or take the one in
+    // progress.
+    CHECK(std::llabs(static_cast<long long>(fast->calls) - static_cast<long long>(slowNode->calls)) <= 1);
+    // An RTS is 6 cycles; the loop is 2 + 32 DEX/BNE pairs + the RTS.
+    CHECK(fast->self == Approx(6.0 * static_cast<double>(fast->calls)).margin(6));
+    CHECK(slowNode->self > fast->self * 20);
+    // All the time the machine ran is accounted for, and so are its frames.
+    CHECK(profiler.totalTime() >= 17030 * 3);
+    CHECK(profiler.framesCompleted() >= 2);
+    CHECK(profiler.timeAt(0x0333) > profiler.timeAt(0x0330) * 10);
+    CHECK(profiler.executionsAt(0x0330) == slowNode->calls);
+}

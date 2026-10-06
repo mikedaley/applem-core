@@ -448,6 +448,7 @@ void Emulator::runUntil(uint64_t targetCycles) {
         startFrame(targetCycles);
         frameReady_ = true;
         framesCompleted_++;
+        if (debug_.profiler().enabled()) debug_.profiler().endFrame();
       }
       continue;
     }
@@ -660,6 +661,19 @@ void Emulator::runUntil(uint64_t targetCycles) {
     // Where this instruction began, for a switch breakpoint to report
     const uint16_t instructionPC = cpu_->getPC();
 
+    // The profiler needs the opcode and the stack either side, and whether
+    // what ran was an interrupt's entry rather than the instruction.
+    Profiler &profiler = debug_.profiler();
+    const bool profiling = profiler.enabled();
+    uint8_t profileOpcode = 0;
+    uint8_t profileSP = 0;
+    uint32_t profileInterrupts = 0;
+    if (profiling) {
+      profileOpcode = mmu_->peek(instructionPC);
+      profileSP = cpu_->getSP();
+      profileInterrupts = cpu_->interruptsTaken();
+    }
+
     // Execute one instruction
     cpu_->executeInstruction();
 
@@ -670,6 +684,11 @@ void Emulator::runUntil(uint64_t targetCycles) {
     // Accumulate cycle profiling
     if (profileEnabled_) {
       profileCycles_[profilePC] += static_cast<uint32_t>(cyclesUsed);
+    }
+    if (profiling) {
+      profiler.record(instructionPC, profileOpcode, cpu_->getPC(), 0x100 | profileSP,
+                      0x100 | cpu_->getSP(), cpu_->interruptsTaken() != profileInterrupts,
+                      static_cast<double>(cyclesUsed));
     }
 
     // Update Mockingboard timers BEFORE next instruction
@@ -707,6 +726,7 @@ void Emulator::runUntil(uint64_t targetCycles) {
       startFrame(targetCycles);    // Reset log, aligned to frame boundary
       frameReady_ = true;
       framesCompleted_++;
+      if (debug_.profiler().enabled()) debug_.profiler().endFrame();
     }
 
     // A watchpoint hit during the instruction, through the MMU's callbacks
@@ -1072,6 +1092,13 @@ void Emulator::stepInstruction() {
   // Profile: record PC before execution
   uint16_t profilePC = profileEnabled_ ? cpu_->getPC() : 0;
 
+  Profiler &profiler = debug_.profiler();
+  const bool profiling = profiler.enabled();
+  const uint16_t instructionPC = cpu_->getPC();
+  const uint8_t profileOpcode = profiling ? mmu_->peek(instructionPC) : 0;
+  const uint8_t profileSP = cpu_->getSP();
+  const uint32_t profileInterrupts = cpu_->interruptsTaken();
+
   cpu_->executeInstruction();
 
   // Update disk controller with actual instruction cycles
@@ -1081,6 +1108,11 @@ void Emulator::stepInstruction() {
   // Accumulate cycle profiling
   if (profileEnabled_) {
     profileCycles_[profilePC] += static_cast<uint32_t>(cyclesUsed);
+  }
+  if (profiling) {
+    profiler.record(instructionPC, profileOpcode, cpu_->getPC(), 0x100 | profileSP,
+                    0x100 | cpu_->getSP(), cpu_->interruptsTaken() != profileInterrupts,
+                    static_cast<double>(cyclesUsed));
   }
 
   // Update Mockingboard timers
@@ -1109,6 +1141,7 @@ void Emulator::stepInstruction() {
     startFrame(0);
     frameReady_ = true;
     framesCompleted_++;
+    if (debug_.profiler().enabled()) debug_.profiler().endFrame();
   }
 
   // A step stops anyway, so a switch it moved is only noted: otherwise the

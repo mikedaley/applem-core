@@ -168,6 +168,9 @@ public:
   // no page crossed. What the CPU adds to it is charged where it arises.
   static int baseCycles(uint8_t opcode);
   uint64_t getTotalCycles() const { return totalCycles_; }
+  // IRQs and NMIs taken since power on: a profiler compares it either side
+  // of a step to tell an interrupt's entry from an instruction.
+  uint32_t interruptsTaken() const { return interruptsTaken_; }
   void setTotalCycles(uint64_t c) { totalCycles_ = c; }
   void resetCycleCount() { totalCycles_ = 0; }
 
@@ -319,6 +322,7 @@ private:
 
   int cycleCount_ = 0;
   uint64_t totalCycles_ = 0;
+  uint32_t interruptsTaken_ = 0;
 
   bool irqPending_ = false;
   VectorReadCallback vectorRead_;

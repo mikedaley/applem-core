@@ -1388,6 +1388,11 @@ else()
         src/core/debug/soft_switch_catalog.cpp
     )
 
+    # The profiler's call tree, timeline and per-line costs (header only)
+    add_catch2_test(test_profiler
+        tests/unit/test_profiler.cpp
+    )
+
     # Debug log sink (only debug_log.cpp)
     add_catch2_test(test_debug_log
         tests/unit/test_debug_log.cpp

@@ -78,6 +78,7 @@ void CPU65816::executeInstruction() {
     cycleCount_ = 7;
     interrupt(VEC_N_NMI, VEC_E_NMI, false);
     totalCycles_ += cycleCount_;
+    interruptsTaken_++;
     return;
   }
 
@@ -86,6 +87,7 @@ void CPU65816::executeInstruction() {
     cycleCount_ = 7;
     interrupt(VEC_N_IRQ, VEC_E_IRQ, false);
     totalCycles_ += cycleCount_;
+    interruptsTaken_++;
     return;
   }
 

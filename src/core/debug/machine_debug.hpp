@@ -8,6 +8,7 @@
 #pragma once
 
 #include "machine/machine_profile.hpp"
+#include "debug/profiler.hpp"
 
 #include <array>
 #include <cstdint>
@@ -36,9 +37,10 @@ namespace a2e {
  * - **Anything that reads memory or registers.** The trace entry is filled in
  *   by the machine, because only the machine knows which bus to peek and how
  *   long an instruction is on its processor. This class holds the ring.
- * - **Cycle profiling.** The //e's is an array of one counter per address,
- *   which is 256KB; the same thing for a 65816's address space would be 64MB.
- *   It stays on Emulator until there is a shape that suits both.
+ * - **The heat map's cycle counts.** The //e's is an array of one counter
+ *   per address, which is 256KB; the same thing for a 65816's address space
+ *   would be 64MB. It stays on Emulator. The Profiler below is the shape that
+ *   suits both: it allocates a bank only when code runs in it.
  * - **Anything about BASIC.** Applesoft breakpoints are about a program in
  *   memory rather than about a processor, and they live on Emulator.
  */
@@ -342,6 +344,15 @@ public:
   /** Forget everything, breakpoints included. Used on a machine reset. */
   void reset();
 
+  // ===== Profiling =====
+  //
+  // Where the time goes, by routine, by frame and by line (profiler.hpp).
+  // The machine feeds it every instruction while it is enabled. A reset does
+  // not clear it: profiling a program from its first instruction means
+  // recording across the reboot that starts it.
+  Profiler &profiler() { return profiler_; }
+  const Profiler &profiler() const { return profiler_; }
+
 private:
   std::set<uint32_t> breakpoints_;
   std::set<uint32_t> disabledBreakpoints_;
@@ -420,6 +431,8 @@ private:
   size_t traceHead_ = 0;
   size_t traceCount_ = 0;
   bool traceEnabled_ = false;
+
+  Profiler profiler_;
 };
 
 /**

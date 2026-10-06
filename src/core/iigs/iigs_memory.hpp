@@ -120,6 +120,9 @@ public:
   // not.
 
   uint64_t slowCycles() const { return slowCycles_; }
+  // The same clock with the fraction of a cycle not yet whole, for measuring
+  // one instruction: at 2.8MHz most take less than a slow cycle.
+  double slowTime() const { return static_cast<double>(slowCycles_) + remainder_; }
 
   /**
    * The rest of an instruction — the cycles that did not reach the slow side —

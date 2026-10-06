@@ -423,3 +423,39 @@ TEST_CASE("Text pasted into a IIgs is typed a key at a time, as it is read",
   }
   REQUIRE_FALSE(program.machine.pastePending());
 }
+
+TEST_CASE("The profiler follows a long call and measures in the slow clock's time",
+          "[iigs][debug][profiler]") {
+  // $00:2000 JSL $01:3000, BRA back to it. $01:3000 NOP NOP RTL.
+  Program p(0x00, 0x2000, {0x22, 0x00, 0x30, 0x01, 0x80, 0xFA});
+  p.machine.memory().write(bankAddress(0x01, 0x3000), 0xEA);
+  p.machine.memory().write(bankAddress(0x01, 0x3001), 0xEA);
+  p.machine.memory().write(bankAddress(0x01, 0x3002), 0x6B);
+
+  Profiler &profiler = p.debug().profiler();
+  profiler.setEnabled(true);
+  const uint64_t before = p.machine.memory().slowCycles();
+  p.machine.runCycles(20000);
+  const double elapsed = static_cast<double>(p.machine.memory().slowCycles() - before);
+
+  const Profiler::Node *sub = nullptr;
+  for (const Profiler::Node &n : profiler.nodes()) {
+    if (n.parent == 0 && n.function == 0x013000) sub = &n;
+  }
+  REQUIRE(sub);
+  CHECK(sub->calls > 100);
+  CHECK(profiler.depth() <= 1);
+  // Every instruction's time is the slow clock's, so the whole is what the
+  // machine ran, to within the fraction of a cycle the clock had not counted.
+  CHECK(profiler.totalTime() == Approx(elapsed).margin(1.0));
+  // A IIgs comes up slow, where a NOP's two cycles are two slow ones.
+  CHECK(profiler.timeAt(0x013000) / profiler.executionsAt(0x013000) == Approx(2.0));
+
+  // At 2.8MHz the same NOP takes well under one: two fast cycles of the 65816
+  // and a refresh cycle in every ten, in the slow clock's time.
+  profiler.clear();
+  p.machine.memory().setSpeedRegister(IIgsMemory::SPEED_FAST);
+  p.machine.runCycles(20000);
+  const double perNop = profiler.timeAt(0x013000) / profiler.executionsAt(0x013000);
+  CHECK(perNop == Approx(2.0 * (SLOW_CLOCK_HZ / FAST_CLOCK_HZ) * 1.1).epsilon(0.01));
+}

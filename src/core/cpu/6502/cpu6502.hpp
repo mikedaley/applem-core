@@ -88,6 +88,9 @@ public:
 
   // Interrupt state access
   bool isIRQPending() const { return irqPending_; }
+  // IRQs and NMIs taken since power on: a profiler compares it either side
+  // of a step to tell an interrupt's entry from an instruction.
+  uint32_t interruptsTaken() const { return interruptsTaken_; }
   bool isNMIPending() const { return nmiPending_; }
   bool isNMIEdge() const { return nmiEdge_; }
 
@@ -163,6 +166,7 @@ private:
   // Cycle tracking
   int cycleCount_ = 0;
   uint64_t totalCycles_ = 0;
+  uint32_t interruptsTaken_ = 0;
   bool pageCrossed_ = false;
 
   // Interrupt state

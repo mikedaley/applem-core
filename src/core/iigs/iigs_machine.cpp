@@ -31,6 +31,7 @@ namespace a2e::iigs {
 
 IIgsMachine::IIgsMachine(size_t fastRamSize)
     : memory_(std::make_unique<IIgsMemory>(fastRamSize)) {
+  debug_.profiler().setIsa(Profiler::Isa::W65816);
   // Watchpoints are checked here rather than inside the memory, and that is
   // the difference between "the program touched this" and "something did": the
   // video scanner reads the text page every line, and a watchpoint on it that
@@ -342,8 +343,23 @@ int IIgsMachine::step() {
     memory_->signalVerticalBlank();
     frameReady_ = true;
     framesCompleted_++;
+    if (debug_.profiler().enabled()) debug_.profiler().endFrame();
   }
   return cycles;
+}
+
+// A step, measured for the profiler: in the slow clock's time, fractions
+// included, so an instruction that waited on the Mega II costs what it did.
+void IIgsMachine::profiledStep() {
+  const uint32_t pc = cpu_->getPCFull();
+  const uint8_t opcode = memory_->peek(pc);
+  const uint16_t sp = cpu_->getSP();
+  const uint32_t interrupts = cpu_->interruptsTaken();
+  const double before = memory_->slowTime();
+  step();
+  debug_.profiler().record(pc, opcode, cpu_->getPCFull(), sp, cpu_->getSP(),
+                           cpu_->interruptsTaken() != interrupts,
+                           memory_->slowTime() - before);
 }
 
 void IIgsMachine::raiseScanLineInterrupts() {
@@ -400,7 +416,11 @@ void IIgsMachine::runCycles(int slowCyclesToRun) {
     const uint32_t instructionPC = cpu_->getPCFull();
     if (!coverage_.empty()) markExecuted(instructionPC);
 
-    step();
+    if (debug_.profiler().enabled()) {
+      profiledStep();
+    } else {
+      step();
+    }
 
     // A watchpoint fired inside the instruction, through the CPU's own bus.
     if (debug_.isWatchpointHit()) {
@@ -461,7 +481,11 @@ void IIgsMachine::stepInstruction() {
   debug_.clearHits();
   if (debug_.isTraceEnabled()) recordTrace();
   if (!coverage_.empty()) markExecuted(cpu_->getPCFull());
-  step();
+  if (debug_.profiler().enabled()) {
+    profiledStep();
+  } else {
+    step();
+  }
   // A step stops anyway, so a switch it moved is only noted: otherwise the
   // change would fire on the first instruction of the next Run.
   if (debug_.hasSwitchBreakpoints()) {

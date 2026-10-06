@@ -512,6 +512,7 @@ private:
   uint64_t pasteReadyAt_ = 0;
 
   void recordTrace();
+  void profiledStep();
   void markExecuted(uint32_t address) {
     address &= 0xFFFFFF;
     coverage_[address >> 3] |= static_cast<uint8_t>(1 << (address & 7));
