@@ -224,6 +224,56 @@ void MachineHost::warmReset() {
   else if (emulator_) emulator_->warmReset();
 }
 
+bool MachineHost::startProgram(const uint8_t *data, size_t size, uint16_t load, uint16_t entry) {
+  if (!data || size == 0 || load + size > 0xC000 || (!emulator_ && !iigs_)) return false;
+  // Main RAM itself, whatever the switches say: a program left running may
+  // have the auxiliary bank or the language card switched in.
+  auto put = [&](uint16_t address, uint8_t value) {
+    if (iigs_) iigs_->memory().poke(address, value);
+    else emulator_->getMMU().writeRAM(address, value, false);
+  };
+  for (size_t i = 0; i < size; i++) put(static_cast<uint16_t>(load + i), data[i]);
+  // Entered through a call, so a program that ends with RTS, as one BRUN
+  // would have run does, returns to Applesoft's prompt rather than to
+  // whatever happened to be on the stack: JSR entry / JMP $E000, at the top
+  // of the input buffer, which nothing uses until a line is typed. Applesoft's
+  // cold start, not its warm one: on a machine that has never started BASIC
+  // (it looked for a disk instead) a warm start finds nothing set up and ends
+  // in the monitor.
+  constexpr uint16_t TRAMPOLINE = 0x02F8;
+  const uint8_t trampoline[] = {0x20, static_cast<uint8_t>(entry & 0xFF), static_cast<uint8_t>(entry >> 8),
+                                0x4C, 0x00, 0xE0};
+  if (load <= TRAMPOLINE + sizeof trampoline && load + size > TRAMPOLINE) return false;
+  for (size_t i = 0; i < sizeof trampoline; i++) put(static_cast<uint16_t>(TRAMPOLINE + i), trampoline[i]);
+  entry = TRAMPOLINE;
+  if (iigs_) {
+    // A IIgs's firmware takes Control-Reset during its startup scan as a
+    // reason to scan again, whatever the vector says, so the reset is not
+    // the way in. It has set the text screen and COUT up by then; the program
+    // is entered as the reset would have entered it: in emulation mode, on a
+    // fresh stack, with the text screen showing and Super Hi-Res off.
+    iigs::IIgsMemory &memory = iigs_->memory();
+    memory.write(0x00C051, 0);                                          // TEXT
+    memory.write(0x00C029, static_cast<uint8_t>(memory.read(0x00C029) & 0x7F)); // no Super Hi-Res
+    CPU65816 &cpu = iigs_->cpu();
+    cpu.setEmulation(true);
+    cpu.setP(0x34); // interrupts off, 8-bit widths
+    cpu.setPBR(0);
+    cpu.setDBR(0);
+    cpu.setD(0);
+    cpu.setSP(0x01FF);
+    cpu.setPC(entry);
+    setPaused(false);
+    return true;
+  }
+  put(0x03F2, static_cast<uint8_t>(entry & 0xFF));
+  put(0x03F3, static_cast<uint8_t>(entry >> 8));
+  put(0x03F4, static_cast<uint8_t>((entry >> 8) ^ 0xA5)); // the power-up byte: a warm start
+  setPaused(false);
+  warmReset();
+  return true;
+}
+
 void MachineHost::runCycles(int cycles) {
   if (iigs_) iigs_->runCycles(cycles);
   else if (emulator_) emulator_->runCycles(cycles);

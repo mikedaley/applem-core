@@ -1045,3 +1045,34 @@ TEST_CASE("A watchpoint added the way a front end adds one stops either machine"
     REQUIRE(host.debug()->watchpointAddress() == 0x0300);
   }
 }
+
+TEST_CASE("A program put into memory starts through the reset, on every machine",
+          "[host][develop]") {
+  // A developer's build, at $0803:
+  //   0803 LDX #0 / 0805 LDA $0815,X / 0808 BEQ $0812 / 080A ORA #$80 /
+  //   080C JSR COUT / 080F INX / 0810 BNE $0805 / 0812 RTS / 0815 "HI FROM ME"
+  // The firmware has to have set COUT up for the text to reach the screen,
+  // which is what going through the reset is for; and the RTS has to come
+  // back to Applesoft's prompt.
+  std::vector<uint8_t> code = {0xA2, 0x00, 0xBD, 0x15, 0x08, 0xF0, 0x08, 0x09, 0x80, 0x20, 0xED,
+                               0xFD, 0xE8, 0xD0, 0xF3, 0x60, 0xEA, 0xEA};
+  for (char c : std::string("HI FROM ME")) code.push_back(static_cast<uint8_t>(c));
+  code.push_back(0);
+  for (MachineId id : {MachineId::AppleIIPlus, MachineId::AppleIIe, MachineId::AppleIIc, MachineId::AppleIIgs}) {
+    if (!Emulator::isMachineRunnable(id)) continue;
+    INFO("machine " << static_cast<int>(id));
+    MachineHost host;
+    REQUIRE(host.setMachine(id));
+    host.build();
+    host.reset();
+    runSeconds(host, id == MachineId::AppleIIgs ? 10.0 : 1.0);
+    REQUIRE(host.startProgram(code.data(), code.size(), 0x0803, 0x0803));
+    runSeconds(host, id == MachineId::AppleIIgs ? 2.0 : 0.5);
+    INFO(host.screenText());
+    INFO("pc " << std::hex << host.cpuState().pc);
+    const std::string text = host.screenText();
+    const size_t printed = text.find("HI FROM ME");
+    REQUIRE(printed != std::string::npos);
+    REQUIRE(text.find(']', printed) != std::string::npos); // back at the prompt
+  }
+}

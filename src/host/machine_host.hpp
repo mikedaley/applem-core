@@ -218,6 +218,13 @@ public:
   // Running and showing.
   void reset();
   void warmReset();
+  // A program put straight into main RAM and started, as a developer's build
+  // is run: the bytes at their load address, the soft entry vector at $3F2
+  // pointed at `entry` and marked valid at $3F4, then Control-Reset. The
+  // firmware sets the screen and the keyboard up as it does for any program
+  // and jumps there, and no DOS is involved. False if it does not fit in
+  // $0000-$BFFF.
+  bool startProgram(const uint8_t *data, size_t size, uint16_t load, uint16_t entry);
   void runCycles(int cycles);
   int generateStereoAudioSamples(float *buffer, int sampleCount);
   // How many whole frames' worth of samples have been generated since the
