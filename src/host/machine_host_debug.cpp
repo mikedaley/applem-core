@@ -426,7 +426,56 @@ void MachineHost::decayMemoryActivity(uint8_t amount) {
   if (emulator_) emulator_->getMMU().decayTracking(amount);
 }
 
+// A data region's line at `address`: a run of text, in quotes, or of other
+// bytes, in hex. Lines are cut from the region's start, so a walk through it
+// lands on the same lines from wherever it began, and the alignment search
+// sees data as it sees any instruction: something with a length.
+Instruction MachineHost::dataLine(uint32_t address, uint32_t start, uint32_t end) {
+  constexpr uint32_t TEXT_MAX = 16;
+  constexpr uint32_t BYTES_MAX = 8;
+  auto isText = [&](uint32_t at) {
+    const uint8_t c = peek(at) & 0x7F;
+    return c >= 0x20 && c < 0x7F && c != '"';
+  };
+  uint32_t lineStart = start;
+  uint32_t lineEnd = start;
+  while (true) {
+    const bool text = isText(lineStart);
+    lineEnd = lineStart;
+    while (lineEnd < end && isText(lineEnd) == text && lineEnd - lineStart < (text ? TEXT_MAX : BYTES_MAX)) lineEnd++;
+    if (address < lineEnd || lineEnd >= end) break;
+    lineStart = lineEnd;
+  }
+  Instruction in;
+  in.address = address;
+  in.target = address;
+  in.length = static_cast<uint8_t>(std::max<uint32_t>(1, lineEnd - address));
+  for (uint32_t i = 0; i < 4 && i < in.length; i++) in.bytes[i] = peek(address + i);
+  in.mnemonic = ".byte";
+  if (isText(address)) {
+    in.operand = "\"";
+    for (uint32_t at = address; at < lineEnd; at++) in.operand += static_cast<char>(peek(at) & 0x7F);
+    in.operand += "\"";
+  } else {
+    char hex[4];
+    for (uint32_t at = address; at < lineEnd; at++) {
+      std::snprintf(hex, sizeof hex, "$%02X", peek(at));
+      if (!in.operand.empty()) in.operand += ",";
+      in.operand += hex;
+    }
+  }
+  in.mode = OperandMode::Implied;
+  in.category = InstrCategory::UNKNOWN;
+  in.flow = FlowType::SEQUENTIAL;
+  return in;
+}
+
 Instruction MachineHost::disassemble(uint32_t address) {
+  if (!dataRegions_.empty()) {
+    const uint32_t at = address & 0xFFFFFF;
+    auto region = dataRegions_.upper_bound(at);
+    if (region != dataRegions_.begin() && (--region)->second > at) return dataLine(at, region->first, region->second);
+  }
   if (iigs_) {
     // An instruction's bytes stay in its bank: the program counter wraps
     // within it rather than carrying into the next.
@@ -544,7 +593,7 @@ void MachineHost::profileTotals(uint32_t &max, uint64_t &total) {
 // cpu65816*.cpp), so the column cannot disagree with the machine it describes.
 CycleCost MachineHost::cycleCost(const Instruction &in, const CpuState &s, bool atPC) {
   CycleCost cost;
-  if (!emulator_ && !iigs_) return cost;
+  if ((!emulator_ && !iigs_) || isData(in)) return cost;
   const uint8_t opcode = in.bytes[0];
   const std::string &m = in.mnemonic;
   int base = iigs_ ? CPU65816::baseCycles(opcode) : CPU6502::baseCycles(opcode);

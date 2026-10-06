@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -401,8 +402,16 @@ public:
   void memoryActivity(uint32_t address, size_t count, uint8_t *reads, uint8_t *writes);
   void decayMemoryActivity(uint8_t amount);
 
-  // One instruction at an address, at the processor's current widths.
+  // One instruction at an address, at the processor's current widths; in a
+  // data region, a line of its bytes instead (".byte").
   Instruction disassemble(uint32_t address);
+  // Where a program keeps data rather than code, each [start, end): an
+  // assembler's debug file says (a ca65 .dbg's typed spans). The listing
+  // shows them as .byte lines, text in quotes, so a message reads as one
+  // rather than as the instructions its bytes happen to decode to.
+  void setDataRegions(std::map<uint32_t, uint32_t> regions) { dataRegions_ = std::move(regions); }
+  // Whether a listed line is data rather than an instruction.
+  static bool isData(const Instruction &in) { return in.mnemonic == ".byte"; }
   // `count` instructions, with up to `before` of them leading up to
   // `centre`, which is always listed as an instruction however the bytes
   // above it decode (disasm_align.hpp). A bank is a wall: the listing stays
@@ -462,6 +471,8 @@ private:
   std::unique_ptr<Emulator> emulator_;
   std::unique_ptr<iigs::IIgsMachine> iigs_;
   uint64_t generation_ = 0;
+  std::map<uint32_t, uint32_t> dataRegions_;
+  Instruction dataLine(uint32_t address, uint32_t start, uint32_t end);
   MachineId machineId_ = MachineId::AppleIIe;
   VideoStandard videoStandard_ = VideoStandard::NTSC;
   // A ROM 01 shipped with 256K on the board and a memory expansion card took

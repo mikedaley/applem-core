@@ -1076,3 +1076,57 @@ TEST_CASE("A program put into memory starts through the reset, on every machine"
     REQUIRE(text.find(']', printed) != std::string::npos); // back at the prompt
   }
 }
+
+TEST_CASE("A breakpoint on a program's first instruction stops it as it starts",
+          "[host][develop]") {
+  // What a developer does to break at the start: a breakpoint at the entry,
+  // then Run. The program is entered through the reset and a trampoline, and
+  // must stop on its own first instruction, not run past it.
+  const std::vector<uint8_t> code = {0xA9, 0xC1, 0x20, 0xED, 0xFD, 0x60}; // LDA #'A' / JSR COUT / RTS
+  for (MachineId id : {MachineId::AppleIIe, MachineId::AppleIIgs}) {
+    if (!Emulator::isMachineRunnable(id)) continue;
+    INFO("machine " << static_cast<int>(id));
+    MachineHost host;
+    REQUIRE(host.setMachine(id));
+    host.build();
+    host.reset();
+    runSeconds(host, id == MachineId::AppleIIgs ? 10.0 : 1.0);
+    host.debug()->addBreakpoint(0x0803);
+    REQUIRE(host.startProgram(code.data(), code.size(), 0x0803, 0x0803));
+    runSeconds(host, 0.5);
+    REQUIRE(host.isPaused());
+    REQUIRE(host.debug()->isBreakpointHit());
+    REQUIRE(host.cpuState().pc == 0x0803);
+  }
+}
+
+TEST_CASE("A program's data lists as .byte lines, and its code after it lines up",
+          "[host][debugger]") {
+  // At $2000: LDX #0, then "HELLO FROM ME" with a carriage return and a zero,
+  // then RTS. Told the text is data, the listing shows it as a string and a
+  // line of bytes, and the RTS after it is an instruction where it should be;
+  // a walk that starts inside the data comes out on the same lines.
+  MachineHost host;
+  loadProgram(host, {});
+  std::vector<uint8_t> bytes = {0xA2, 0x00};
+  for (char c : std::string("HELLO FROM ME")) bytes.push_back(static_cast<uint8_t>(c | 0x80));
+  bytes.insert(bytes.end(), {0x0D, 0x00, 0x60});
+  for (size_t i = 0; i < bytes.size(); i++) host.emulator()->writeMemory(static_cast<uint16_t>(0x2000 + i), bytes[i]);
+  host.setDataRegions({{0x2002, 0x2002 + 15}});
+
+  const auto lines = host.disassembleRange(0x2000, 0, 4);
+  REQUIRE(lines.size() == 4);
+  REQUIRE(lines[0].mnemonic == "LDX");
+  REQUIRE(MachineHost::isData(lines[1]));
+  REQUIRE(lines[1].operand == "\"HELLO FROM ME\""); // high-bit text reads as text
+  REQUIRE(lines[1].length == 13);
+  REQUIRE(lines[2].operand == "$0D,$00");
+  REQUIRE(lines[3].mnemonic == "RTS");
+  REQUIRE(lines[3].address == 0x2011);
+  // Centred on the RTS, the walk up to it goes through the data's lines.
+  const auto around = host.disassembleRange(0x2011, 2, 3);
+  REQUIRE(around.back().mnemonic == "RTS");
+  REQUIRE(around[around.size() - 2].operand == "$0D,$00");
+  // Data has no cycle cost.
+  REQUIRE(host.cycleCost(lines[1], host.cpuState(), false).max == 0);
+}
