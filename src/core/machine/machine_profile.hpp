@@ -229,6 +229,14 @@ struct MachineCapabilities {
   // A cassette port, $C020 out and $C060 in. A II+ and a //e have one; a //c
   // and a IIgs answer at neither address.
   bool hasCassette;
+  // Which way $C019's bit 7 reads in the vertical blank. The //e named it
+  // VBLBAR and pulls it low there; a IIgs reads it high, the other way up, so
+  // a program that waits for the blank on a //e waits for the picture on a
+  // IIgs. Apple IIgs Technical Note #40 (VBL Signal, July 1989) says so, and
+  // that the blank starts at line 192 in every display mode. The Hardware
+  // Reference's soft switch table still gives the //e's sense; the note is
+  // the correction.
+  bool vblHighInBlank;
 };
 
 // ----------------------------------------------------------------------------
@@ -349,6 +357,7 @@ inline constexpr MachineProfile APPLE_IIE_PROFILE = {
         true,  // hasExpansionSlots
         true,  // inhibitsBurstInText
         true,  // hasCassette
+        false, // vblHighInBlank
     },
     1, // firstSlot
     7, // lastSlot
@@ -448,6 +457,7 @@ inline constexpr MachineProfile APPLE_II_PLUS_PROFILE = {
         true,  // hasExpansionSlots — eight of them, and nothing fitted
         false, // inhibitsBurstInText — burst on every line, so text fringes
         true,  // hasCassette
+        false, // vblHighInBlank (a II+ has no $C019)
     },
     0, // firstSlot — slot 0 exists, and is where a language card goes
     7, // lastSlot
@@ -553,6 +563,7 @@ inline constexpr MachineProfile APPLE_IIC_PROFILE = {
         false, // hasExpansionSlots — soldered down, every one of them
         true,  // inhibitsBurstInText
         false, // hasCassette — a //c has no cassette port
+        false, // vblHighInBlank
     },
     1, // firstSlot
     7, // lastSlot
@@ -659,6 +670,7 @@ inline constexpr MachineProfile APPLE_IIGS_PROFILE = {
         true,  // hasExpansionSlots — seven, and each can be a card or the port
         true,  // inhibitsBurstInText
         false, // hasCassette
+        true,  // vblHighInBlank — $C019 reads 1 in the blank
     },
     1, // firstSlot
     7, // lastSlot

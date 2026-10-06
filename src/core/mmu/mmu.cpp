@@ -1130,8 +1130,10 @@ uint8_t MMU::readSoftSwitch(uint16_t address) {
     // whether it was woken by vertical blanking, and never touches anything
     // else that could clear the flag.
     if (mouseIOU_) mouseIOU_->clearVblInterrupt();
-    // Bit 7 = 0 during vertical blank, 1 during active display
-    return (isInVerticalBlank() ? 0x00 : 0x80) | (getFloatingBusValue() & 0x7F);
+    // Bit 7 = 0 during vertical blank and 1 in the picture on a //e and //c;
+    // the other way up on a IIgs.
+    return (isInVerticalBlank() == machine_->caps.vblHighInBlank ? 0x80 : 0x00) |
+           (getFloatingBusValue() & 0x7F);
   case 0x1A:
     return (switches_.text ? 0x80 : 0x00) | (getFloatingBusValue() & 0x7F); // RDTEXT
   case 0x1B:

@@ -122,7 +122,13 @@ at fast speed and 14 or 15 at slow, which is what the machine now counts
 (`test_iigs_boot.cpp` runs the same loop). `$C02E`/`$C02F` are the Mega II's
 counters as the IIgs exposes them — vertical `$100-$1BF` over the picture and
 `$1C0-$1FF` then `$FA-$FF` through blanking, horizontal 0 then `$40-$7F` — from
-a beam query the machine installs. `$C046`'s flags say what happened whether
+a beam query the machine installs. `$C019` covers the same blank as a //e's
+(from line 192, in Super Hi-Res too) the other way up: bit 7 is high in it on
+a IIgs (`caps.vblHighInBlank`). Apple IIgs Technical Note #40 is the source;
+the Hardware Reference's soft switch table ("1 = not VBL") is wrong for the
+IIgs. Text page 2 is not shadowed: the original logic board, whose 128KB ROM
+is the one we run, has no shadowing for it, and `$C035` bit 5 exists only on
+the 1MB board (Hardware Reference, chapter 2). `$C046`'s flags say what happened whether
 or not it was enabled, and only `$C047` clears them; the diagnostic's handler
 switches VBL off before it looks and must still find the flag.
 

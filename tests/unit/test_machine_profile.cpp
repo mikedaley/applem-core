@@ -447,6 +447,31 @@ TEST_CASE("VBL follows the profile's visible scanline count", "[machine]") {
     REQUIRE((mmu.read(0xC019) & 0x80) == 0x80);
 }
 
+TEST_CASE("A IIgs reads $C019 high in the vertical blank", "[machine]") {
+    // The same lines as a //e's blank, the other way up: a program that
+    // waits for bit 7 to go low is waiting for the picture on a IIgs.
+    const auto &m = machineProfile(MachineId::AppleIIgs);
+    REQUIRE(m.caps.vblHighInBlank);
+    REQUIRE_FALSE(machineProfile(MachineId::AppleIIe).caps.vblHighInBlank);
+    REQUIRE_FALSE(machineProfile(MachineId::AppleIIc).caps.vblHighInBlank);
+
+    MMU mmu(m);
+    uint64_t cycles = 0;
+    mmu.setCycleCallback([&cycles]() { return cycles; });
+    auto line = [&](int n) {
+        cycles = static_cast<uint64_t>(n) * m.timing.cyclesPerScanline;
+    };
+
+    line(m.timing.visibleScanlines - 1);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x00);
+    line(m.timing.visibleScanlines);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x80);
+    line(m.timing.scanlinesPerFrame - 1);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x80);
+    line(m.timing.scanlinesPerFrame);
+    REQUIRE((mmu.read(0xC019) & 0x80) == 0x00);
+}
+
 TEST_CASE("A PAL machine is its NTSC twin on 312 lines at 50Hz", "[machine][pal]") {
     for (MachineId id : {MachineId::AppleIIe, MachineId::AppleIIPlus, MachineId::AppleIIc}) {
         const auto &ntsc = machineProfile(id);
