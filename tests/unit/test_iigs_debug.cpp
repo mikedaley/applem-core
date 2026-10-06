@@ -299,3 +299,127 @@ TEST_CASE("A stack pointer breakpoint on a IIgs is sixteen bits",
   REQUIRE(program.debug().isStackBreakpointHit());
   REQUIRE(program.machine.cpu().getSP() == 0x01DF);
 }
+
+TEST_CASE("Why a IIgs stopped survives pausing it again",
+          "[iigs][debug][breakpoint]") {
+  // A step, the console and the debugger all pause the machine before acting
+  // on it. Pausing a machine that a breakpoint had already stopped used to
+  // clear the record of the breakpoint, so the debugger said "Paused" and
+  // counted no hit.
+  SECTION("a breakpoint") {
+    Program program(0x02, 0x0300, NOPS);
+    program.debug().addBreakpoint(bankAddress(0x02, 0x0304));
+    program.machine.runCycles(1000);
+    REQUIRE(program.debug().isBreakpointHit());
+    program.machine.setPaused(true);
+    REQUIRE(program.debug().isBreakpointHit());
+    REQUIRE(program.debug().breakpointAddress() == bankAddress(0x02, 0x0304));
+  }
+  SECTION("a watchpoint") {
+    // SEP #$30, LDA #5, STA $0300
+    Program writer(0x00, 0x1000, {0xE2, 0x30, 0xA9, 0x05, 0x8D, 0x00, 0x03, 0xEA, 0xEA});
+    writer.debug().addWatchpoint(0x000300, 0x000300, MachineDebug::WP_WRITE);
+    writer.machine.runCycles(1000);
+    REQUIRE(writer.debug().isWatchpointHit());
+    writer.machine.setPaused(true);
+    REQUIRE(writer.debug().isWatchpointHit());
+    REQUIRE(writer.debug().watchpointAddress() == 0x000300);
+  }
+}
+
+TEST_CASE("Every resume of a IIgs is counted, however soon it stops again",
+          "[iigs][debug][breakpoint]") {
+  // A host judges a stop as new by this count, because a breakpoint a few
+  // instructions after Continue stops the machine before any host has seen
+  // it running.
+  Program program(0x02, 0x0300, NOPS);
+  program.debug().addBreakpoint(bankAddress(0x02, 0x0302));
+  program.debug().addBreakpoint(bankAddress(0x02, 0x0304));
+  program.machine.runCycles(1000);
+  const uint64_t first = program.debug().resumeCount();
+
+  program.machine.setPaused(true); // pausing is not resuming
+  REQUIRE(program.debug().resumeCount() == first);
+  program.machine.setPaused(false);
+  program.machine.runCycles(1000);
+  REQUIRE(program.machine.isPaused());
+  REQUIRE(program.pc() == bankAddress(0x02, 0x0304));
+  REQUIRE(program.debug().resumeCount() == first + 1);
+}
+
+TEST_CASE("A IIgs stepped onto a breakpoint runs on from it",
+          "[iigs][debug][breakpoint]") {
+  // The step lands on the breakpoint without hitting it, and Continue used to
+  // stop on it again having run nothing.
+  Program program(0x02, 0x0300, NOPS);
+  program.debug().addBreakpoint(bankAddress(0x02, 0x0301));
+  program.machine.setPaused(true);
+  program.machine.stepInstruction();
+  REQUIRE(program.pc() == bankAddress(0x02, 0x0301));
+  program.machine.setPaused(false);
+  program.machine.runCycles(20);
+  REQUIRE(program.pc() > bankAddress(0x02, 0x0301));
+}
+
+TEST_CASE("A pause ends a step over that is still running",
+          "[iigs][debug][stepover]") {
+  // JSR to a loop that never returns, then a pause: the step over's
+  // breakpoint must not wait to stop some later run at $0303.
+  Program program(0x02, 0x0300, {0x20, 0x00, 0x04});
+  program.machine.memory().write(bankAddress(0x02, 0x0400), 0x80); // BRA *
+  program.machine.memory().write(bankAddress(0x02, 0x0401), 0xFE);
+  program.machine.setPaused(true);
+  REQUIRE(program.machine.stepOver() == bankAddress(0x02, 0x0303));
+  program.machine.runCycles(200);
+  REQUIRE(program.debug().isTempBreakpointActive());
+  program.machine.setPaused(true);
+  REQUIRE_FALSE(program.debug().isTempBreakpointActive());
+}
+
+TEST_CASE("Step out finds a long call's bank before the RTL",
+          "[iigs][debug][stepout]") {
+  SECTION("inside a routine a JSL reached, the return is in the caller's bank") {
+    // JSL $030400 from bank $02, and at the far end a NOP before the RTL:
+    // step out from the NOP, where the instruction is no help.
+    Program program(0x02, 0x0300, {0x22, 0x00, 0x04, 0x03});
+    program.machine.memory().write(bankAddress(0x03, 0x0400), 0xEA);
+    program.machine.memory().write(bankAddress(0x03, 0x0401), 0x6B);
+    program.machine.stepInstruction();
+    REQUIRE(program.pc() == bankAddress(0x03, 0x0400));
+    REQUIRE(program.machine.stepOut() == bankAddress(0x02, 0x0304));
+  }
+
+  SECTION("in emulation mode an RTS's return wraps within page one") {
+    // The stack pointer at $01FF: the return's low byte wraps to $0100 and
+    // its high byte follows at $0101, as an RTS in emulation mode pulls them.
+    Program program(0x00, 0x2000, {0xEA});
+    program.machine.cpu().setEmulation(true);
+    program.machine.cpu().setSP(0x01FF);
+    program.machine.memory().write(0x000100, 0x02); // low, wrapped
+    program.machine.memory().write(0x000101, 0x30); // high
+    program.machine.memory().write(0x000200, 0x99); // what no wrap would read
+    REQUIRE(program.machine.stepOut() == bankAddress(0x00, 0x3003));
+  }
+}
+
+TEST_CASE("Text pasted into a IIgs is typed a key at a time, as it is read",
+          "[iigs][paste]") {
+  // A program reading the keyboard as //e software and the Event Manager
+  // do: wait for the strobe, clear it at $C010, keep the key. Paste did
+  // nothing at all on a IIgs before it had a buffer of its own.
+  //   SEP #$30 / LDX #0 / loop: LDA $C000 / BPL loop / STA $C010
+  //   AND #$7F / STA $2000,X / INX / BRA loop
+  Program program(0x00, 0x0300,
+                  {0xE2, 0x30, 0xA2, 0x00, 0xAD, 0x00, 0xC0, 0x10, 0xFB, 0x8D, 0x10, 0xC0,
+                   0x29, 0x7F, 0x9D, 0x00, 0x20, 0xE8, 0x80, 0xF0});
+  REQUIRE(program.machine.pasteText("HELLO\r10 PRINT") == 14);
+  REQUIRE(program.machine.pastePending());
+  program.machine.runCycles(2'000'000);
+  const std::string expected = "HELLO\r10 PRINT";
+  for (size_t i = 0; i < expected.size(); i++) {
+    INFO("key " << i);
+    REQUIRE(program.machine.memory().read(bankAddress(0x00, static_cast<uint16_t>(0x2000 + i))) ==
+            static_cast<uint8_t>(expected[i]));
+  }
+  REQUIRE_FALSE(program.machine.pastePending());
+}

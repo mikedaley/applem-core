@@ -11,6 +11,8 @@
 #include "condition_evaluator.hpp"
 #include "emulator.hpp"
 
+#include <string>
+
 using namespace a2e;
 
 // Helper to create and initialize an emulator for testing.
@@ -187,12 +189,12 @@ TEST_CASE("ConditionEvaluator greater than", "[condeval][comparison]") {
 TEST_CASE("ConditionEvaluator parenthesized expression", "[condeval][paren]") {
     auto& emu = getEmulator();
 
-    // Parenthesized expressions are evaluated through parseOr which returns
-    // a boolean (truthy) value. So (2 + 3) becomes true (1), and 1 * 4 = 4.
-    // This is by design: the evaluator is a condition evaluator, not a
-    // general-purpose calculator. Parentheses are for grouping comparisons.
+    // Brackets have the value inside them: a sum is a number and a
+    // comparison is a truth. They used to make every sum a truth, so
+    // (2 + 3) * 4 was 4, which the console's ? printed without complaint.
     int32_t result = ConditionEvaluator::evaluateNumeric("(2 + 3) * 4", emu);
-    CHECK(result == 4);
+    CHECK(result == 20);
+    CHECK(ConditionEvaluator::evaluateNumeric("(1 < 2) + (3 == 3)", emu) == 2);
 
     // Verify parenthesized comparisons work as expected
     bool cmpResult = ConditionEvaluator::evaluate("(A == A) && (1 < 2)", emu);
@@ -216,4 +218,77 @@ TEST_CASE("ConditionEvaluator reads SP register", "[condeval][register_num]") {
     int32_t result = ConditionEvaluator::evaluateNumeric("SP", emu);
     CHECK(result >= 0);
     CHECK(result <= 0xFF);
+}
+
+// ============================================================================
+// Errors are reported, not read past
+// ============================================================================
+
+TEST_CASE("ConditionEvaluator refuses what it cannot read", "[condeval][error]") {
+    auto& emu = getEmulator();
+    emu.setA(0x41);
+
+    // A single = used to be dropped, leaving "A $41", which compared nothing
+    // and read as A alone: true for any A but zero.
+    CHECK_FALSE(ConditionEvaluator::evaluate("A = $41", emu));
+    CHECK(std::string(ConditionEvaluator::getLastError()).find("==") != std::string::npos);
+
+    // An unknown name is an error, and the condition is false.
+    CHECK_FALSE(ConditionEvaluator::evaluate("FOO == 0", emu));
+    CHECK(strlen(ConditionEvaluator::getLastError()) > 0);
+
+    // Something left over, a missing operand or bracket.
+    for (const char* bad : {"1 2", "A ==", "(A == 1", "A == 1)", "PEEK $24", "PEEK($24", "A & 1", "A @ 1",
+                            "12AB", "BV(1)"}) {
+        INFO(bad);
+        ConditionEvaluator::evaluate(bad, emu);
+        CHECK(strlen(ConditionEvaluator::getLastError()) > 0);
+    }
+
+    // A good condition after a bad one clears the error.
+    CHECK(ConditionEvaluator::evaluate("A == $41", emu));
+    CHECK(strlen(ConditionEvaluator::getLastError()) == 0);
+}
+
+TEST_CASE("ConditionEvaluator divides, and refuses to divide by zero", "[condeval][arithmetic]") {
+    auto& emu = getEmulator();
+    CHECK(ConditionEvaluator::evaluateNumeric("$100 / 2", emu) == 0x80);
+    CHECK(strlen(ConditionEvaluator::getLastError()) == 0);
+    // 1/0 used to read as 1, the / being skipped.
+    ConditionEvaluator::evaluateNumeric("1/0", emu);
+    CHECK(std::string(ConditionEvaluator::getLastError()) == "Division by zero");
+    CHECK(ConditionEvaluator::evaluateNumeric("-5 + 8", emu) == 3);
+}
+
+TEST_CASE("ConditionEvaluator reads numbers as hex when asked, as the console does", "[condeval][hex]") {
+    const MachineView view = ConditionEvaluator::viewOf(getEmulator());
+    CHECK(ConditionEvaluator::evaluateNumeric("10", view, true) == 0x10);
+    CHECK(ConditionEvaluator::evaluateNumeric("10+1", view, true) == 0x11);
+    CHECK(ConditionEvaluator::evaluateNumeric("FF", view, true) == 0xFF);
+    CHECK(ConditionEvaluator::evaluateNumeric("#10", view, true) == 10);
+    CHECK(ConditionEvaluator::evaluateNumeric("0x20", view, false) == 0x20);
+    // A register of the same spelling wins: A is the accumulator.
+    getEmulator().setA(0x07);
+    CHECK(ConditionEvaluator::evaluateNumeric("A", ConditionEvaluator::viewOf(getEmulator()), true) == 0x07);
+    // Decimal by default, as conditions always were.
+    CHECK(ConditionEvaluator::evaluateNumeric("10+1", view) == 11);
+}
+
+TEST_CASE("ConditionEvaluator checks a condition without a machine", "[condeval][error]") {
+    CHECK(std::string(ConditionEvaluator::check("A == $41")).empty());
+    CHECK_FALSE(std::string(ConditionEvaluator::check("A = $41")).empty());
+    CHECK_FALSE(std::string(ConditionEvaluator::check("NOSUCH")).empty());
+    // A divisor that is only zero because there is no machine is not an error.
+    CHECK(std::string(ConditionEvaluator::check("PEEK($24) / A > 1")).empty());
+}
+
+TEST_CASE("PEEK and DEEK reach any bank a machine's view has", "[condeval][peek]") {
+    MachineView view;
+    view.peek = [](uint32_t address) -> uint8_t {
+        if (address == 0xE12000) return 0x34;
+        if (address == 0xE12001) return 0x12;
+        return 0;
+    };
+    CHECK(ConditionEvaluator::evaluateNumeric("PEEK($E12000)", view) == 0x34);
+    CHECK(ConditionEvaluator::evaluateNumeric("DEEK($E12000)", view) == 0x1234);
 }

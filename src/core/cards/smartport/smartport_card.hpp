@@ -99,6 +99,7 @@ public:
     bool isImageInserted(int device) const;
     const std::string& getImageFilename(int device) const;
     bool isImageModified(int device) const;
+    void markImageSaved(int device);
     const uint8_t* exportImageData(int device, size_t* size) const;
     const uint8_t* getBlockData(int device, size_t* size) const;
     BlockDevice* getDevice(int device);

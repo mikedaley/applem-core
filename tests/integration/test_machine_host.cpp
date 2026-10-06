@@ -152,11 +152,29 @@ TEST_CASE("The IIgs memory size is remembered, and rebuilds only a IIgs",
   REQUIRE(host.setMachine(MachineId::AppleIIgs));
   REQUIRE(host.iigs()->memory().fastRamSize() == 1024 * 1024);
 
-  iigs::IIgsMachine *before = host.iigs();
+  // The disks are in drives, not in the machine, so they stay: a floppy
+  // with what was written to it, an 800K disk and a hard drive image.
+  REQUIRE(host.insertBlankDisk(0));
+  size_t size = 0;
+  const uint8_t *woz = host.exportDiskAs(0, DiskSaveFormat::WOZ, &size);
+  const std::vector<uint8_t> floppy(woz, woz + size);
+  const std::vector<uint8_t> disk35(800 * 1024, 0);
+  REQUIRE(host.insert35Disk(0, disk35.data(), disk35.size(), "system.po"));
+  std::vector<uint8_t> volume(32 * 1024 * 1024 / 16, 0);
+  REQUIRE(host.insertBlockImage(0, volume.data(), volume.size(), "work.hdv"));
+
   REQUIRE(host.setIIgsFastRam(4 * 1024 * 1024));
   REQUIRE(host.iigs() != nullptr);
   REQUIRE(host.iigs()->memory().fastRamSize() == 4 * 1024 * 1024);
-  (void)before;
+  REQUIRE(host.isDiskInserted(0));
+  size = 0;
+  woz = host.exportDiskAs(0, DiskSaveFormat::WOZ, &size);
+  REQUIRE(std::vector<uint8_t>(woz, woz + size) == floppy);
+  REQUIRE(host.is35DiskInserted(0));
+  REQUIRE(host.disk35Filename(0) == "system.po");
+  REQUIRE(host.isBlockImageInserted(0));
+  REQUIRE(host.blockImageFilename(0) == "work.hdv");
+  REQUIRE_FALSE(host.isSmartPortROMPending());
 }
 
 // Frames the machine finished in a second of audio, as a host counts them.
@@ -361,6 +379,10 @@ TEST_CASE("A Mockingboard is found on either kind of machine, and only when fitt
   REQUIRE(host.mockingboard() == nullptr);
   REQUIRE(host.setSlotCard(4, "mockingboard"));
   REQUIRE(host.mockingboard() != nullptr);
+
+  // A //c has no socket for one, though its Emulator keeps one parked.
+  REQUIRE(host.setMachine(MachineId::AppleIIc));
+  REQUIRE(host.mockingboard() == nullptr);
 
   if (!Emulator::isMachineRunnable(MachineId::AppleIIgs)) return;
   REQUIRE(host.setMachine(MachineId::AppleIIgs));
@@ -995,4 +1017,31 @@ TEST_CASE("A IIgs register breakpoint stops on the value under its mask",
   REQUIRE(host.debug()->switchHitPC() == 0x2007);
   REQUIRE((host.softSwitchValue(border->source) & 0x0F) == 0x06);
   REQUIRE(host.switchHitText() == "BORDER $00 to $06, by 00/2007");
+}
+
+TEST_CASE("A watchpoint added the way a front end adds one stops either machine",
+          "[host][debugger][watchpoint]") {
+  // A front end holds MachineDebug and adds to it directly, as the native
+  // breakpoint list does. A //e's memory reports accesses only while it has
+  // been told there are watchpoints, so adding one there has to tell it.
+  // LDA #$05 / STA $0300 / BRA *
+  const std::vector<uint8_t> code = {0xA9, 0x05, 0x8D, 0x00, 0x03, 0x80, 0xFE};
+  for (MachineId id : {MachineId::AppleIIe, MachineId::AppleIIgs}) {
+    if (!Emulator::isMachineRunnable(id)) continue;
+    INFO("machine " << static_cast<int>(id));
+    MachineHost host;
+    REQUIRE(host.setMachine(id));
+    host.build();
+    runSeconds(host, 1.5);
+    host.setPaused(true);
+    const a2e::host::MemorySpace space = host.memorySpaces().front();
+    for (size_t i = 0; i < code.size(); i++) host.pokeSpace(space, 0x2000 + static_cast<uint32_t>(i), code[i]);
+    host.setRegister(a2e::host::CpuRegister::PC, 0x2000);
+    host.debug()->addWatchpoint(0x0300, 0x0300, MachineDebug::WP_WRITE);
+    host.setPaused(false);
+    runSeconds(host, 0.1);
+    REQUIRE(host.isPaused());
+    REQUIRE(host.debug()->isWatchpointHit());
+    REQUIRE(host.debug()->watchpointAddress() == 0x0300);
+  }
 }

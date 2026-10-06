@@ -593,6 +593,11 @@ const std::string& SmartPortCard::getImageFilename(int device) const {
     return devices_[device].getFilename();
 }
 
+void SmartPortCard::markImageSaved(int device) {
+    if (device < 0 || device >= MAX_DEVICES) return;
+    devices_[device].markSaved();
+}
+
 bool SmartPortCard::isImageModified(int device) const {
     if (device < 0 || device >= MAX_DEVICES) return false;
     return devices_[device].isModified();

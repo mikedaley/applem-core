@@ -561,3 +561,26 @@ TEST_CASE("WozDiskImage keeps the disk's angle between flux and bit tracks", "[w
     for (int i = 0; i < 4; ++i) img.readBit();
     REQUIRE(img.getCurrentNibblePosition() == 3);
 }
+
+TEST_CASE("A track's bit count is never more than its bytes hold", "[woz]") {
+  // A WOZ 2 track entry is starting block, block count and bit count; a
+  // file claiming $FFFFFFFF bits over its blocks had the disk inspector read
+  // far past the end of the track, whenever a disk was inserted.
+  WozDiskImage blank;
+  blank.createBlank();
+  size_t size = 0;
+  const uint8_t *data = blank.exportData(&size);
+  REQUIRE(data);
+  std::vector<uint8_t> file(data, data + size);
+  // TRKS's entries start at byte 256; track 0's bit count is bytes 4-7.
+  REQUIRE(std::memcmp(&file[248], "TRKS", 4) == 0);
+  const uint32_t blocks = file[256 + 2] | (file[256 + 3] << 8);
+  file[256 + 4] = file[256 + 5] = file[256 + 6] = file[256 + 7] = 0xFF;
+
+  WozDiskImage image;
+  REQUIRE(image.load(file.data(), file.size(), "bad.woz"));
+  DiskImage::TrackView view;
+  REQUIRE(image.inspectQuarterTrack(0, view));
+  REQUIRE(view.bit_count <= blocks * 512 * 8);
+  REQUIRE(view.bit_count <= view.bits.size() * 8);
+}

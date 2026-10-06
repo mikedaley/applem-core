@@ -69,13 +69,23 @@ auto findRange(Ranges &ranges, uint32_t low) {
   }
   return ranges.end();
 }
+
+template <typename Ranges>
+auto findRange(Ranges &ranges, uint32_t low, uint32_t high) {
+  if (high < low) std::swap(low, high);
+  for (auto it = ranges.begin(); it != ranges.end(); ++it) {
+    if (it->low == low && it->high == high) return it;
+  }
+  return ranges.end();
+}
 } // namespace
 
-void MachineDebug::addBreakpointRange(uint32_t start, uint32_t end) {
+void MachineDebug::addBreakpointRange(uint32_t start, uint32_t end, bool sameStart) {
   start &= 0xFFFFFF;
   end &= 0xFFFFFF;
   if (end < start) std::swap(start, end);
-  removeBreakpointRange(start);
+  if (sameStart) removeBreakpointRange(start);
+  else removeBreakpointRange(start, end);
   pcRanges_.push_back({start, end, true, false, false});
 }
 
@@ -84,16 +94,22 @@ void MachineDebug::removeBreakpointRange(uint32_t start) {
   if (it != pcRanges_.end()) pcRanges_.erase(it);
 }
 
+void MachineDebug::removeBreakpointRange(uint32_t start, uint32_t end) {
+  auto it = findRange(pcRanges_, start & 0xFFFFFF, end & 0xFFFFFF);
+  if (it != pcRanges_.end()) pcRanges_.erase(it);
+}
+
 void MachineDebug::enableBreakpointRange(uint32_t start, bool enabled) {
   auto it = findRange(pcRanges_, start & 0xFFFFFF);
   if (it != pcRanges_.end()) it->enabled = enabled;
 }
 
-void MachineDebug::addStackBreakpoint(uint32_t low, uint32_t high) {
+void MachineDebug::addStackBreakpoint(uint32_t low, uint32_t high, bool sameLow) {
   low &= 0xFFFF;
   high &= 0xFFFF;
   if (high < low) std::swap(low, high);
-  removeStackBreakpoint(low);
+  if (sameLow) removeStackBreakpoint(low);
+  else removeStackBreakpoint(low, high);
   spRanges_.push_back({low, high, true, false, false});
 }
 
@@ -101,6 +117,13 @@ void MachineDebug::removeStackBreakpoint(uint32_t low) {
   auto it = findRange(spRanges_, low & 0xFFFF);
   if (it != spRanges_.end()) spRanges_.erase(it);
   if (stackHit_ && stackHitLow_ == (low & 0xFFFF)) stackHit_ = false;
+}
+
+void MachineDebug::removeStackBreakpoint(uint32_t low, uint32_t high) {
+  auto it = findRange(spRanges_, low & 0xFFFF, high & 0xFFFF);
+  if (it == spRanges_.end()) return;
+  if (stackHit_ && stackHitLow_ == it->low) stackHit_ = false;
+  spRanges_.erase(it);
 }
 
 void MachineDebug::enableStackBreakpoint(uint32_t low, bool enabled) {
@@ -124,6 +147,14 @@ MachineDebug::entered(std::vector<EntryRange> &ranges, uint32_t value) {
 bool MachineDebug::shouldBreakBefore(uint32_t pc, uint32_t sp) {
   pc &= 0xFFFFFF;
   sp &= 0xFFFF;
+
+  // Resuming from the breakpoint we are sitting on: let this one instruction
+  // through, or continuing would stop again without running anything. The
+  // skip is spent on the first instruction whatever happens, so one armed
+  // while there were no breakpoints cannot wait for one to be added and
+  // swallow it somewhere else entirely.
+  const bool skip = skipBreakpointOnce_;
+  skipBreakpointOnce_ = false;
 
   // The ranges are measured on every instruction, whatever else stops the
   // machine here, so that entering one is always relative to the instruction
@@ -153,14 +184,8 @@ bool MachineDebug::shouldBreakBefore(uint32_t pc, uint32_t sp) {
     return true;
   }
 
-  if (breakpoints_.empty()) return false;
+  if (breakpoints_.empty() || skip) return false;
 
-  if (skipBreakpointOnce_) {
-    // Resuming from the breakpoint we are sitting on: let this one instruction
-    // through, or continuing would stop again without running anything.
-    skipBreakpointOnce_ = false;
-    return false;
-  }
   if (breakpoints_.count(pc) && !disabledBreakpoints_.count(pc)) {
     breakpointHit_ = true;
     breakpointAddress_ = pc;
@@ -176,6 +201,7 @@ bool MachineDebug::shouldBreakBefore(uint32_t pc, uint32_t sp) {
 void MachineDebug::addWatchpoint(uint32_t start, uint32_t end,
                                  WatchpointType type) {
   watchpoints_.push_back({start & 0xFFFFFF, end & 0xFFFFFF, type, true});
+  watchpointsChanged();
 }
 
 void MachineDebug::removeWatchpoint(uint32_t start) {
@@ -183,6 +209,7 @@ void MachineDebug::removeWatchpoint(uint32_t start) {
   for (auto it = watchpoints_.begin(); it != watchpoints_.end(); ++it) {
     if (it->start == start) {
       watchpoints_.erase(it);
+      watchpointsChanged();
       return;
     }
   }
@@ -191,6 +218,7 @@ void MachineDebug::removeWatchpoint(uint32_t start) {
 void MachineDebug::clearWatchpoints() {
   watchpoints_.clear();
   watchpointHit_ = false;
+  watchpointsChanged();
 }
 
 bool MachineDebug::onRead(uint32_t address, uint8_t value) {
@@ -373,6 +401,8 @@ void MachineDebug::clearHits() {
 }
 
 void MachineDebug::reset() {
+  // A reset sets the machine running, which is a resume like any other.
+  noteResume();
   clearHits();
   clearTempBreakpoint();
   skipBreakpointOnce_ = false;

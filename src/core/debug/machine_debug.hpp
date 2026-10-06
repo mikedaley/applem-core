@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <vector>
 
@@ -60,10 +61,15 @@ public:
   // counter *enters* the range, not on every instruction inside it: stopping
   // on each one would make Run inside a range the same as Step. A hit reports
   // through breakpointHit_ like a single address, with the PC that entered.
-  // Identified by start.
+  // Identified by start, unless `sameStart` is false: then two ranges that
+  // begin at the same address are two ranges, and the two-ended remove names
+  // one of them. The native debugger keeps them that way; the browser's
+  // breakpoint manager keys its list by start and replaces. The stack
+  // breakpoints below take the same choice.
 
-  void addBreakpointRange(uint32_t start, uint32_t end);
+  void addBreakpointRange(uint32_t start, uint32_t end, bool sameStart = true);
   void removeBreakpointRange(uint32_t start);
+  void removeBreakpointRange(uint32_t start, uint32_t end);
   void enableBreakpointRange(uint32_t start, bool enabled);
 
   // ===== Stack pointer breakpoints =====
@@ -74,8 +80,9 @@ public:
   // 6502, sixteen on a 65816. Identified by low. Reported through its own hit,
   // because the host looks a PC breakpoint up by address and this is not one.
 
-  void addStackBreakpoint(uint32_t low, uint32_t high);
+  void addStackBreakpoint(uint32_t low, uint32_t high, bool sameLow = true);
   void removeStackBreakpoint(uint32_t low);
+  void removeStackBreakpoint(uint32_t low, uint32_t high);
   void enableStackBreakpoint(uint32_t low, bool enabled);
   bool isStackBreakpointHit() const { return stackHit_; }
   uint32_t stackBreakpointHitLow() const { return stackHitLow_; }
@@ -84,9 +91,25 @@ public:
    * Run on past the breakpoint the machine is already sitting on.
    *
    * Without this, continuing from a breakpoint hits the same one again before
-   * a single instruction has run.
+   * a single instruction has run. A machine asks for it on every resume, not
+   * only after a hit: a step that lands on a breakpoint, or a pause that
+   * happens to stop on one, is sitting on it just the same. It covers the
+   * first instruction checked and no other.
    */
   void skipNextBreakpoint() { skipBreakpointOnce_ = true; }
+
+  /**
+   * How many times the machine has been set running.
+   *
+   * A host that judges why the machine stopped needs to know a stop is new,
+   * and seeing the machine run in between is not enough: a breakpoint a few
+   * instructions after a resume stops it before anything has looked. So the
+   * machine counts its resumes, a reset included, and a stop seen with a
+   * different count from the last one judged is a new one. It only ever
+   * grows; nothing clears it.
+   */
+  void noteResume() { resumes_++; }
+  uint64_t resumeCount() const { return resumes_; }
 
   // ===== The temporary breakpoint behind step over and step out =====
 
@@ -113,6 +136,17 @@ public:
   void removeWatchpoint(uint32_t start);
   void clearWatchpoints();
   bool hasWatchpoints() const { return !watchpoints_.empty(); }
+
+  /**
+   * Told whether there are any watchpoints whenever that might have changed.
+   * A //e's MMU reports accesses only while it has been told to, because the
+   * check costs something on every one; this is how it is told, whoever adds
+   * the watchpoint. A front end holds this object and adds to it directly,
+   * so an owner that kept its own flag beside it never heard.
+   */
+  void setWatchpointsChangedCallback(std::function<void(bool)> callback) {
+    watchpointsChanged_ = std::move(callback);
+  }
 
   bool isWatchpointHit() const { return watchpointHit_; }
   uint32_t watchpointAddress() const { return watchpointAddress_; }
@@ -333,6 +367,7 @@ private:
   bool breakpointHit_ = false;
   uint32_t breakpointAddress_ = 0;
   bool skipBreakpointOnce_ = false;
+  uint64_t resumes_ = 0;
 
   uint32_t tempAddress_ = 0;
   bool tempActive_ = false;
@@ -345,6 +380,10 @@ private:
     bool enabled;
   };
   std::vector<Watchpoint> watchpoints_;
+  std::function<void(bool)> watchpointsChanged_;
+  void watchpointsChanged() {
+    if (watchpointsChanged_) watchpointsChanged_(!watchpoints_.empty());
+  }
   bool watchpointHit_ = false;
   uint32_t watchpointAddress_ = 0;
   uint8_t watchpointValue_ = 0;

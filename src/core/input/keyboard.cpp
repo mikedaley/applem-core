@@ -287,4 +287,28 @@ int charToAppleKey(int charCode) {
   return -1;
 }
 
+std::vector<uint8_t> textToAppleKeys(const char *utf8) {
+  std::vector<uint8_t> keys;
+  if (!utf8) return keys;
+  const auto *p = reinterpret_cast<const unsigned char *>(utf8);
+  while (*p) {
+    // One UTF-8 code point: charToAppleKey() takes a code point, so text
+    // pasted from another app is decoded rather than taken byte by byte.
+    uint32_t cp = *p;
+    int extra = 0;
+    if (cp >= 0xF0) { cp &= 0x07; extra = 3; }
+    else if (cp >= 0xE0) { cp &= 0x0F; extra = 2; }
+    else if (cp >= 0xC0) { cp &= 0x1F; extra = 1; }
+    else if (cp >= 0x80) { cp = 0xFFFD; }  // stray continuation byte
+    ++p;
+    for (int i = 0; i < extra && (*p & 0xC0) == 0x80; ++i) {
+      cp = (cp << 6) | (*p & 0x3F);
+      ++p;
+    }
+    const int key = charToAppleKey(static_cast<int>(cp));
+    if (key >= 0) keys.push_back(static_cast<uint8_t>(key & 0x7F));
+  }
+  return keys;
+}
+
 } // namespace a2e

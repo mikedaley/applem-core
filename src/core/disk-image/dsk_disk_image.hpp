@@ -92,7 +92,9 @@ public:
 
   // ===== Status =====
   bool isWriteProtected() const override { return write_protected_; }
+  void setWriteProtected(bool on) override { write_protected_ = on; }
   bool isModified() const override { return modified_; }
+  void markSaved() override { modified_ = false; }
   std::string getFormatName() const override;
   const uint8_t *getSectorData(size_t *size) const override;
   const uint8_t *exportData(size_t *size) override;

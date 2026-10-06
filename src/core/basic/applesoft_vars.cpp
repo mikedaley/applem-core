@@ -141,11 +141,51 @@ constexpr uint16_t MAX_TABLE_ADDR = 0xC000; // I/O space starts here
 /** Simple variables are a fixed seven bytes: 2 name + 5 value. */
 constexpr uint16_t SIMPLE_VAR_SIZE = 7;
 
+constexpr uint16_t ZP_TXTTAB = 0x67;
+constexpr uint16_t ZP_FRETOP = 0x6F;
+constexpr uint16_t ZP_MEMSIZ = 0x73;
+
 bool plausibleRange(uint16_t lo, uint16_t hi) {
   return lo != 0 && hi != 0 && lo < hi && lo >= MIN_TABLE_ADDR && hi <= MAX_TABLE_ADDR;
 }
 
 } // namespace
+
+bool ApplesoftVarReader::tablesValid(const VarMemReadFn &read) {
+  const uint16_t txttab = readPointer(read, ZP_TXTTAB);
+  const uint16_t vartab = readPointer(read, ZP_VARTAB);
+  const uint16_t arytab = readPointer(read, ZP_ARYTAB);
+  const uint16_t strend = readPointer(read, ZP_STREND);
+  const uint16_t fretop = readPointer(read, ZP_FRETOP);
+  const uint16_t memsiz = readPointer(read, ZP_MEMSIZ);
+  return txttab >= MIN_TABLE_ADDR && txttab < vartab && vartab <= arytab && arytab <= strend &&
+         strend <= fretop && fretop <= memsiz && memsiz <= MAX_TABLE_ADDR &&
+         (arytab - vartab) % SIMPLE_VAR_SIZE == 0;
+}
+
+bool assignApplesoftString(const VarMemReadFn &read, const VarMemWriteFn &write, uint16_t descriptor,
+                           const std::string &value) {
+  if (value.size() > 255 || !ApplesoftVarReader::tablesValid(read)) return false;
+  const uint8_t length = static_cast<uint8_t>(value.size());
+  if (length == 0) {
+    // An empty string needs no space; Applesoft leaves the pointer as it was.
+    write(descriptor, 0);
+    return true;
+  }
+  const uint16_t strend = readPointer(read, ZP_STREND);
+  const uint16_t fretop = readPointer(read, ZP_FRETOP);
+  if (fretop < strend + length) return false;
+  const uint16_t at = static_cast<uint16_t>(fretop - length);
+  for (uint8_t i = 0; i < length; i++) {
+    write(static_cast<uint16_t>(at + i), static_cast<uint8_t>(value[i] & 0x7F));
+  }
+  write(ZP_FRETOP, static_cast<uint8_t>(at & 0xFF));
+  write(static_cast<uint16_t>(ZP_FRETOP + 1), static_cast<uint8_t>(at >> 8));
+  write(descriptor, length);
+  write(static_cast<uint16_t>(descriptor + 1), static_cast<uint8_t>(at & 0xFF));
+  write(static_cast<uint16_t>(descriptor + 2), static_cast<uint8_t>(at >> 8));
+  return true;
+}
 
 std::string ApplesoftVarReader::readString(const VarMemReadFn &read, uint16_t ptr,
                                            uint8_t length) {

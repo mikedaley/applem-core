@@ -383,3 +383,29 @@ TEST_CASE("detokenizeApplesoft handles nested loops closing on one line",
     CHECK(lines[1].substr(6).rfind("      PRINT", 0) == 0); // two levels
     CHECK(lines[3].substr(6).rfind("END", 0) == 0);         // fully unwound
 }
+
+// ============================================================================
+// Applesoft: what a listing must keep to be written back the same
+// ============================================================================
+
+TEST_CASE("detokenizeApplesoft keeps a colon quoted in DATA", "[basic][applesoft][data]") {
+    ApplesoftProgramBuilder builder;
+    // 10 DATA "A:B",C:PRINT
+    builder.addLine(10, std::vector<uint8_t>{0x83, '"', 'A', ':', 'B', '"', ',', 'C', ':', 0xBA});
+    auto data = builder.build();
+    const std::string output = BasicDetokenizer::detokenizeApplesoft(data.data(), static_cast<int>(data.size()), false);
+    CHECK(output.find("DATA\"A:B\",C: PRINT") != std::string::npos);
+}
+
+TEST_CASE("detokenizeApplesoft writes control characters as tokens", "[basic][applesoft][control]") {
+    ApplesoftProgramBuilder builder;
+    // 10 PRINT "^DCATALOG": REM ^G
+    builder.addLine(10, std::vector<uint8_t>{0xBA, '"', 0x04, 'C', 'A', 'T', '"', ':', 0xB2, 0x07, 0x7F});
+    // 20 DATA ^[ (high bit set, as some programs store it)
+    builder.addLine(20, std::vector<uint8_t>{0x83, 0x9B});
+    auto data = builder.build();
+    const std::string output = BasicDetokenizer::detokenizeApplesoft(data.data(), static_cast<int>(data.size()), false);
+    CHECK(output.find("\"{ctrl-d}CAT\"") != std::string::npos);
+    CHECK(output.find("REM{ctrl-g}{del}") != std::string::npos);
+    CHECK(output.find("DATA{ctrl-[}") != std::string::npos);
+}

@@ -328,3 +328,28 @@ TEST_CASE("Disk2Card serialize/deserialize round-trip preserves state", "[disk2]
     REQUIRE(card2.getQ7() == card1.getQ7());
     REQUIRE(card2.getPhaseStates() == card1.getPhaseStates());
 }
+
+// ---------------------------------------------------------------------------
+// Write protect
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Disk2Card never writes to a write-protected disk", "[disk2][writeprotect]") {
+    // Motor on, then write mode (Q6 and Q7 high) with a byte in the latch,
+    // and the sequencer run for a while: an unprotected disk takes the bits,
+    // and a protected one keeps the write current off, as the drive does.
+    for (const bool protect : {false, true}) {
+        INFO("write protected " << protect);
+        Disk2Card card(roms::ROM_DISK2, roms::ROM_DISK2_SIZE);
+        std::vector<uint8_t> dsk(143360, 0);
+        REQUIRE(card.insertDisk(0, dsk.data(), dsk.size(), "a.dsk"));
+        const_cast<DiskImage *>(card.getDiskImage(0))->setWriteProtected(protect);
+        card.readIO(0x09); // motor on
+        card.readIO(0x0D); // Q6 high: load
+        card.writeIO(0x0F, 0xFF); // Q7 high with a byte: write
+        for (int i = 0; i < 400; i++) {
+            card.writeIO(0x0D, 0xD5);
+            card.update(32);
+        }
+        REQUIRE(card.getDiskImage(0)->isModified() == !protect);
+    }
+}

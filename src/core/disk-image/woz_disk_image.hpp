@@ -80,7 +80,9 @@ public:
   double getRotation() const override;
 
   bool isWriteProtected() const override;
+  void setWriteProtected(bool on) override { info_.write_protected = on ? 1 : 0; }
   bool isModified() const override { return modified_; }
+  void markSaved() override { modified_ = false; }
   std::string getFormatName() const override;
   const uint8_t *getSectorData(size_t *size) const override;
   const uint8_t *exportData(size_t *size) override;

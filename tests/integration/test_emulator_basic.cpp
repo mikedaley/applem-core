@@ -9,8 +9,10 @@
 #include "catch.hpp"
 
 #include "emulator.hpp"
+#include "basic/basic_tokenizer.hpp"
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 using namespace a2e;
@@ -304,4 +306,76 @@ TEST_CASE("Emulator knows when Applesoft is waiting at its prompt", "[emulator][
     emu.runCycles(2000000);
     CHECK(emu.peekMemory(0x33) == 0xDD);
     CHECK_FALSE(emu.isAtBasicPrompt());
+}
+
+// ---------------------------------------------------------------------------
+// Breakpoints on a line the program comes back to
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Applesoft at its prompt, with `source` written into memory and RUN typed.
+void runProgram(Emulator& emu, const char* source) {
+    emu.init();
+    emu.reset();
+    emu.runCycles(1000000);
+    emu.warmReset();
+    emu.runCycles(500000);
+    REQUIRE(emu.isAtBasicPrompt());
+    REQUIRE(a2e::loadBasicProgram(
+                source, [&](uint16_t a) { return emu.readMemory(a); },
+                [&](uint16_t a, uint8_t v) { emu.writeMemory(a, v); }) > 0);
+    emu.pasteText("RUN\r");
+}
+
+// Runs the program to its end, resuming from every stop as the BASIC
+// window does, and returns where each stop was: line and statement.
+std::vector<std::pair<int, int>> stopsUntilEnd(Emulator& emu) {
+    std::vector<std::pair<int, int>> stops;
+    for (int i = 0; i < 400 && stops.size() < 50; i++) {
+        emu.runCycles(50000);
+        if (emu.isBasicBreakpointHit()) {
+            const uint16_t line = emu.getBasicBreakLine();
+            stops.push_back({line, emu.getBasicStatementIndexForLine(line, emu.getBasicTxtptr())});
+            emu.setPaused(false);
+            emu.clearBasicBreakpointHit();
+        } else if (i > 20 && !emu.isBasicProgramRunning()) {
+            break;
+        }
+    }
+    return stops;
+}
+
+} // namespace
+
+TEST_CASE("A breakpoint on a one-line loop stops on every pass", "[emulator][basic][breakpoint]") {
+    // The resume used to skip the line until CURLIN changed, and a loop on
+    // one line never changes it: the breakpoint stopped once, and a
+    // condition false at that stop was never looked at again.
+    Emulator emu;
+    runProgram(emu, "10 FOR I = 1 TO 4: PRINT I: NEXT\n20 END");
+
+    SECTION("a whole-line breakpoint: on entering the line, then each time NEXT comes back to it") {
+        emu.addBasicBreakpoint(10, -1);
+        const auto stops = stopsUntilEnd(emu);
+        REQUIRE(stops.size() == 4);
+        CHECK(stops[0] == std::make_pair(10, 0));
+        for (size_t i = 1; i < stops.size(); i++) CHECK(stops[i] == std::make_pair(10, 1));
+    }
+
+    SECTION("a statement breakpoint: every time that statement runs") {
+        emu.addBasicBreakpoint(10, 1);
+        const auto stops = stopsUntilEnd(emu);
+        REQUIRE(stops.size() == 4);
+        for (const auto& s : stops) CHECK(s == std::make_pair(10, 1));
+    }
+}
+
+TEST_CASE("A whole-line breakpoint stops once on a line run straight through", "[emulator][basic][breakpoint]") {
+    Emulator emu;
+    runProgram(emu, "10 PRINT 1: PRINT 2: PRINT 3\n20 GOTO 30\n30 END");
+    emu.addBasicBreakpoint(10, -1);
+    const auto stops = stopsUntilEnd(emu);
+    REQUIRE(stops.size() == 1);
+    CHECK(stops[0] == std::make_pair(10, 0));
 }

@@ -257,3 +257,44 @@ TEST_CASE("BlockDevice can be reloaded after eject", "[blockdev][lifecycle]") {
     CHECK(dev.getTotalBlocks() == 8);
     CHECK(dev.getFilename() == "second.hdv");
 }
+
+TEST_CASE("A DOS-ordered 2MG is read and written through the interleave", "[blockdev][2mg]") {
+  // A 140K disk in DOS 3.3 sector order: each sector filled with its track
+  // and DOS sector number. ProDOS block 0 is ProDOS sectors 0 and 1 of track
+  // 0, which DOS order keeps in its sectors 0 and 14; read as ProDOS order,
+  // the block came back as DOS sectors 0 and 1, scrambled.
+  constexpr size_t SECTOR = 256, TRACK = 16 * SECTOR, TRACKS = 35;
+  std::vector<uint8_t> file(64 + TRACKS * TRACK, 0);
+  std::memcpy(file.data(), "2IMG", 4);
+  file[8] = 64;                                  // header size
+  file[12] = 0;                                  // DOS order
+  const uint32_t length = TRACKS * TRACK;
+  file[24] = 64;                                 // data offset
+  for (int i = 0; i < 4; i++) file[28 + i] = static_cast<uint8_t>(length >> (8 * i));
+  for (size_t t = 0; t < TRACKS; t++) {
+    for (size_t s = 0; s < 16; s++) {
+      std::memset(&file[64 + t * TRACK + s * SECTOR], static_cast<int>(t * 16 + s), SECTOR);
+    }
+  }
+  BlockDevice dev;
+  REQUIRE(dev.load(file.data(), file.size(), "dos.2mg"));
+  REQUIRE(dev.getTotalBlocks() == 280);
+  uint8_t block[512];
+  REQUIRE(dev.readBlock(0, block));
+  REQUIRE(block[0] == 0);         // track 0, DOS sector 0
+  REQUIRE(block[256] == 14);      // track 0, DOS sector 14
+  REQUIRE(dev.readBlock(9, block)); // track 1, ProDOS sectors 2 and 3
+  REQUIRE(block[0] == 16 + 13);
+  REQUIRE(block[256] == 16 + 12);
+
+  // A write lands where the read came from, and the file keeps its order.
+  std::memset(block, 0xAB, 256);
+  std::memset(block + 256, 0xCD, 256);
+  REQUIRE(dev.writeBlock(9, block));
+  size_t size = 0;
+  const uint8_t *out = dev.exportData(&size);
+  REQUIRE(size == file.size());
+  REQUIRE(out[64 + TRACK + 13 * SECTOR] == 0xAB);
+  REQUIRE(out[64 + TRACK + 12 * SECTOR] == 0xCD);
+  REQUIRE(out[64 + TRACK + 2 * SECTOR] == 16 + 2); // untouched
+}

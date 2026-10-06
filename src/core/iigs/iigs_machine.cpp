@@ -240,6 +240,10 @@ void IIgsMachine::init(const uint8_t *rom, size_t romSize,
 void IIgsMachine::reset() {
   memory_->reset();
   audio_->reset();
+  // A power cycle takes the keyboard's type-ahead with it, as a //e's does.
+  pasteBuffer_.clear();
+  pasteHolds_ = false;
+  pasteReadyAt_ = 0;
   lastFrameCycle_ = 0;
   linesFinished_ = 0;
   soundCycle_ = 0;
@@ -392,6 +396,7 @@ void IIgsMachine::runCycles(int slowCyclesToRun) {
       return;
     }
     if (debug_.isTraceEnabled()) recordTrace();
+    if (!pasteBuffer_.empty() || pasteHolds_) feedPaste();
     const uint32_t instructionPC = cpu_->getPCFull();
     if (!coverage_.empty()) markExecuted(instructionPC);
 
@@ -436,12 +441,19 @@ void IIgsMachine::runCycles(int slowCyclesToRun) {
 // ============================================================================
 
 void IIgsMachine::setPaused(bool paused) {
-  if (!paused && paused_ && debug_.isBreakpointHit()) {
-    // Resuming from the breakpoint the machine is sitting on: let this one
-    // instruction through, or continuing would stop again having run nothing.
+  if (!paused && paused_) {
+    // Resuming from a breakpoint the machine is sitting on, however it came
+    // to be there: let this one instruction through, or continuing would stop
+    // again having run nothing. And count it, for a host judging stops.
     debug_.skipNextBreakpoint();
+    debug_.noteResume();
   }
-  debug_.clearHits();
+  // A pause ends a step over or a run to here; left armed, it would stop the
+  // machine at that address on some later run.
+  if (paused && !paused_) debug_.clearTempBreakpoint();
+  // Why the machine stopped stays readable while it is stopped. Pausing a
+  // machine that is already paused, as a step does first, used to forget it.
+  if (!paused) debug_.clearHits();
   paused_ = paused;
 }
 
@@ -509,20 +521,43 @@ uint32_t IIgsMachine::stepOut() {
 
   // The stack pointer is sixteen bits and the stack is anywhere in bank zero,
   // so the return address is read from where it actually points rather than
-  // from page one.
+  // from page one. In emulation mode an RTS pulls through page one and wraps
+  // there, so $01FF is followed by $0100; an RTL, which a 6502 never had,
+  // walks all sixteen bits whatever the mode (see "The 65816" in CLAUDE.md).
   const uint16_t sp = cpu_->getSP();
-  auto stack = [this](uint16_t at) { return memory_->peek(at); };
+  const bool emulation = cpu_->getEmulation();
+  auto shortStack = [&](int i) {
+    const uint16_t at = emulation ? static_cast<uint16_t>(0x0100 | ((sp + i) & 0xFF))
+                                  : static_cast<uint16_t>(sp + i);
+    return memory_->peek(at);
+  };
+  auto longStack = [&](int i) { return memory_->peek(static_cast<uint16_t>(sp + i)); };
 
-  // Which kind of return is on the stack is not knowable from the stack, so
-  // the instruction the machine is sitting on decides: RTL took three bytes,
-  // and anything else is assumed to be the two a JSR pushed, because a long
-  // call is much the rarer of the two.
-  const bool longReturn = memory_->peek(cpu_->getPCFull()) == 0x6B;
-  const uint16_t offset =
-      static_cast<uint16_t>((stack(sp + 1) | (stack(sp + 2) << 8)) + 1);
-  const uint8_t bank = longReturn ? stack(sp + 3)
-                                  : static_cast<uint8_t>(cpu_->getPBR());
-  const uint32_t returnAddress = (static_cast<uint32_t>(bank) << 16) | offset;
+  // Which kind of return is on the stack is not written on the stack, so it
+  // is read off what is around it. An RTS or an RTL at the PC says so. Failing
+  // that, the call that pushed the address is looked for where the address
+  // says it is: a JSL four bytes back in the bank its third byte names, or a
+  // JSR three back in this bank. A routine reached by JSL returns to the bank
+  // that called it, which the program bank is not. When both read as calls
+  // the short one wins, because a long call is much the rarer.
+  const uint8_t opcode = memory_->peek(cpu_->getPCFull());
+  const uint16_t shortPushed = static_cast<uint16_t>(shortStack(1) | (shortStack(2) << 8));
+  const uint16_t longPushed = static_cast<uint16_t>(longStack(1) | (longStack(2) << 8));
+  const uint8_t longBank = longStack(3);
+  const uint32_t pbr = static_cast<uint32_t>(cpu_->getPBR()) << 16;
+  auto isJsr = [&](uint8_t op) { return op == 0x20 || op == 0xFC; };
+  bool longReturn = false;
+  if (opcode == 0x6B) {
+    longReturn = true;
+  } else if (opcode != 0x60) {
+    const bool shortCall = isJsr(memory_->peek(pbr | static_cast<uint16_t>(shortPushed - 2)));
+    const bool longCall =
+        memory_->peek((static_cast<uint32_t>(longBank) << 16) | static_cast<uint16_t>(longPushed - 3)) == 0x22;
+    longReturn = longCall && !shortCall;
+  }
+  const uint16_t offset = static_cast<uint16_t>((longReturn ? longPushed : shortPushed) + 1);
+  const uint32_t returnAddress =
+      (longReturn ? static_cast<uint32_t>(longBank) << 16 : pbr) | offset;
 
   if (offset == 0) {
     // Nothing plausible on the stack; a step is the best that can be done.
@@ -766,6 +801,34 @@ void IIgsMachine::handleRawKeyUp(int browserKeycode, bool shift, bool ctrl,
 void IIgsMachine::keyDown(int keycode) {
   memory_->adb().queueKeyboard(static_cast<uint8_t>(keycode & 0x7F));
   memory_->adb().setAnyKeyDown(true);
+}
+
+size_t IIgsMachine::pasteText(const char *utf8) {
+  const std::vector<uint8_t> keys = textToAppleKeys(utf8);
+  pasteBuffer_.insert(pasteBuffer_.end(), keys.begin(), keys.end());
+  feedPaste();
+  return keys.size();
+}
+
+// Called as the machine runs while anything is pasted. The latch's strobe
+// says whether the program has read the key: //e software clears it at
+// $C010, and so does the IIgs's own Event Manager.
+void IIgsMachine::feedPaste() {
+  IIgsADB &adb = memory_->adb();
+  const bool unread = adb.keyboardLatch() & 0x80;
+  const uint64_t now = memory_->slowCycles();
+  if (pasteHolds_) {
+    if (unread) return;
+    pasteHolds_ = false;
+    adb.setAnyKeyDown(false);
+    pasteReadyAt_ = now + (lastPasted_ == 0x0D ? PASTE_LINE_GAP_CYCLES : PASTE_KEY_GAP_CYCLES);
+  }
+  if (pasteBuffer_.empty() || unread || now < pasteReadyAt_) return;
+  lastPasted_ = pasteBuffer_.front();
+  pasteBuffer_.pop_front();
+  adb.queueKeyboard(lastPasted_);
+  adb.setAnyKeyDown(true);
+  pasteHolds_ = true;
 }
 
 void IIgsMachine::setPaddleValue(int paddle, int value) {

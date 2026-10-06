@@ -440,7 +440,11 @@ void DiskController::clockLSS() {
     // firmware switches the drive off and immediately writes the IWM's mode
     // register, which is an access to $C0EF and so raises Q7 as a side effect,
     // and without this the machine erases the disk it was about to boot.
-    if (lssClock_ == 4 && q7_ && isDriveEnabled()) {
+    //
+    // A covered notch closes the drive's write-protect switch, and the drive
+    // itself then keeps the write current off: the program is told through
+    // the sense line, but nothing it does reaches the disk.
+    if (lssClock_ == 4 && q7_ && isDriveEnabled() && !disk->isWriteProtected()) {
         uint8_t level = (nextState >> 3) & 1;
         disk->writeBit(level ^ writeLevel_);
         writeLevel_ = level;

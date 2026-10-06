@@ -7,8 +7,10 @@
 
 #include "basic_detokenizer.hpp"
 #include "basic_tokens.hpp"
+#include "basic_control_text.hpp"
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace a2e {
 
@@ -69,6 +71,27 @@ const char* BasicDetokenizer::detokenizeApplesoft(const uint8_t* data, int size,
     while (*s && lineBufLen < (int)sizeof(lineBuf) - 1)
       lineBuf[lineBufLen++] = *s++;
   };
+  // A byte of a string, a remark or DATA, or a stray one in the code, as the
+  // listing shows it: a control character as its token in braces, and a {
+  // that would read as one escaped, so the tokenizer writes back exactly
+  // these bytes (basic_control_text.hpp). Dropping them lost the Control-D of
+  // every PRINT "^DCATALOG" between a read and a write.
+  auto lineAppendLiteral = [&](uint8_t byte, int at) {
+    const uint8_t ch = byte & 0x7F;
+    uint8_t value = 0;
+    size_t length = 0;
+    if (ch == '{') {
+      std::string ahead;
+      for (int i = at; i < size && i < at + 16 && data[i] != 0x00; i++) {
+        ahead += static_cast<char>(data[i] & 0x7F);
+      }
+      lineAppendStr(basic_text::decodeToken(ahead, 0, value, length) ? "{chr:123}" : "{");
+    } else if (basic_text::needsToken(ch)) {
+      lineAppendStr(basic_text::tokenFor(ch).c_str());
+    } else {
+      lineAppendChar(static_cast<char>(ch));
+    }
+  };
 
   while (offset < size - 4) {
     // Read next line pointer (2 bytes)
@@ -93,37 +116,36 @@ const char* BasicDetokenizer::detokenizeApplesoft(const uint8_t* data, int size,
     bool inString = false;
     bool inRem = false;
     bool inData = false;
+    bool inDataQuote = false;
     const char* lastType = "start";
 
     while (offset < size && data[offset] != 0x00) {
       uint8_t byte = data[offset++];
 
       if (inRem) {
-        char ch = byte & 0x7F;
-        if (ch >= 0x20 && ch < 0x7F) {
-          lineAppendChar(ch);
-        }
+        lineAppendLiteral(byte, offset - 1);
       } else if (inString) {
         if (byte == 0x22) {
           lineAppendChar('"');
           inString = false;
           lastType = "string";
         } else {
-          char ch = byte & 0x7F;
-          if (ch >= 0x20 && ch < 0x7F) {
-            lineAppendChar(ch);
-          }
+          lineAppendLiteral(byte, offset - 1);
         }
       } else if (inData) {
-        if (byte == 0x3A) {
-          lineAppendStr(" : ");
+        // A colon in quotes is part of a DATA item, as Applesoft reads it;
+        // only one outside them ends the statement.
+        if (byte == 0x22) {
+          lineAppendChar('"');
+          inDataQuote = !inDataQuote;
+        } else if (byte == 0x3A && !inDataQuote) {
+          // No space before it: in DATA a space is part of the item, and one
+          // added here would be written back into the program.
+          lineAppendStr(": ");
           inData = false;
           lastType = "punct";
         } else {
-          char ch = byte & 0x7F;
-          if (ch >= 0x20 && ch < 0x7F) {
-            lineAppendChar(ch);
-          }
+          lineAppendLiteral(byte, offset - 1);
         }
       } else if (byte >= 0x80) {
         int tokenIdx = byte - 0x80;
@@ -222,8 +244,8 @@ const char* BasicDetokenizer::detokenizeApplesoft(const uint8_t* data, int size,
         } else if (strchr("(),;", ch)) {
           lineAppendChar(ch);
           lastType = "punct";
-        } else if (byte >= 0x20 && byte < 0x7F) {
-          lineAppendChar(ch);
+        } else if (byte < 0x80) {
+          lineAppendLiteral(byte, offset - 1);
           lastType = "text";
         }
       }

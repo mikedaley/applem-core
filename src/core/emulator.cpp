@@ -74,6 +74,12 @@ Emulator::Emulator(MachineId machine, VideoStandard standard)
   mmu_->setWatchpointCallbacks(
     [this](uint16_t addr, uint8_t val) { onWatchpointRead(addr, val); },
     [this](uint16_t addr, uint8_t val) { onWatchpointWrite(addr, val); });
+  // The MMU checks accesses only while there is a watchpoint to check them
+  // against, and it hears so from the debug state, however it was added.
+  debug_.setWatchpointsChangedCallback([this](bool any) {
+    watchpointsActive_ = any;
+    mmu_->setWatchpointsActive(any);
+  });
 
   // Set up Mockingboard callbacks
   mockingboard_->setIRQCallback([this]() { cpu_->irq(); });
@@ -288,6 +294,7 @@ void Emulator::reset() {
   basicStepMode_ = BasicStepMode::None;
   skipBasicBreakpointLine_ = 0xFFFF;
   skipBasicBreakpointStmt_ = -1;
+  skipBasicResumeHit_ = false;
   basicBreakLine_ = 0;
 
   video_->beginNewFrame(0);
@@ -328,9 +335,16 @@ void Emulator::warmReset() {
 }
 
 void Emulator::setPaused(bool paused) {
-  if (!paused && paused_ && debug_.isBreakpointHit()) {
+  // Resuming runs on past a breakpoint at the PC, whether the machine stopped
+  // on it or was stepped or paused onto it, and counts as a resume for a host
+  // judging stops (MachineDebug::resumeCount).
+  if (!paused && paused_) {
     debug_.skipNextBreakpoint();
+    debug_.noteResume();
   }
+  // A pause ends a step over or a run to here as surely as arriving does; one
+  // left armed would stop the machine at that address some later run.
+  if (paused && !paused_) debug_.clearTempBreakpoint();
   if (!paused && paused_ && basicBreakpointHit_) {
     // Skip this BASIC breakpoint until we move to a different line/statement
     skipBasicBreakpointLine_ = basicBreakLine_;
@@ -348,8 +362,12 @@ void Emulator::setPaused(bool paused) {
       }
     }
     skipBasicBreakpointStmt_ = hasStmtBp ? static_cast<int8_t>(stmtIdx) : -1;
+    skipBasicResumeHit_ = true;
+    skipBasicLastTxtptr_ = txtptr;
   }
-  debug_.clearHits();
+  // What stopped the machine stays readable while it is stopped: pausing it
+  // again, as a step does first, must not forget why it stopped.
+  if (!paused) debug_.clearHits();
   basicBreakpointHit_ = false;
   // Reset frame sample counter when unpausing to prevent backlog
   if (!paused && paused_) {
@@ -503,6 +521,23 @@ void Emulator::runUntil(uint64_t targetCycles) {
         // Heat map: count every statement execution
         if (basicHeatMapEnabled_) {
           basicHeatMap_[curlin]++;
+        }
+
+        // The skip after a resume covers the statement resumed from and the
+        // rest of that pass through the line. A statement that is not after
+        // the last one seen is the line running again, from a NEXT, a GOTO or
+        // a RETURN, and its breakpoints and rules are live again; keyed on
+        // CURLIN alone, a breakpoint on a one-line loop stopped only once and
+        // a condition false at its first stop was never checked again.
+        if (skipBasicBreakpointLine_ != 0xFFFF && curlin == skipBasicBreakpointLine_) {
+          const uint16_t txtptr = mmu_->readRAM(0xB8, false) | (mmu_->readRAM(0xB9, false) << 8);
+          if (skipBasicResumeHit_) {
+            skipBasicResumeHit_ = false;
+          } else if (txtptr <= skipBasicLastTxtptr_) {
+            skipBasicBreakpointLine_ = 0xFFFF;
+            skipBasicBreakpointStmt_ = -1;
+          }
+          skipBasicLastTxtptr_ = txtptr;
         }
 
         // BASIC line stepping - pause when CURLIN changes
@@ -810,36 +845,10 @@ void Emulator::updateAnyKeyDown() {
 // ============================================================================
 
 size_t Emulator::pasteText(const char *utf8) {
-  if (!utf8) return 0;
-
-  size_t queued = 0;
-  const auto *p = reinterpret_cast<const unsigned char *>(utf8);
-
-  while (*p) {
-    // Decode one UTF-8 code point. charToAppleKey() takes a code point, and
-    // the host used to hand it one per character, so text pasted from a
-    // browser must be decoded the same way rather than byte by byte.
-    uint32_t cp = *p;
-    int extra = 0;
-    if (cp >= 0xF0) { cp &= 0x07; extra = 3; }
-    else if (cp >= 0xE0) { cp &= 0x0F; extra = 2; }
-    else if (cp >= 0xC0) { cp &= 0x1F; extra = 1; }
-    else if (cp >= 0x80) { cp = 0xFFFD; }  // stray continuation byte
-    ++p;
-    for (int i = 0; i < extra && (*p & 0xC0) == 0x80; ++i) {
-      cp = (cp << 6) | (*p & 0x3F);
-      ++p;
-    }
-
-    int key = charToAppleKey(static_cast<int>(cp));
-    if (key >= 0) {
-      pasteBuffer_.push_back(static_cast<uint8_t>(key & 0x7F));
-      ++queued;
-    }
-  }
-
+  const std::vector<uint8_t> keys = textToAppleKeys(utf8);
+  pasteBuffer_.insert(pasteBuffer_.end(), keys.begin(), keys.end());
   loadNextPasteKey();
-  return queued;
+  return keys.size();
 }
 
 void Emulator::pasteKey(int appleKey) {

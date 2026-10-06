@@ -128,6 +128,33 @@ public:
 
   /** Read a string body, masking off the high bit Applesoft leaves set. */
   static std::string readString(const VarMemReadFn &read, uint16_t ptr, uint8_t length);
+
+  /**
+   * Whether the zero page describes an Applesoft program and its tables:
+   * TXTTAB < VARTAB <= ARYTAB <= STREND <= FRETOP <= MEMSIZ <= $C000, with
+   * the simple variables a whole number of seven-byte entries. Before
+   * Applesoft has started, those bytes are whatever was in memory, and two of
+   * them can look like a variable table by chance (the panel once showed a
+   * variable DD at boot); six in order rarely do.
+   */
+  static bool tablesValid(const VarMemReadFn &read);
 };
+
+/** Writes one byte of emulated memory. */
+using VarMemWriteFn = std::function<void(uint16_t, uint8_t)>;
+
+/**
+ * Give a string variable a new value, as Applesoft's own assignment does: the
+ * text goes into fresh string space just below FRETOP, FRETOP moves down over
+ * it, and the descriptor at `descriptor` (length, pointer) is pointed at it.
+ *
+ * A descriptor often points into the program itself (A$ = "HELLO" leaves A$
+ * pointing at the quotes in the listing), so writing through it rewrote the
+ * program. Returns false, changing nothing, when the tables are not valid or
+ * the string would run down into the arrays; Applesoft would collect garbage
+ * there, which is more than a debugger should do behind a program's back.
+ */
+bool assignApplesoftString(const VarMemReadFn &read, const VarMemWriteFn &write, uint16_t descriptor,
+                           const std::string &value);
 
 } // namespace a2e

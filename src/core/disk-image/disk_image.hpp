@@ -246,10 +246,23 @@ public:
   virtual bool isWriteProtected() const = 0;
 
   /**
+   * The disk's write-protect notch, as the user sets it: covered, the drive
+   * reports it to the program and will not write to it.
+   */
+  virtual void setWriteProtected(bool on) = 0;
+
+  /**
    * Check if the disk has been modified
    * @return true if modified since load
    */
   virtual bool isModified() const = 0;
+
+  /**
+   * What the machine has written is now kept somewhere (a host wrote the
+   * image back to its file), so the disk counts as unmodified again until the
+   * next write. The image itself is unchanged.
+   */
+  virtual void markSaved() = 0;
 
   /**
    * Get a human-readable format name

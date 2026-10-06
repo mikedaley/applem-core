@@ -10,6 +10,7 @@
 #include "../emulator.hpp"
 #include <cctype>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 
 namespace a2e {
@@ -135,10 +136,52 @@ static int32_t readBasicArrayElement2D(const MachineView& emu, uint8_t nameB1, u
 
 char ConditionEvaluator::errorBuf_[128] = "";
 
-int ConditionEvaluator::tokenize(const char* expr, Token* tokens, int maxTokens) {
+// The first error stands: what follows one is usually only its consequence.
+void ConditionEvaluator::fail(const char* format, ...) {
+  if (errorBuf_[0]) return;
+  va_list args;
+  va_start(args, format);
+  vsnprintf(errorBuf_, sizeof(errorBuf_), format, args);
+  va_end(args);
+}
+
+namespace {
+int hexDigit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+} // namespace
+
+int ConditionEvaluator::tokenize(const char* expr, Token* tokens, int maxTokens, bool hexNumbers) {
   int count = 0;
   int i = 0;
   int len = static_cast<int>(strlen(expr));
+
+  auto readHex = [&](int32_t& val) {
+    const int from = i;
+    val = 0;
+    while (i < len && hexDigit(expr[i]) >= 0) {
+      val = static_cast<int32_t>((static_cast<uint32_t>(val) << 4) | static_cast<uint32_t>(hexDigit(expr[i])));
+      i++;
+    }
+    return i > from;
+  };
+  auto readDecimal = [&](int32_t& val) {
+    const int from = i;
+    val = 0;
+    while (i < len && isdigit(static_cast<unsigned char>(expr[i]))) {
+      val = val * 10 + (expr[i] - '0');
+      i++;
+    }
+    return i > from;
+  };
+  auto number = [&](int32_t val) {
+    tokens[count].type = TOK_NUM;
+    tokens[count].numVal = val;
+    count++;
+  };
 
   while (i < len && count < maxTokens - 1) {
     // Skip whitespace
@@ -166,7 +209,7 @@ int ConditionEvaluator::tokenize(const char* expr, Token* tokens, int maxTokens)
     // Single-char operators (including comma for function args)
     char ch = expr[i];
     if (ch == '<' || ch == '>' || ch == '(' || ch == ')' ||
-        ch == '+' || ch == '-' || ch == '*' || ch == ',') {
+        ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == ',') {
       tokens[count].type = TOK_OP1;
       tokens[count].strVal[0] = ch;
       tokens[count].strVal[1] = '\0';
@@ -175,53 +218,61 @@ int ConditionEvaluator::tokenize(const char* expr, Token* tokens, int maxTokens)
       continue;
     }
 
-    // Hex literal: #$XX or $XXXX
+    // The halves of an operator, alone, are a mistake worth naming: A = $41
+    // read as A $41 compared nothing at all.
+    if (ch == '=') {
+      fail("Use == to compare: A == $41");
+      i++;
+      continue;
+    }
+    if (ch == '&' || ch == '|' || ch == '!') {
+      fail(ch == '!' ? "Use != for not equal" : "Use %c%c to join conditions", ch, ch);
+      i++;
+      continue;
+    }
+
+    // Hex: $FF, #$FF, 0xFF. Decimal with # where numbers are hex: #42.
     if (ch == '#' && i + 1 < len && expr[i + 1] == '$') {
       i += 2;
-      int32_t val = 0;
-      while (i < len && isxdigit(static_cast<unsigned char>(expr[i]))) {
-        int digit;
-        char c = expr[i];
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else digit = c - 'A' + 10;
-        val = (val << 4) | digit;
-        i++;
-      }
-      tokens[count].type = TOK_NUM;
-      tokens[count].numVal = val;
-      count++;
+      int32_t val;
+      if (!readHex(val)) fail("A number follows #$");
+      number(val);
       continue;
     }
-
+    if (ch == '#') {
+      i++;
+      int32_t val;
+      if (!readDecimal(val)) fail("A number follows #");
+      number(val);
+      continue;
+    }
     if (ch == '$') {
       i++;
-      int32_t val = 0;
-      while (i < len && isxdigit(static_cast<unsigned char>(expr[i]))) {
-        int digit;
-        char c = expr[i];
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else digit = c - 'A' + 10;
-        val = (val << 4) | digit;
-        i++;
-      }
-      tokens[count].type = TOK_NUM;
-      tokens[count].numVal = val;
-      count++;
+      int32_t val;
+      if (!readHex(val)) fail("A number follows $");
+      number(val);
+      continue;
+    }
+    if (ch == '0' && i + 1 < len && (expr[i + 1] == 'x' || expr[i + 1] == 'X')) {
+      i += 2;
+      int32_t val;
+      if (!readHex(val)) fail("A number follows 0x");
+      number(val);
       continue;
     }
 
-    // Decimal literal
+    // A number with no prefix: decimal, or hex as the monitor reads it.
     if (isdigit(static_cast<unsigned char>(ch))) {
-      int32_t val = 0;
-      while (i < len && isdigit(static_cast<unsigned char>(expr[i]))) {
-        val = val * 10 + (expr[i] - '0');
-        i++;
+      const int start = i;
+      int32_t val;
+      if (hexNumbers) readHex(val);
+      else readDecimal(val);
+      number(val);
+      // "12AB" in decimal, or "12G" in hex, is not a number and not a name.
+      if (i < len && (isalnum(static_cast<unsigned char>(expr[i])) || expr[i] == '_')) {
+        while (i < len && (isalnum(static_cast<unsigned char>(expr[i])) || expr[i] == '_')) i++;
+        fail(hexNumbers ? "Not a number: %.*s" : "Not a number: %.*s (hex wants a $)", i - start, expr + start);
       }
-      tokens[count].type = TOK_NUM;
-      tokens[count].numVal = val;
-      count++;
       continue;
     }
 
@@ -232,7 +283,10 @@ int ConditionEvaluator::tokenize(const char* expr, Token* tokens, int maxTokens)
         i++;
       }
       int idLen = i - start;
-      if (idLen > 7) idLen = 7; // Truncate to fit strVal
+      if (idLen > 7) {
+        fail("Unknown name: %.*s", i - start, expr + start);
+        idLen = 7; // Truncate to fit strVal
+      }
       tokens[count].type = TOK_ID;
       for (int j = 0; j < idLen; j++) {
         tokens[count].strVal[j] = toupper(static_cast<unsigned char>(expr[start + j]));
@@ -242,9 +296,10 @@ int ConditionEvaluator::tokenize(const char* expr, Token* tokens, int maxTokens)
       continue;
     }
 
-    // Unknown char, skip
+    fail("Unexpected '%c'", ch);
     i++;
   }
+  if (count >= maxTokens - 1 && i < len) fail("Too long");
 
   // End sentinel
   tokens[count].type = TOK_END;
@@ -267,26 +322,55 @@ MachineView ConditionEvaluator::viewOf(const Emulator& emu) {
   return view;
 }
 
+// The whole of an expression, and nothing left over: "1 2" is not 1.
+int32_t ConditionEvaluator::parseWhole(ParseState& s) {
+  const int32_t value = parseOr(s);
+  if (s.pos < s.count) {
+    const Token& t = s.tokens[s.pos];
+    if (t.type == TOK_NUM) fail("Unexpected %d", t.numVal);
+    else if (t.type == TOK_OP1 && t.strVal[0] == ')') fail("A ) with no (");
+    else fail("Unexpected %s", t.strVal);
+  }
+  return value;
+}
+
 bool ConditionEvaluator::evaluate(const char* expr, const MachineView& view) {
   errorBuf_[0] = '\0';
   ParseState s;
-  s.count = tokenize(expr, s.tokens, MAX_TOKENS);
+  s.count = tokenize(expr, s.tokens, MAX_TOKENS, false);
   s.pos = 0;
   s.view = &view;
-
-  bool result = parseOr(s);
-  return result;
+  if (s.count == 0 && !errorBuf_[0]) fail("Nothing to evaluate");
+  const int32_t result = parseWhole(s);
+  return !errorBuf_[0] && result != 0;
 }
 
 int32_t ConditionEvaluator::evaluateNumeric(const char* expr,
-                                            const MachineView& view) {
+                                            const MachineView& view,
+                                            bool hexNumbers) {
   errorBuf_[0] = '\0';
   ParseState s;
-  s.count = tokenize(expr, s.tokens, MAX_TOKENS);
+  s.count = tokenize(expr, s.tokens, MAX_TOKENS, hexNumbers);
   s.pos = 0;
   s.view = &view;
+  s.hexNumbers = hexNumbers;
+  if (s.count == 0 && !errorBuf_[0]) fail("Nothing to evaluate");
+  return parseWhole(s);
+}
 
-  return parseExpr(s);
+const char* ConditionEvaluator::check(const char* expr, bool hexNumbers) {
+  errorBuf_[0] = '\0';
+  MachineView none;
+  none.peek = [](uint32_t) -> uint8_t { return 0; };
+  ParseState s;
+  s.count = tokenize(expr, s.tokens, MAX_TOKENS, hexNumbers);
+  s.pos = 0;
+  s.view = &none;
+  s.hexNumbers = hexNumbers;
+  s.checking = true;
+  if (s.count == 0 && !errorBuf_[0]) fail("Nothing to evaluate");
+  parseWhole(s);
+  return errorBuf_;
 }
 
 bool ConditionEvaluator::evaluate(const char* expr, const Emulator& emu) {
@@ -304,29 +388,29 @@ const char* ConditionEvaluator::getLastError() {
   return errorBuf_;
 }
 
-bool ConditionEvaluator::parseOr(ParseState& s) {
-  bool left = parseAnd(s);
+int32_t ConditionEvaluator::parseOr(ParseState& s) {
+  int32_t left = parseAnd(s);
   while (s.pos < s.count && s.tokens[s.pos].type == TOK_OP2 &&
          s.tokens[s.pos].strVal[0] == '|') {
     s.pos++;
-    bool right = parseAnd(s);
-    left = left || right;
+    const int32_t right = parseAnd(s);
+    left = (left != 0 || right != 0) ? 1 : 0;
   }
   return left;
 }
 
-bool ConditionEvaluator::parseAnd(ParseState& s) {
-  bool left = parseComparison(s);
+int32_t ConditionEvaluator::parseAnd(ParseState& s) {
+  int32_t left = parseComparison(s);
   while (s.pos < s.count && s.tokens[s.pos].type == TOK_OP2 &&
          s.tokens[s.pos].strVal[0] == '&') {
     s.pos++;
-    bool right = parseComparison(s);
-    left = left && right;
+    const int32_t right = parseComparison(s);
+    left = (left != 0 && right != 0) ? 1 : 0;
   }
   return left;
 }
 
-bool ConditionEvaluator::parseComparison(ParseState& s) {
+int32_t ConditionEvaluator::parseComparison(ParseState& s) {
   int32_t left = parseExpr(s);
 
   if (s.pos < s.count) {
@@ -342,7 +426,7 @@ bool ConditionEvaluator::parseComparison(ParseState& s) {
     }
   }
 
-  return left != 0; // Truthy if no comparison
+  return left; // the value itself; a condition takes it as true when not zero
 }
 
 int32_t ConditionEvaluator::parseExpr(ParseState& s) {
@@ -355,6 +439,17 @@ int32_t ConditionEvaluator::parseExpr(ParseState& s) {
       if (op == '+') { s.pos++; val += parseAtom(s); }
       else if (op == '-') { s.pos++; val -= parseAtom(s); }
       else if (op == '*') { s.pos++; val *= parseAtom(s); }
+      else if (op == '/') {
+        s.pos++;
+        const int32_t by = parseAtom(s);
+        if (by == 0) {
+          // Checked without a machine, a register may simply read zero.
+          if (!s.checking) fail("Division by zero");
+          val = 0;
+        } else {
+          val /= by;
+        }
+      }
       else break;
     } else break;
   }
@@ -363,9 +458,34 @@ int32_t ConditionEvaluator::parseExpr(ParseState& s) {
 }
 
 int32_t ConditionEvaluator::parseAtom(ParseState& s) {
-  if (s.pos >= s.count) return 0;
+  if (s.pos >= s.count) {
+    fail("Something is missing at the end");
+    return 0;
+  }
 
   const Token& t = s.tokens[s.pos];
+  auto isOp = [&s](char op) {
+    return s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == op;
+  };
+  // A function's arguments, in brackets and separated by commas.
+  auto arguments = [&](const char* name, int32_t* out, int n) {
+    s.pos++; // the (
+    for (int i = 0; i < n; i++) {
+      out[i] = parseExpr(s);
+      if (i + 1 < n) {
+        if (!isOp(',')) {
+          fail("%s takes %d values", name, n);
+          return;
+        }
+        s.pos++;
+      }
+    }
+    if (!isOp(')')) {
+      fail("A ( with no ): %s(...)", name);
+      return;
+    }
+    s.pos++;
+  };
 
   // Number literal
   if (t.type == TOK_NUM) {
@@ -373,14 +493,18 @@ int32_t ConditionEvaluator::parseAtom(ParseState& s) {
     return t.numVal;
   }
 
-  // Parenthesized expression
+  // A leading minus
+  if (t.type == TOK_OP1 && t.strVal[0] == '-') {
+    s.pos++;
+    return -parseAtom(s);
+  }
+
+  // Parenthesized expression: its value, a sum or a truth
   if (t.type == TOK_OP1 && t.strVal[0] == '(') {
     s.pos++;
-    int32_t val = static_cast<int32_t>(parseOr(s));
-    if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
-        s.tokens[s.pos].strVal[0] == ')') {
-      s.pos++;
-    }
+    int32_t val = parseOr(s);
+    if (isOp(')')) s.pos++;
+    else fail("A ( with no )");
     return val;
   }
 
@@ -389,78 +513,43 @@ int32_t ConditionEvaluator::parseAtom(ParseState& s) {
     s.pos++;
     const char* id = t.strVal;
     const MachineView& emu = *s.view;
+    const bool call = isOp('(');
 
     // BV(b1,b2) - read BASIC simple variable value by encoded name bytes
-    if (strcmp(id, "BV") == 0 && s.pos < s.count &&
-        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
-      s.pos++; // skip '('
-      int32_t b1 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
-      int32_t b2 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
-          s.tokens[s.pos].strVal[0] == ')') {
-        s.pos++;
-      }
-      return readBasicVariable(emu, static_cast<uint8_t>(b1), static_cast<uint8_t>(b2));
+    if (strcmp(id, "BV") == 0 && call) {
+      int32_t a[2] = {0, 0};
+      arguments("BV", a, 2);
+      return readBasicVariable(emu, static_cast<uint8_t>(a[0]), static_cast<uint8_t>(a[1]));
     }
 
     // BA(b1,b2,idx) - read BASIC array element by encoded name bytes and flat index
-    if (strcmp(id, "BA") == 0 && s.pos < s.count &&
-        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
-      s.pos++; // skip '('
-      int32_t b1 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
-      int32_t b2 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
-      int32_t idx = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
-          s.tokens[s.pos].strVal[0] == ')') {
-        s.pos++;
-      }
-      return readBasicArrayElement(emu, static_cast<uint8_t>(b1), static_cast<uint8_t>(b2), idx);
+    if (strcmp(id, "BA") == 0 && call) {
+      int32_t a[3] = {0, 0, 0};
+      arguments("BA", a, 3);
+      return readBasicArrayElement(emu, static_cast<uint8_t>(a[0]), static_cast<uint8_t>(a[1]), a[2]);
     }
 
     // BA2(b1,b2,i1,i2) - read BASIC 2D array element
-    if (strcmp(id, "BA2") == 0 && s.pos < s.count &&
-        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
-      s.pos++; // skip '('
-      int32_t b1 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
-      int32_t b2 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
-      int32_t i1 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == ',') s.pos++;
-      int32_t i2 = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
-          s.tokens[s.pos].strVal[0] == ')') {
-        s.pos++;
-      }
-      return readBasicArrayElement2D(emu, static_cast<uint8_t>(b1), static_cast<uint8_t>(b2), i1, i2);
+    if (strcmp(id, "BA2") == 0 && call) {
+      int32_t a[4] = {0, 0, 0, 0};
+      arguments("BA2", a, 4);
+      return readBasicArrayElement2D(emu, static_cast<uint8_t>(a[0]), static_cast<uint8_t>(a[1]), a[2], a[3]);
     }
 
-    // PEEK(addr) - read byte
-    if (strcmp(id, "PEEK") == 0 && s.pos < s.count &&
-        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
-      s.pos++;
-      int32_t addr = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
-          s.tokens[s.pos].strVal[0] == ')') {
-        s.pos++;
-      }
-      return emu.peek(static_cast<uint16_t>(addr & 0xFFFF));
+    // PEEK(addr) - read byte. The address is as wide as a machine's: a
+    // IIgs's view reads any bank, and a //e's ignores the bank itself.
+    if (strcmp(id, "PEEK") == 0 && call) {
+      int32_t addr = 0;
+      arguments("PEEK", &addr, 1);
+      return emu.peek(static_cast<uint32_t>(addr) & 0xFFFFFF);
     }
 
     // DEEK(addr) - read 16-bit word (little-endian)
-    if (strcmp(id, "DEEK") == 0 && s.pos < s.count &&
-        s.tokens[s.pos].type == TOK_OP1 && s.tokens[s.pos].strVal[0] == '(') {
-      s.pos++;
-      int32_t addr = parseExpr(s);
-      if (s.pos < s.count && s.tokens[s.pos].type == TOK_OP1 &&
-          s.tokens[s.pos].strVal[0] == ')') {
-        s.pos++;
-      }
-      uint8_t lo = emu.peek(static_cast<uint16_t>(addr & 0xFFFF));
-      uint8_t hi = emu.peek(static_cast<uint16_t>((addr + 1) & 0xFFFF));
+    if (strcmp(id, "DEEK") == 0 && call) {
+      int32_t addr = 0;
+      arguments("DEEK", &addr, 1);
+      uint8_t lo = emu.peek(static_cast<uint32_t>(addr) & 0xFFFFFF);
+      uint8_t hi = emu.peek((static_cast<uint32_t>(addr) + 1) & 0xFFFFFF);
       return (hi << 8) | lo;
     }
 
@@ -481,11 +570,29 @@ int32_t ConditionEvaluator::parseAtom(ParseState& s) {
     if (strcmp(id, "V") == 0) return (emu.p & 0x40) ? 1 : 0;
     if (strcmp(id, "N") == 0) return (emu.p & 0x80) ? 1 : 0;
 
-    snprintf(errorBuf_, sizeof(errorBuf_), "Unknown identifier: %s", id);
+    // Where numbers are hex, a word of hex digits that names nothing is one:
+    // FF, BEEF. A register of the same spelling has already won.
+    if (s.hexNumbers) {
+      bool hex = id[0] != '\0';
+      uint32_t value = 0;
+      for (const char* c = id; *c; c++) {
+        if (hexDigit(*c) < 0) hex = false;
+        else value = (value << 4) | static_cast<uint32_t>(hexDigit(*c));
+      }
+      if (hex) return static_cast<int32_t>(value);
+    }
+
+    if (!strcmp(id, "PEEK") || !strcmp(id, "DEEK") || !strcmp(id, "BV") || !strcmp(id, "BA") ||
+        !strcmp(id, "BA2")) {
+      fail("%s takes its value in brackets: %s($24)", id, id);
+      return 0;
+    }
+    fail("Unknown name: %s", id);
     return 0;
   }
 
-  // Fallback
+  // An operator where a value should be
+  fail("Unexpected %s", t.strVal);
   s.pos++;
   return 0;
 }

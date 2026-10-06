@@ -16,6 +16,8 @@
 #include "iigs/iigs_memory.hpp"
 #include "iigs/iigs_spec.hpp"
 
+#include <algorithm>
+
 namespace a2e::host {
 
 MachineHost::~MachineHost() { destroy(); }
@@ -38,6 +40,7 @@ void MachineHost::build() {
         Emulator::characterROMFor(machineId_, characterSize);
     iigs_ = std::make_unique<iigs::IIgsMachine>(iigsFastRam_);
     iigs_->init(rom, romSize, characters, characterSize);
+    generation_++;
     return;
   }
 
@@ -45,6 +48,7 @@ void MachineHost::build() {
   if (emulator_) return;
   emulator_ = std::make_unique<Emulator>(machineId_, videoStandard());
   emulator_->init();
+  generation_++;
   if (emulatorBuilt_) emulatorBuilt_(*emulator_);
 }
 
@@ -79,9 +83,54 @@ bool MachineHost::setIIgsFastRam(size_t bytes) {
   iigsFastRam_ = requested;
   if (!iigs_) return true; // Remembered for when a IIgs is built
 
+  // The memory is a part of the machine that is built in, so the machine is
+  // built again; but the disks are in drives, not in the machine, and a real
+  // one with more RAM fitted would still have them. They are taken out of
+  // the old machine as they are now, writes and all, and put into the new.
+  struct Medium {
+    enum class Kind { Floppy, Disk35, Block } kind;
+    int unit;
+    std::vector<uint8_t> bytes;
+    std::string name;
+  };
+  std::vector<Medium> media;
+  auto keep = [&](Medium::Kind kind, int unit, const uint8_t *data, size_t size, std::string name) {
+    if (data && size) media.push_back({kind, unit, std::vector<uint8_t>(data, data + size), std::move(name)});
+  };
+  for (int drive = 0; drive < 2; drive++) {
+    size_t size = 0;
+    if (isDiskInserted(drive)) {
+      const char *name = diskFilename(drive);
+      const uint8_t *data = exportDiskAs(drive, diskNativeFormat(drive), &size);
+      keep(Medium::Kind::Floppy, drive, data, size, name ? name : "");
+    }
+    size = 0;
+    if (is35DiskInserted(drive)) {
+      const uint8_t *data = export35Disk(drive, &size);
+      keep(Medium::Kind::Disk35, drive, data, size, disk35Filename(drive));
+    }
+  }
+  for (int device = 0; device < 2; device++) {
+    size_t size = 0;
+    if (!isBlockImageInserted(device)) continue;
+    const uint8_t *data = exportBlockImage(device, &size);
+    keep(Medium::Kind::Block, device, data, size, blockImageFilename(device));
+  }
+
   iigs_.reset();
   build();
-  return iigs_ != nullptr;
+  if (!iigs_) return false;
+
+  // Before the processor has run, so the SmartPort's ROM is latched now and
+  // the boot scan finds every disk, as it does at power on.
+  for (const Medium &m : media) {
+    switch (m.kind) {
+    case Medium::Kind::Floppy: insertDisk(m.unit, m.bytes.data(), m.bytes.size(), m.name.c_str()); break;
+    case Medium::Kind::Disk35: insert35Disk(m.unit, m.bytes.data(), m.bytes.size(), m.name.c_str()); break;
+    case Medium::Kind::Block: insertBlockImage(m.unit, m.bytes.data(), m.bytes.size(), m.name.c_str()); break;
+    }
+  }
+  return true;
 }
 
 // The 5.25" controller of whichever machine is running: the card in a //e's
@@ -147,7 +196,15 @@ SmartPortCard *MachineHost::smartPort() {
 }
 
 MockingboardCard *MachineHost::mockingboard() {
-  if (emulator_) return emulator_->getMockingboardPtr();
+  if (emulator_) {
+    // The Emulator keeps a card the machine does not ship parked, ready to
+    // be fitted, and a //c has no socket to fit it in: only a card in a slot
+    // is the machine's.
+    for (int slot = 1; slot <= 7; slot++) {
+      if (slotCard(slot) == "mockingboard") return emulator_->getMockingboardPtr();
+    }
+    return nullptr;
+  }
   if (iigs_) return iigs_->mockingboard();
   return nullptr;
 }
@@ -262,15 +319,21 @@ void MachineHost::releaseModifiers() {
 }
 
 std::string MachineHost::screenText() {
-  if (iigs_) return iigs_->screenText();
-  return emulator_ ? std::string(emulator_->readScreenText(0, 0, 23, 79)) : std::string();
+  std::string text = iigs_ ? iigs_->screenText()
+                           : emulator_ ? std::string(emulator_->readScreenText(0, 0, 23, 79)) : std::string();
+  // A //c's cursor is the checkerboard at $7F, which reads back as DEL: a
+  // control character in the middle of copied text, where there was a space.
+  std::replace(text.begin(), text.end(), '\x7f', ' ');
+  return text;
 }
 
 size_t MachineHost::pasteText(const char *utf8) {
+  if (iigs_) return iigs_->pasteText(utf8);
   return emulator_ ? emulator_->pasteText(utf8) : 0;
 }
 
 bool MachineHost::pastePending() const {
+  if (iigs_) return iigs_->pastePending();
   return emulator_ && emulator_->pastePending() > 0;
 }
 
@@ -348,6 +411,29 @@ bool MachineHost::isDiskInserted(int drive) {
   return disk && disk->hasDisk(drive);
 }
 
+bool MachineHost::isDiskWriteProtected(int drive) {
+  DiskController *disk = diskController();
+  if (!disk || !disk->hasDisk(drive)) return false;
+  const DiskImage *image = disk->getDiskImage(drive);
+  return image && image->isWriteProtected();
+}
+
+// Through the const accessor, as markDiskSaved is: covering the notch is not
+// a change to what is recorded on the disk.
+void MachineHost::setDiskWriteProtected(int drive, bool on) {
+  DiskController *disk = diskController();
+  if (!disk || !disk->hasDisk(drive)) return;
+  if (const DiskImage *image = disk->getDiskImage(drive)) const_cast<DiskImage *>(image)->setWriteProtected(on);
+}
+
+void MachineHost::markDiskSaved(int drive) {
+  DiskController *disk = diskController();
+  if (!disk || !disk->hasDisk(drive)) return;
+  // The writable accessor would count as a change to the disk (getRevision),
+  // and marking it saved is not one.
+  if (const DiskImage *image = disk->getDiskImage(drive)) const_cast<DiskImage *>(image)->markSaved();
+}
+
 bool MachineHost::isDiskModified(int drive) {
   DiskController *disk = diskController();
   if (!disk || !disk->hasDisk(drive)) return false;
@@ -379,6 +465,10 @@ void MachineHost::eject35Disk(int drive) {
 bool MachineHost::is35DiskInserted(int drive) {
   SonyDrive *sony = sonyDrive(iigs_.get(), drive);
   return sony && sony->hasDisk();
+}
+
+void MachineHost::mark35DiskSaved(int drive) {
+  if (SonyDrive *sony = sonyDrive(iigs_.get(), drive)) sony->markSaved();
 }
 
 bool MachineHost::is35DiskModified(int drive) {
@@ -468,6 +558,10 @@ void MachineHost::ejectBlockImage(int device) {
 bool MachineHost::isBlockImageInserted(int device) {
   SmartPortCard *card = smartPort();
   return card && card->isImageInserted(device);
+}
+
+void MachineHost::markBlockImageSaved(int device) {
+  if (SmartPortCard *card = smartPort()) card->markImageSaved(device);
 }
 
 bool MachineHost::isBlockImageModified(int device) {

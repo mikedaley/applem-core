@@ -19,6 +19,7 @@
 #include <string>
 
 #include <array>
+#include <deque>
 #include <functional>
 #include <cstdint>
 #include <memory>
@@ -330,6 +331,16 @@ public:
   void keyDown(int keycode);
 
   /**
+   * Text typed for the user, as the //e's paste buffer types it (see
+   * Emulator::pasteText): a key goes into the controller only once the
+   * program has read the one before, and a moment after it, longer after a
+   * carriage return, so a program that flushes the keyboard behind each read
+   * finds it empty. Returns how many keys were queued.
+   */
+  size_t pasteText(const char *utf8);
+  bool pastePending() const { return !pasteBuffer_.empty() || pasteHolds_; }
+
+  /**
    * The game port, which a IIgs has on the back like every Apple II.
    *
    * The paddle timers are the Mega II's, so the values go there; the buttons
@@ -489,6 +500,16 @@ private:
 
   MachineDebug debug_;
   bool paused_ = false;
+
+  // Pasted keys, fed to the controller by feedPaste() as the program reads
+  // them. The gaps are the //e's, in the Mega II's cycles.
+  static constexpr uint64_t PASTE_KEY_GAP_CYCLES = 15000;   // ~15ms
+  static constexpr uint64_t PASTE_LINE_GAP_CYCLES = 150000; // ~150ms
+  void feedPaste();
+  std::deque<uint8_t> pasteBuffer_;
+  bool pasteHolds_ = false; // the latch holds a pasted key not yet read
+  uint8_t lastPasted_ = 0;
+  uint64_t pasteReadyAt_ = 0;
 
   void recordTrace();
   void markExecuted(uint32_t address) {

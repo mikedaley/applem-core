@@ -176,6 +176,7 @@ void Emulator::stepBasicLine() {
   // Clear any hit flags, reset the frame counter to prevent backlog, and resume
   basicBreakpointHit_ = false;
   framesCompleted_ = 0;
+  if (paused_) debug_.noteResume(); // a resume, for a host judging stops
   paused_ = false;
   basicBreakLine_ = 0;
 }
@@ -191,6 +192,7 @@ void Emulator::stepBasicStatement() {
   // Clear any hit flags, reset the frame counter to prevent backlog, and resume
   basicBreakpointHit_ = false;
   framesCompleted_ = 0;
+  if (paused_) debug_.noteResume(); // a resume, for a host judging stops
   paused_ = false;
   basicBreakLine_ = 0;
 }
@@ -393,23 +395,16 @@ int Emulator::getBasicHeatMapData(uint16_t* lines, uint32_t* counts, int maxEntr
 
 void Emulator::addWatchpoint(uint16_t startAddr, uint16_t endAddr,
                              WatchpointType type) {
+  // The MMU's watch is switched on by the debug state's own callback.
   debug_.addWatchpoint(startAddr, endAddr, type);
-  // Routing every access through the watchpoint check costs something, so the
-  // MMU only does it while there is a watchpoint to check.
-  watchpointsActive_ = true;
-  mmu_->setWatchpointsActive(true);
 }
 
 void Emulator::removeWatchpoint(uint16_t startAddr) {
   debug_.removeWatchpoint(startAddr);
-  watchpointsActive_ = debug_.hasWatchpoints();
-  mmu_->setWatchpointsActive(watchpointsActive_);
 }
 
 void Emulator::clearWatchpoints() {
   debug_.clearWatchpoints();
-  watchpointsActive_ = false;
-  mmu_->setWatchpointsActive(false);
 }
 
 void Emulator::onWatchpointRead(uint16_t address, uint8_t value) {

@@ -24,6 +24,7 @@
 #include <cstring>
 #include <string>
 #include <functional>
+#include <vector>
 
 using namespace a2e;
 
@@ -62,6 +63,14 @@ struct BasicMemory {
 TEST_CASE("loadBasicProgram tokenizes simple PRINT line", "[basic][tokenizer]") {
     BasicMemory m;
     int count = loadBasicProgram("10 PRINT \"HELLO\"", m.readMem, m.writeMem);
+    REQUIRE(count == 1);
+}
+
+TEST_CASE("A line number too long for an int is skipped, not thrown on", "[basic][tokenizer]") {
+    // std::stoi threw on these, and nothing caught it: the app quit.
+    BasicMemory m;
+    int count = 0;
+    REQUIRE_NOTHROW(count = loadBasicProgram("12345678901 PRINT 1\n99999999999999999999 PRINT 2\n20 PRINT 3", m.readMem, m.writeMem));
     REQUIRE(count == 1);
 }
 
@@ -442,4 +451,169 @@ TEST_CASE("Lines provided out of order are sorted by line number", "[basic][toke
     uint16_t line2Next = m.read16(line1Next);
     uint16_t line3Num = m.read16(line2Next + 2);
     CHECK(line3Num == 30);
+}
+
+// ---------------------------------------------------------------------------
+// HIMEM, and writing nothing on failure
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A program of `lines` lines, each a REM long enough to make it large.
+std::string bigProgram(int lines) {
+    std::string src;
+    for (int i = 1; i <= lines; i++) {
+        src += std::to_string(i) + " REM " + std::string(200, 'X') + "\n";
+    }
+    return src;
+}
+
+} // namespace
+
+TEST_CASE("A program that would run past HIMEM writes nothing", "[basic][tokenizer][himem]") {
+    // Under DOS 3.3 and ProDOS HIMEM is $9600, and DOS lives above it. A
+    // program written line by line until $C000 overwrote DOS and left
+    // memory half written under the old pointers.
+    BasicMemory m;
+    for (int a = 0x0801; a < 0xC000; a++) m.mem[a] = 0xA5;
+    m.mem[0x69] = 0x34; m.mem[0x6A] = 0x12; // VARTAB from some earlier program
+    const auto before = m.mem;
+
+    // About 41K of program: under $C000 but well over $9600.
+    const std::string src = bigProgram(200);
+    const BasicWriteResult r = writeBasicProgram(src.c_str(), m.readMem, m.writeMem);
+    CHECK(r.status == BasicWriteStatus::TooLarge);
+    CHECK(r.limit == 0x9600);
+    CHECK(r.size > 0x9600 - 0x0801);
+    CHECK(m.mem == before);
+    CHECK(loadBasicProgram(src.c_str(), m.readMem, m.writeMem) == -1);
+    CHECK(m.mem == before);
+}
+
+TEST_CASE("A program that ends exactly at HIMEM is written", "[basic][tokenizer][himem]") {
+    BasicMemory m;
+    const BasicProgramImage image = tokenizeBasicProgram("10 PRINT \"HI\"");
+    // Put HIMEM exactly at the end of the program.
+    const uint16_t end = static_cast<uint16_t>(0x0801 + image.bytes.size());
+    m.mem[0x73] = end & 0xFF;
+    m.mem[0x74] = end >> 8;
+    const BasicWriteResult r = writeBasicProgram("10 PRINT \"HI\"", m.readMem, m.writeMem);
+    CHECK(r.status == BasicWriteStatus::Written);
+    CHECK(m.read16(0x69) == end);
+    CHECK(m.read16(0x6F) == end); // FRETOP: string space starts empty at HIMEM
+
+    // One byte less and it does not fit.
+    BasicMemory n;
+    n.mem[0x73] = (end - 1) & 0xFF;
+    n.mem[0x74] = (end - 1) >> 8;
+    CHECK(writeBasicProgram("10 PRINT \"HI\"", n.readMem, n.writeMem).status == BasicWriteStatus::TooLarge);
+}
+
+TEST_CASE("The tokenised image is what is written", "[basic][tokenizer]") {
+    BasicMemory m;
+    const char* src = "10 HOME\n20 PRINT \"A\";B: GOTO 10";
+    const BasicProgramImage image = tokenizeBasicProgram(src);
+    REQUIRE(loadBasicProgram(src, m.readMem, m.writeMem) == 2);
+    REQUIRE(image.lines == 2);
+    for (size_t i = 0; i < image.bytes.size(); i++) {
+        CHECK(m.mem[0x0801 + i] == image.bytes[i]);
+    }
+    CHECK(m.read16(0x69) == 0x0801 + image.bytes.size());
+}
+
+// ---------------------------------------------------------------------------
+// DATA, duplicates, line endings
+// ---------------------------------------------------------------------------
+
+TEST_CASE("A colon in quotes in DATA is part of the item", "[basic][tokenizer][data]") {
+    // Applesoft's PARSE tests for a quote before the DATA flag, so the
+    // colon in "A:B" does not end the statement and PRINT is still a token.
+    const BasicProgramImage image = tokenizeBasicProgram("10 DATA \"A:B\",C: PRINT");
+    const std::vector<uint8_t> tokens(image.bytes.begin() + 4, image.bytes.end() - 3);
+    const std::vector<uint8_t> expected = {0x83, ' ', '"', 'A', ':', 'B', '"', ',', 'C', ':', 0xBA};
+    CHECK(tokens == expected);
+}
+
+TEST_CASE("A quoted colon in DATA survives a round trip", "[basic][roundtrip][data]") {
+    BasicMemory m;
+    REQUIRE(loadBasicProgram("10 DATA \"A:B\",C: PRINT 1", m.readMem, m.writeMem) == 1);
+    const uint16_t end = m.read16(0x69);
+    const std::string listing = BasicDetokenizer::detokenizeApplesoft(&m.mem[0x0801], end - 0x0801, false);
+    CHECK(listing.find("\"A:B\"") != std::string::npos);
+
+    BasicMemory again;
+    REQUIRE(loadBasicProgram(listing.c_str(), again.readMem, again.writeMem) == 1);
+    for (uint16_t a = 0x0801; a < end; a++) CHECK(again.mem[a] == m.mem[a]);
+}
+
+TEST_CASE("A line number given twice keeps the later line", "[basic][tokenizer][duplicate]") {
+    BasicMemory m;
+    const BasicWriteResult r = writeBasicProgram("10 PRINT 1\n20 PRINT 2\n30 END\n20 PRINT 3", m.readMem, m.writeMem);
+    REQUIRE(r.status == BasicWriteStatus::Written);
+    CHECK(r.lines == 3);
+    CHECK(r.replacedLines == std::vector<int>{20});
+    const uint16_t second = m.read16(0x0801);
+    CHECK(m.read16(second + 2) == 20);
+    CHECK(m.mem[second + 4] == 0xBA);
+    CHECK(m.mem[second + 5] == '3');
+    const uint16_t third = m.read16(second);
+    CHECK(m.read16(third + 2) == 30);
+}
+
+TEST_CASE("CR, LF and CRLF all end a line", "[basic][tokenizer]") {
+    BasicMemory m;
+    CHECK(loadBasicProgram("10 PRINT 1\r20 PRINT 2\r30 END\r", m.readMem, m.writeMem) == 3);
+    CHECK(loadBasicProgram("10 PRINT 1\r\n20 PRINT 2\r\n30 END", m.readMem, m.writeMem) == 3);
+    // A CRLF line has no stray CR at its end.
+    const uint16_t next = m.read16(0x0801);
+    CHECK(m.mem[next - 1] == 0x00);
+    CHECK(m.mem[next - 2] == '1');
+}
+
+// ---------------------------------------------------------------------------
+// Control characters
+// ---------------------------------------------------------------------------
+
+TEST_CASE("A control character's token is written as the byte", "[basic][tokenizer][control]") {
+    const BasicProgramImage image = tokenizeBasicProgram("10 PRINT \"{ctrl-d}CATALOG\": REM {^G}{chr:27}{del}");
+    const std::vector<uint8_t> tokens(image.bytes.begin() + 4, image.bytes.end() - 3);
+    const std::vector<uint8_t> expected = {0xBA, '"', 0x04, 'C', 'A', 'T', 'A', 'L', 'O', 'G', '"', ':',
+                                           0xB2, ' ', 0x07, 0x1B, 0x7F};
+    CHECK(tokens == expected);
+}
+
+TEST_CASE("PRINT \"^DCATALOG\" survives a read and a write", "[basic][roundtrip][control]") {
+    // The detokenizer dropped bytes below $20 in strings, REM and DATA, so a
+    // program that ran DOS commands lost them between Read and Write.
+    BasicMemory m;
+    REQUIRE(loadBasicProgram("10 PRINT \"{ctrl-d}CATALOG\"\n20 DATA {ctrl-g}X\n30 REM {ctrl-[}", m.readMem, m.writeMem) == 3);
+    const uint16_t end = m.read16(0x69);
+    const std::string listing = BasicDetokenizer::detokenizeApplesoft(&m.mem[0x0801], end - 0x0801, false);
+    CHECK(listing.find("\"{ctrl-d}CATALOG\"") != std::string::npos);
+    CHECK(listing.find("{ctrl-g}X") != std::string::npos);
+    CHECK(listing.find("{ctrl-[}") != std::string::npos);
+
+    BasicMemory again;
+    REQUIRE(loadBasicProgram(listing.c_str(), again.readMem, again.writeMem) == 3);
+    REQUIRE(again.read16(0x69) == end);
+    for (uint16_t a = 0x0801; a < end; a++) CHECK(again.mem[a] == m.mem[a]);
+}
+
+TEST_CASE("A brace that reads as a token is escaped and comes back", "[basic][roundtrip][control]") {
+    // A string that really says {ctrl-d}, eight printable characters.
+    const std::vector<uint8_t> line = {0xBA, '"', '{', 'c', 't', 'r', 'l', '-', 'd', '}', '{', 0x04, '"'};
+    std::vector<uint8_t> program = {0, 0, 10, 0};
+    program.insert(program.end(), line.begin(), line.end());
+    program.push_back(0);
+    const uint16_t next = static_cast<uint16_t>(0x0801 + program.size());
+    program[0] = next & 0xFF;
+    program[1] = next >> 8;
+    program.push_back(0);
+    program.push_back(0);
+
+    const std::string listing = BasicDetokenizer::detokenizeApplesoft(program.data(), static_cast<int>(program.size()), false);
+    CHECK(listing.find("\"{chr:123}ctrl-d}{{ctrl-d}\"") != std::string::npos);
+
+    const BasicProgramImage image = tokenizeBasicProgram(listing.c_str());
+    CHECK(image.bytes == program);
 }

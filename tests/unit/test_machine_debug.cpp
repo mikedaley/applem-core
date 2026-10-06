@@ -81,6 +81,53 @@ TEST_CASE("A range written backwards is the same range",
   REQUIRE(debug.shouldBreakBefore(0x2080, SP));
 }
 
+TEST_CASE("Two ranges may begin at the same address when asked to",
+          "[debug][breakpoint][range]") {
+  // The native debugger's list holds $2000-$20FF and $2000-$2FFF as two
+  // breakpoints, so the core must too, and removing one leaves the other.
+  MachineDebug debug;
+  debug.addBreakpointRange(0x2000, 0x20FF, false);
+  debug.addBreakpointRange(0x2000, 0x2FFF, false);
+  debug.removeBreakpointRange(0x2000, 0x20FF);
+  REQUIRE_FALSE(debug.shouldBreakBefore(0x1000, SP));
+  REQUIRE(debug.shouldBreakBefore(0x2800, SP)); // only the longer one has this
+
+  SECTION("and the stack's the same") {
+    MachineDebug stack;
+    stack.addStackBreakpoint(0x00, 0x3F, false);
+    stack.addStackBreakpoint(0x00, 0x7F, false);
+    stack.removeStackBreakpoint(0x00, 0x3F);
+    REQUIRE_FALSE(stack.shouldBreakBefore(0x1000, 0xFF));
+    REQUIRE(stack.shouldBreakBefore(0x1000, 0x60));
+  }
+}
+
+TEST_CASE("Resuming skips one instruction's breakpoint, and only one",
+          "[debug][breakpoint]") {
+  MachineDebug debug;
+  // Armed with no breakpoints set, the skip is still spent on the next
+  // instruction, rather than waiting to swallow one added later.
+  debug.skipNextBreakpoint();
+  REQUIRE_FALSE(debug.shouldBreakBefore(0x1000, SP));
+  debug.addBreakpoint(0x2000);
+  REQUIRE(debug.shouldBreakBefore(0x2000, SP));
+
+  // Sitting on it, the skip lets it through once.
+  debug.clearHits();
+  debug.skipNextBreakpoint();
+  REQUIRE_FALSE(debug.shouldBreakBefore(0x2000, SP));
+  REQUIRE(debug.shouldBreakBefore(0x2000, SP));
+}
+
+TEST_CASE("A reset counts as a resume", "[debug][breakpoint]") {
+  MachineDebug debug;
+  const uint64_t before = debug.resumeCount();
+  debug.noteResume();
+  REQUIRE(debug.resumeCount() == before + 1);
+  debug.reset();
+  REQUIRE(debug.resumeCount() == before + 2);
+}
+
 TEST_CASE("A range carries a bank", "[debug][breakpoint][range]") {
   MachineDebug debug;
   debug.addBreakpointRange(0x022000, 0x0220FF);

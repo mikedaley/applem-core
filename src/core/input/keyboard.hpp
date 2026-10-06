@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace a2e {
 
@@ -188,5 +189,13 @@ private:
  * @return Apple II key code, or -1 if not mappable
  */
 int charToAppleKey(int charCode);
+
+/**
+ * Text as the keys that type it: UTF-8 decoded a code point at a time and
+ * each through charToAppleKey(), with anything that has no key dropped. Both
+ * machines' paste buffers are filled from this, so text pasted on a //e and
+ * on a IIgs types the same keys.
+ */
+std::vector<uint8_t> textToAppleKeys(const char *utf8);
 
 } // namespace a2e

@@ -190,6 +190,12 @@ public:
   MachineId machineId() const { return machineId_; }
   const MachineProfile &profile() const { return machineProfile(machineId_, videoStandard()); }
   bool isBuilt() const { return emulator_ || iigs_; }
+  // Counts the machines built. A window that keeps something of a machine's
+  // (breakpoints given to it, mutes applied to its sound chip, a callback on
+  // its card) compares this rather than the machine's address: a machine
+  // destroyed and a new one built in the same call often comes back at the
+  // same address, and an address check then misses the change.
+  uint64_t generation() const { return generation_; }
 
   // Exactly one of these is non-null once the machine is built.
   Emulator *emulator() { return emulator_.get(); }
@@ -271,6 +277,11 @@ public:
   void ejectDisk(int drive);
   bool isDiskInserted(int drive);
   bool isDiskModified(int drive);
+  // The host has written the disk back to its file: unmodified until the
+  // machine next writes to it. So with the 3.5" drives and block images.
+  void markDiskSaved(int drive);
+  bool isDiskWriteProtected(int drive);
+  void setDiskWriteProtected(int drive, bool on);
   const char *diskFilename(int drive) const;
   // The disk as a file in the given format, or nullptr if it cannot be
   // written that way (a copy-protected nibble track as sectors, say).
@@ -286,6 +297,7 @@ public:
   void eject35Disk(int drive);
   bool is35DiskInserted(int drive);
   bool is35DiskModified(int drive);
+  void mark35DiskSaved(int drive);
   std::string disk35Filename(int drive);
   // The disk in the format it arrived in.
   const uint8_t *export35Disk(int drive, size_t *size);
@@ -306,6 +318,7 @@ public:
   void ejectBlockImage(int device);
   bool isBlockImageInserted(int device);
   bool isBlockImageModified(int device);
+  void markBlockImageSaved(int device);
   std::string blockImageFilename(int device);
   const uint8_t *exportBlockImage(int device, size_t *size);
   bool isSmartPortROMPending();
@@ -431,7 +444,9 @@ public:
   // the last expression's, or empty.
   bool evaluateCondition(const std::string &expression);
   // The same language for a value, as a watch shows one: PEEK($24), A, X+1.
-  int32_t evaluateExpression(const std::string &expression);
+  // With `hexNumbers` a number with no prefix is hex, as the console reads
+  // every number (ConditionEvaluator::evaluateNumeric).
+  int32_t evaluateExpression(const std::string &expression, bool hexNumbers = false);
   std::string conditionError() const;
 
 private:
@@ -439,6 +454,7 @@ private:
 
   std::unique_ptr<Emulator> emulator_;
   std::unique_ptr<iigs::IIgsMachine> iigs_;
+  uint64_t generation_ = 0;
   MachineId machineId_ = MachineId::AppleIIe;
   VideoStandard videoStandard_ = VideoStandard::NTSC;
   // A ROM 01 shipped with 256K on the board and a memory expansion card took

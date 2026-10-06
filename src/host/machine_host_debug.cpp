@@ -753,10 +753,10 @@ bool MachineHost::evaluateCondition(const std::string &expression) {
   return ConditionEvaluator::evaluate(expression.c_str(), machine);
 }
 
-int32_t MachineHost::evaluateExpression(const std::string &expression) {
+int32_t MachineHost::evaluateExpression(const std::string &expression, bool hexNumbers) {
   const MachineView machine = view();
   if (!machine.peek) return 0;
-  return ConditionEvaluator::evaluateNumeric(expression.c_str(), machine);
+  return ConditionEvaluator::evaluateNumeric(expression.c_str(), machine, hexNumbers);
 }
 
 std::string MachineHost::conditionError() const {

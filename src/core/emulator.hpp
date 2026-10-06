@@ -642,6 +642,13 @@ private:
   uint16_t basicBreakLine_ = 0;
   uint16_t skipBasicBreakpointLine_ = 0xFFFF;  // Line to skip (0xFFFF = none)
   int8_t skipBasicBreakpointStmt_ = -1;        // Statement to skip (-1 = whole line)
+  // The skip lasts one pass through the line, not as long as CURLIN stays
+  // put: a loop on one line (FOR ... : NEXT, or GOTO itself) comes back to
+  // it without CURLIN changing. The statement resumed from is the first
+  // $D820 after the resume; after that, a statement at or before the last
+  // one seen on the line is the line starting again.
+  bool skipBasicResumeHit_ = false;
+  uint16_t skipBasicLastTxtptr_ = 0;
 
   // BASIC program execution tracking - set by monitoring ROM entry points
   // $D912 (RUN) sets true, $D43C (RESTART/] prompt) sets false

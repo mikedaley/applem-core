@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -29,6 +30,8 @@ public:
     uint16_t getTotalBlocks() const { return totalBlocks_; }
     bool isWriteProtected() const { return writeProtected_; }
     bool isModified() const { return modified_; }
+    // Written back by the host: unmodified until the next write.
+    void markSaved() { modified_ = false; }
     bool isLoaded() const { return !data_.empty(); }
     const std::string& getFilename() const { return filename_; }
 
@@ -46,6 +49,7 @@ public:
         writeProtected_ = false;
         filename_.clear();
         dataOffset_ = 0;
+        dosOrder_ = false;
     }
 
 private:
@@ -55,6 +59,10 @@ private:
     bool modified_ = false;
     std::string filename_;
     size_t dataOffset_ = 0; // offset to block data (non-zero for 2IMG)
+    bool dosOrder_ = false; // a 2IMG whose header says DOS 3.3 sector order
+    static constexpr size_t SECTOR_BYTES = 256;
+    static constexpr size_t TRACK_BYTES = 16 * SECTOR_BYTES;
+    std::array<size_t, 2> halves(uint16_t blockNum) const;
 };
 
 } // namespace a2e

@@ -85,6 +85,9 @@ public:
   bool hasDisk() const { return image_ != nullptr; }
   const std::string &filename() const { return filename_; }
   bool isModified() const { return image_ && image_->isModified(); }
+  void markSaved() {
+    if (image_) image_->markSaved();
+  }
   bool isWriteProtected() const { return writeProtected_; }
 
   /** The disk in the format it arrived in, written back from its tracks. */

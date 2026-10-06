@@ -200,7 +200,9 @@ bool WozDiskImage::parseTrksChunkWoz1(const uint8_t *data, uint32_t size) {
         entry[WOZ1_BIT_COUNT_OFFSET] | (entry[WOZ1_BIT_COUNT_OFFSET + 1] << 8);
 
     if (bytes_used > 0 && bytes_used <= 6646) {
-      tracks_[i].bit_count = bit_count;
+      // No more bits than the bytes hold, whatever the file says: the
+      // readers trust the count, and one past the bytes read past the end.
+      tracks_[i].bit_count = std::min<uint32_t>(bit_count, static_cast<uint32_t>(bytes_used) * 8);
       tracks_[i].bits.assign(entry, entry + bytes_used);
       tracks_[i].valid = true;
     }
@@ -279,7 +281,10 @@ bool WozDiskImage::parseTrksChunkWoz2(const uint8_t *file_data, size_t file_size
       continue;
     }
 
-    tracks_[i].bit_count = entry.bit_count;
+    // No more bits than the blocks hold, whatever the file says. The disk
+    // inspector's analyser reads up to three times the count, and a count of
+    // $FFFFFFFF over one block read far past the end of it.
+    tracks_[i].bit_count = static_cast<uint32_t>(std::min<size_t>(entry.bit_count, track_size * 8));
     tracks_[i].bits.assign(file_data + track_offset,
                            file_data + track_offset + track_size);
     tracks_[i].valid = true;

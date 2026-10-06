@@ -6,8 +6,10 @@
  */
 
 #include "block_device.hpp"
-#include <cstring>
+#include "../../disk-image/gcr_encoding.hpp"
+
 #include <algorithm>
+#include <cstring>
 
 namespace a2e {
 
@@ -18,6 +20,7 @@ bool BlockDevice::load(const uint8_t* data, size_t size, const std::string& file
     modified_ = false;
     writeProtected_ = false;
     dataOffset_ = 0;
+    dosOrder_ = false;
 
     // Check for 2IMG format (64-byte header with "2IMG" magic)
     if (size > 64 && data[0] == '2' && data[1] == 'I' && data[2] == 'M' && data[3] == 'G') {
@@ -34,6 +37,11 @@ bool BlockDevice::load(const uint8_t* data, size_t size, const std::string& file
         // Image format in header byte 12: 0=DOS order, 1=ProDOS order, 2=nibble
         uint32_t imageFormat = data[12] | (data[13] << 8) | (data[14] << 16) | (data[15] << 24);
         if (imageFormat == 2) return false; // nibble format not supported as block device
+        // A DOS-ordered image holds each track's sectors in DOS's order, so
+        // a ProDOS block (two sectors) is found through the interleave. Read
+        // as if it were ProDOS order, every block came back scrambled.
+        dosOrder_ = imageFormat == 0;
+        if (dosOrder_ && dataLength % TRACK_BYTES != 0) return false;
 
         writeProtected_ = (flags & 0x80000000) != 0;
 
@@ -64,23 +72,34 @@ bool BlockDevice::load(const uint8_t* data, size_t size, const std::string& file
     return true;
 }
 
+// Where each half of a block is in the image: one run of 512 bytes in ProDOS
+// order, or two DOS sectors of 256 in a DOS-ordered one.
+std::array<size_t, 2> BlockDevice::halves(uint16_t blockNum) const {
+    if (!dosOrder_) {
+        const size_t offset = dataOffset_ + static_cast<size_t>(blockNum) * BLOCK_SIZE;
+        return {offset, offset + SECTOR_BYTES};
+    }
+    const size_t track = dataOffset_ + static_cast<size_t>(blockNum / 8) * TRACK_BYTES;
+    const int first = (blockNum % 8) * 2;
+    return {track + GCR::PRODOS_TO_DOS_SECTOR[first] * SECTOR_BYTES,
+            track + GCR::PRODOS_TO_DOS_SECTOR[first + 1] * SECTOR_BYTES};
+}
+
 bool BlockDevice::readBlock(uint16_t blockNum, uint8_t* buffer) const {
     if (!buffer || blockNum >= totalBlocks_) return false;
-
-    size_t offset = dataOffset_ + static_cast<size_t>(blockNum) * BLOCK_SIZE;
-    if (offset + BLOCK_SIZE > data_.size()) return false;
-
-    std::memcpy(buffer, data_.data() + offset, BLOCK_SIZE);
+    const auto [low, high] = halves(blockNum);
+    if (std::max(low, high) + SECTOR_BYTES > data_.size()) return false;
+    std::memcpy(buffer, data_.data() + low, SECTOR_BYTES);
+    std::memcpy(buffer + SECTOR_BYTES, data_.data() + high, SECTOR_BYTES);
     return true;
 }
 
 bool BlockDevice::writeBlock(uint16_t blockNum, const uint8_t* buffer) {
     if (!buffer || blockNum >= totalBlocks_ || writeProtected_) return false;
-
-    size_t offset = dataOffset_ + static_cast<size_t>(blockNum) * BLOCK_SIZE;
-    if (offset + BLOCK_SIZE > data_.size()) return false;
-
-    std::memcpy(data_.data() + offset, buffer, BLOCK_SIZE);
+    const auto [low, high] = halves(blockNum);
+    if (std::max(low, high) + SECTOR_BYTES > data_.size()) return false;
+    std::memcpy(data_.data() + low, buffer, SECTOR_BYTES);
+    std::memcpy(data_.data() + high, buffer + SECTOR_BYTES, SECTOR_BYTES);
     modified_ = true;
     return true;
 }
@@ -114,11 +133,13 @@ size_t BlockDevice::serialize(uint8_t* buffer, size_t maxSize) const {
 
     size_t offset = 0;
 
-    // Flags: bit 0 = loaded, bit 1 = writeProtected, bit 2 = modified
+    // Flags: bit 0 = loaded, bit 1 = writeProtected, bit 2 = modified,
+    // bit 3 = DOS sector order (absent from states before it existed)
     uint8_t flags = 0;
     if (!data_.empty()) flags |= 0x01;
     if (writeProtected_) flags |= 0x02;
     if (modified_) flags |= 0x04;
+    if (dosOrder_) flags |= 0x08;
     buffer[offset++] = flags;
 
     // Total blocks (LE16)
@@ -164,6 +185,7 @@ size_t BlockDevice::deserialize(const uint8_t* buffer, size_t size) {
     bool loaded = (flags & 0x01) != 0;
     writeProtected_ = (flags & 0x02) != 0;
     modified_ = (flags & 0x04) != 0;
+    dosOrder_ = (flags & 0x08) != 0;
 
     totalBlocks_ = buffer[offset] | (buffer[offset + 1] << 8);
     offset += 2;

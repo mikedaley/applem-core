@@ -341,3 +341,77 @@ TEST_CASE("readString masks the Applesoft high bit", "[applesoft][reader][string
   CHECK(ApplesoftVarReader::readString(mem.reader(), 0x0A00, 0).empty());
   CHECK(ApplesoftVarReader::readString(mem.reader(), 0, 5).empty());
 }
+
+// ============================================================================
+// The whole table chain, and string assignment
+// ============================================================================
+
+namespace {
+
+// A program at $0801 ending at $0900, one string variable, and string
+// space from $9000 up to HIMEM at $9600.
+FakeMemory applesoftWithOneString() {
+  FakeMemory mem;
+  mem.writePointer(0x67, 0x0801); // TXTTAB
+  mem.writePointer(0x69, 0x0900); // VARTAB
+  mem.writePointer(0x6B, 0x0907); // ARYTAB
+  mem.writePointer(0x6D, 0x0907); // STREND
+  mem.writePointer(0x6F, 0x9000); // FRETOP
+  mem.writePointer(0x73, 0x9600); // MEMSIZ
+  // A$ = "HELLO", pointing into the program text as Applesoft leaves it.
+  mem.putVar(0x0900, 'A', 0x80, {5, 0x10, 0x08, 0, 0});
+  mem.putString(0x0810, "HELLO");
+  return mem;
+}
+
+} // namespace
+
+TEST_CASE("tablesValid wants every Applesoft pointer in order", "[applesoft][reader]") {
+  FakeMemory mem = applesoftWithOneString();
+  CHECK(ApplesoftVarReader::tablesValid(mem.reader()));
+
+  // Two pointers that happen to make a table are not enough: the zero page
+  // before Applesoft has started once showed a variable DD.
+  FakeMemory junk;
+  junk.writePointer(0x69, 0x1000);
+  junk.writePointer(0x6B, 0x1007);
+  CHECK_FALSE(ApplesoftVarReader::tablesValid(junk.reader()));
+
+  FakeMemory odd = applesoftWithOneString();
+  odd.writePointer(0x6B, 0x0905); // not a whole number of entries
+  CHECK_FALSE(ApplesoftVarReader::tablesValid(odd.reader()));
+
+  FakeMemory high = applesoftWithOneString();
+  high.writePointer(0x6F, 0x9700); // FRETOP above HIMEM
+  CHECK_FALSE(ApplesoftVarReader::tablesValid(high.reader()));
+}
+
+TEST_CASE("Assigning a string takes new string space and leaves the program alone",
+          "[applesoft][string]") {
+  FakeMemory mem = applesoftWithOneString();
+  auto write = [&](uint16_t a, uint8_t v) { mem.ram[a] = v; };
+  const std::vector<uint8_t> program(mem.ram.begin() + 0x0801, mem.ram.begin() + 0x0900);
+
+  REQUIRE(assignApplesoftString(mem.reader(), write, 0x0902, "GOODBYE WORLD"));
+  // The program text, where the old value lived, is untouched.
+  CHECK(std::vector<uint8_t>(mem.ram.begin() + 0x0801, mem.ram.begin() + 0x0900) == program);
+  // The new value sits just below the old FRETOP, which has moved down over it.
+  CHECK(mem.ram[0x0902] == 13);
+  CHECK((mem.ram[0x0903] | (mem.ram[0x0904] << 8)) == 0x9000 - 13);
+  CHECK((mem.ram[0x6F] | (mem.ram[0x70] << 8)) == 0x9000 - 13);
+  const auto vars = ApplesoftVarReader::readVariables(mem.reader());
+  REQUIRE(vars.size() == 1);
+  CHECK(vars[0].stringValue == "GOODBYE WORLD");
+}
+
+TEST_CASE("Assigning a string that does not fit changes nothing", "[applesoft][string]") {
+  FakeMemory mem = applesoftWithOneString();
+  mem.writePointer(0x6F, 0x0910); // FRETOP just above STREND: 9 bytes free
+  auto write = [&](uint16_t a, uint8_t v) { mem.ram[a] = v; };
+  const auto before = mem.ram;
+  CHECK_FALSE(assignApplesoftString(mem.reader(), write, 0x0902, "TOO LONG TO FIT"));
+  CHECK(mem.ram == before);
+  CHECK(assignApplesoftString(mem.reader(), write, 0x0902, "FITS"));
+  CHECK(assignApplesoftString(mem.reader(), write, 0x0902, ""));
+  CHECK(mem.ram[0x0902] == 0);
+}
