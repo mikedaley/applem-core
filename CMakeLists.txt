@@ -195,6 +195,9 @@ add_custom_target(generate_roms_native DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gener
 add_library(a2e_core STATIC ${CORE_SOURCES} ${HOST_SOURCES})
 add_dependencies(a2e_core generate_roms_native)
 target_include_directories(a2e_core PUBLIC ${ALL_CORE_INCLUDES})
+# And src/ itself, so a front end names a header by where it lives:
+# "core/emulator.hpp", "host/machine_host.hpp".
+target_include_directories(a2e_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(a2e_core PUBLIC cxx_std_20)
 # The browser build has always compiled the core with no optimisation flags of
 # its own, its link step carrying -O3; that is kept as it was.
