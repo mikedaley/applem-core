@@ -74,7 +74,7 @@ public:
      * The ROM byte a debugger should see, with nothing happening as a result.
      *
      * For most cards that is readROM. A card whose entry points are traps —
-     * where a fetch of $Cn10 is a driver call to service — must answer this
+     * where a fetch of $Cn0A is a driver call to service — must answer this
      * without acting, or a memory viewer parked on the entry point makes a
      * disk call every time it repaints.
      */

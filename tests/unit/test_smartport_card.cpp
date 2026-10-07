@@ -351,16 +351,16 @@ struct SmartPortRig {
         card.setSetPC([this](uint16_t v) { pc = v; });
         card.setSetX([this](uint8_t v) { x = v; });
         card.setSetY([this](uint8_t v) { y = v; });
-        card.setExecutingAt([this](uint16_t at) { return executing && at == 0xC513; });
+        card.setExecutingAt([this](uint16_t at) { return executing && at == 0xC50D; });
 
         std::vector<uint8_t> image(512 * 64, 0);
         card.insertImage(0, image.data(), image.size(), "hd.po");
     }
 
-    // JSR $C513 from `site`, with the inline command and pointer after it,
+    // JSR $C50D from `site`, with the inline command and pointer after it,
     // then the CPU fetching the entry point: which is when the card acts.
     void call(uint16_t site, uint8_t command, uint32_t paramList, bool extended) {
-        memory[site] = 0x20; memory[site + 1] = 0x13; memory[site + 2] = 0xC5;
+        memory[site] = 0x20; memory[site + 1] = 0x0D; memory[site + 2] = 0xC5;
         memory[site + 3] = command;
         memory[site + 4] = static_cast<uint8_t>(paramList);
         memory[site + 5] = static_cast<uint8_t>(paramList >> 8);
@@ -374,7 +374,7 @@ struct SmartPortRig {
         memory[sp - 1] = static_cast<uint8_t>(pushed);
         sp -= 2;
         executing = true;
-        const uint8_t opcode = card.readROM(0x13);
+        const uint8_t opcode = card.readROM(0x0D);
         executing = false;
         REQUIRE(opcode == 0x60); // RTS, to wherever the card put the return
     }
@@ -448,22 +448,22 @@ TEST_CASE("A SmartPort card says it takes extended calls", "[smartport][protocol
     std::vector<uint8_t> image(512 * 8, 0);
     card.insertImage(0, image.data(), image.size(), "hd.po");
     REQUIRE((card.readROM(0xFB) & 0x80) != 0);
-    REQUIRE(card.readROM(0xFF) == 0x10);
+    REQUIRE(card.readROM(0xFF) == 0x0A);
     // ...and $CnFE counts its volumes: one device fitted, so bits 5-4 are zero.
     REQUIRE((card.readROM(0xFE) & 0x30) == 0x00);
     card.insertImage(1, image.data(), image.size(), "hd2.po");
     REQUIRE((card.readROM(0xFE) & 0x30) == 0x10);
 }
 
-TEST_CASE("The IIgs layout puts the entries where the machine's own firmware has them",
-          "[smartport][iigs]") {
-    // A IIgs's slot 5 firmware has $C5FF = $0A: the ProDOS entry at $C50A and
-    // the SmartPort entry at $C50D, and software written for the machine
-    // hard-codes those. A card standing in for that firmware has to answer
-    // there, with the fall-through boot path still reaching its stub.
+TEST_CASE("A SmartPort card puts its entries where Apple's SmartPort firmware has them",
+          "[smartport]") {
+    // Apple's SmartPort firmware has $CnFF = $0A: the ProDOS entry at $Cn0A
+    // and the SmartPort entry at $Cn0D. Software hard-codes those rather
+    // than reading $CnFF (DIX, from French Touch, calls $Cn0A to load its
+    // menu), so every card answers there, with the fall-through boot path
+    // from $Cn00 still reaching its stub.
     SmartPortCard card;
     card.setSlotNumber(5);
-    card.setProDOSEntry(0x0A);
     std::vector<uint8_t> image(512 * 16, 0);
     REQUIRE(card.insertImage(0, image.data(), image.size(), "hd.po"));
 
@@ -473,22 +473,29 @@ TEST_CASE("The IIgs layout puts the entries where the machine's own firmware has
     REQUIRE(card.readROM(0x0B) == 0x60);
     REQUIRE(card.readROM(0x0D) == 0x38); // and at the SmartPort entry
     REQUIRE(card.readROM(0x0E) == 0x60);
-    REQUIRE(card.readROM(0x08) == 0x80); // BRA over them...
-    REQUIRE(card.readROM(0x10) == 0xA2); // ...to the boot stub
+    // LDA #$00 at $06 sets Z, so a BEQ, which a 6502 has, branches over
+    // them to the boot stub.
+    REQUIRE(card.readROM(0x06) == 0xA9);
+    REQUIRE(card.readROM(0x07) == 0x00);
+    REQUIRE(card.readROM(0x08) == 0xF0);
+    REQUIRE(0x0A + card.readROM(0x09) == 0x10);
+    REQUIRE(card.readROM(0x10) == 0xA2);
     REQUIRE(card.readROM(0x11) == 0x50);
     REQUIRE(card.readROM(0x12) == 0x8E);
     REQUIRE(card.readROM(0x15) == 0x60);
     REQUIRE(card.prodosEntry() == 0x0A);
     REQUIRE(card.smartPortEntry() == 0x0D);
 
-    // And the firmware's status byte: four volumes, removable, interrupting,
-    // whatever is fitted — ProDOS 8 1.x needs the drive 2 that implies.
-    REQUIRE(card.readROM(0xFE) == 0xBF);
+    // A card of its own counts its volumes in $CnFE...
+    REQUIRE(card.readROM(0xFE) == 0x0F);
 
-    // The default is a card's own layout.
-    SmartPortCard plain;
-    plain.setSlotNumber(5);
-    REQUIRE(plain.insertImage(0, image.data(), image.size(), "hd.po"));
-    REQUIRE(plain.readROM(0xFF) == 0x10);
-    REQUIRE(plain.readROM(0x08) == 0xA2);
+    // ...and one standing in for a IIgs's own firmware answers that
+    // firmware's status byte: four volumes, removable, interrupting,
+    // whatever is fitted — ProDOS 8 1.x needs the drive 2 that implies.
+    SmartPortCard iigs;
+    iigs.setSlotNumber(5);
+    iigs.setStandsInForFirmware(true);
+    REQUIRE(iigs.insertImage(0, image.data(), image.size(), "hd.po"));
+    REQUIRE(iigs.readROM(0xFE) == 0xBF);
+    REQUIRE(iigs.readROM(0xFF) == 0x0A);
 }

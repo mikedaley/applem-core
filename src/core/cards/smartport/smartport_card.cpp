@@ -12,9 +12,8 @@ namespace a2e {
 
 const std::string SmartPortCard::emptyString_;
 
-// A card's own slot ROM puts the ProDOS entry at $Cn10 and the SmartPort
-// entry three past it (prodosEntry_'s default). See setProDOSEntry for the
-// IIgs's layout.
+// The slot ROM puts the ProDOS entry at $Cn0A and the SmartPort entry at
+// $Cn0D, where Apple's own SmartPort firmware has them (see prodosEntry).
 // Boot trigger offset in I/O space
 static constexpr uint8_t BOOT_IO_OFFSET = 0x00;
 
@@ -37,9 +36,8 @@ void SmartPortCard::setSlotNumber(uint8_t slot) {
     buildROM();
 }
 
-void SmartPortCard::setProDOSEntry(uint8_t offset) {
-    prodosEntry_ = offset;
-    buildROM();
+void SmartPortCard::setStandsInForFirmware(bool standsIn) {
+    standsInForFirmware_ = standsIn;
 }
 
 void SmartPortCard::buildROM() {
@@ -63,20 +61,16 @@ void SmartPortCard::buildROM() {
     // $Cn00) and by the autostart ROM.
     const uint8_t slotOffset = slotNum_ << 4; // slot * 16
     const uint8_t ioAddr = 0x80 + slotOffset; // $C0n0 base
-    const uint8_t prodos = prodosEntry_;
+    const uint8_t prodos = prodosEntry();
     const uint8_t smartPort = smartPortEntry();
 
-    // Where the six-byte boot stub goes depends on where the entries are. A
-    // card's own layout has room for it at $08, below entries at $10 and $13.
-    // The IIgs's layout has the entries at $0A and $0D, so the fall-through
-    // from $07 branches over them to a stub at $10 — BRA is a 65C02
-    // instruction, and every machine with this layout has one.
-    uint8_t stub = 0x08;
-    if (prodos < 0x10) {
-        stub = 0x10;
-        rom_[0x08] = 0x80;                                      // BRA
-        rom_[0x09] = static_cast<uint8_t>(stub - 0x0A);
-    }
+    // The entries at $0A and $0D are in the way of the fall-through from
+    // $07, so it branches over them to the six-byte boot stub at $10. The
+    // LDA #$00 at $06 has just set Z, so a BEQ is always taken, and unlike a
+    // BRA it is there on a II Plus's or an unenhanced //e's 6502.
+    const uint8_t stub = 0x10;
+    rom_[0x08] = 0xF0;                                          // BEQ
+    rom_[0x09] = static_cast<uint8_t>(stub - 0x0A);
     // LDX #$n0 (set X to slot*16, needed by ProDOS boot block)
     rom_[stub + 0] = 0xA2;
     rom_[stub + 1] = slotOffset;
@@ -130,7 +124,7 @@ uint8_t SmartPortCard::prodosStatusByte() const {
     // when the boot slot has a drive 2. A card that reported the one image
     // it held sent ProDOS 8 1.4 into a BRK after its splash screen, on every
     // demo disk that boots it.
-    if (prodosEntry_ < 0x10) return 0xBF;
+    if (standsInForFirmware_) return 0xBF;
     const int volumes = deviceCount() > 0 ? deviceCount() : 1;
     return static_cast<uint8_t>(((volumes - 1) << 4) | 0x0F);
 }
@@ -181,7 +175,7 @@ void SmartPortCard::writeIO(uint8_t offset, uint8_t value) {
     if (offset == BOOT_IO_OFFSET && !booted_) {
         // Boot trap: load block 0 of device 0 into $0800
         if (!devices_[0].isLoaded() || !memWrite_ || !getSP_ || !setSP_) {
-            // Mark as booted so subsequent ProDOS calls to $Cn10 are handled
+            // Mark as booted so subsequent ProDOS calls to $Cn0A are handled
             // as block device driver calls rather than triggering another boot.
             booted_ = true;
             // No disk loaded. Scan lower slots for the next bootable device,
@@ -205,6 +199,12 @@ void SmartPortCard::writeIO(uint8_t offset, uint8_t value) {
 
         uint8_t blockBuf[BlockDevice::BLOCK_SIZE];
         if (devices_[0].readBlock(0, blockBuf)) {
+            // Booted, so the boot block's first call to the ProDOS entry is
+            // a driver call. Treated as a boot, it loaded block 0 again and
+            // sent the boot block back to $0801: harmless to ProDOS's, which
+            // starts over, but not to a loader that has banked the language
+            // card's RAM in over the monitor first, as DIX's has.
+            booted_ = true;
             for (size_t i = 0; i < BlockDevice::BLOCK_SIZE; i++) {
                 memWrite_(static_cast<uint16_t>(0x0800 + i), blockBuf[i]);
             }
@@ -250,7 +250,7 @@ uint8_t SmartPortCard::readROM(uint8_t offset) {
     if (offset == 0xFE) return prodosStatusByte();
 
     if (executingAt_ && executingAt_(here)) {
-        if (offset == prodosEntry_) {
+        if (offset == prodosEntry()) {
             if (!booted_) {
                 // First call to entry point = boot (from autostart ROM or PR#n fallthrough)
                 if (!handleBoot()) {
@@ -420,7 +420,7 @@ void SmartPortCard::handleProDOSBlock() {
 }
 
 void SmartPortCard::handleSmartPort() {
-    // A SmartPort call is `JSR $Cn13` followed by three inline bytes — the
+    // A SmartPort call is `JSR $Cn0D` followed by three inline bytes — the
     // command and a pointer to its parameter list — that the caller expects to
     // be stepped over on return. So the return address on the stack is read,
     // used, and put back three further on.

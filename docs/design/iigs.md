@@ -410,9 +410,9 @@ then goes away.
 **The IIgs's SmartPort answers where the machine's own firmware does.** The
 real slot 5 firmware has `$C5FF = $0A`: its ProDOS entry at `$C50A` and its
 SmartPort entry at `$C50D`, and software written for a IIgs hard-codes those
-rather than reading `$C5FF`. `SmartPortCard::setProDOSEntry(0x0A)` lays the
-card's ROM out that way (the fall-through boot path branches over the entries
-to its stub at `$10`), and its `$C5FE` status byte is the firmware's `$BF`
+rather than reading `$C5FF`. Every `SmartPortCard` lays its ROM out that way
+(see `docs/design/cards.md`), and with `setStandsInForFirmware(true)` its
+`$C5FE` status byte is the firmware's `$BF`
 whatever is fitted — four volumes, removable, interrupting. ProDOS 8 1.x needs
 the drive 2 that byte implies: its device-table builder pushes a byte per
 device that is not the boot device and pops one per other device in the boot

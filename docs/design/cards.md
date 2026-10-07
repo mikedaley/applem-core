@@ -94,6 +94,21 @@ two real outputs wired together would.
 - `MouseCard` (`cards/mouse/`) - Apple Mouse Interface Card via MC6821 PIA command protocol (slot 4)
 - `ParallelCard` (`cards/parallel/`) - Centronics parallel port; drives Epson FX-80 and Apple DMP virtual printers (slots 1–2)
 - `SmartPortCard` (`cards/smartport/`) - SmartPort hard drive controller, 2 block devices, self-built ROM (user-configurable slot)
+
+**A SmartPort card answers where Apple's SmartPort firmware does.** Its ROM
+has `$CnFF = $0A`: the ProDOS entry at `$Cn0A` and the SmartPort entry three
+past it at `$Cn0D`, where the IIgs's slot 5 firmware has them (*Apple IIgs
+Firmware Reference*). The documented way to find them is `$CnFF`, and ProDOS
+reads it, but software hard-codes Apple's addresses: French Touch's DIX,
+written for a Liron card or a //c, loads its menu with `JSR $Cn0A`. The card
+used to put its entry at `$Cn10`, so that call landed on the boot stub's `STX
+$C0n0` and booted the disk again. The fall-through from `$Cn00` branches over
+the entries to the boot stub at `$Cn10` with a `BEQ` (the `LDA #$00` before it
+has set Z), which a 6502 has and a `BRA` is not. The stub's boot marks the card
+booted, so the boot block's first call to the entry is a driver call; it used
+to be taken as a boot, which loaded block 0 again and restarted the boot block
+— harmless to ProDOS's, which starts over, but not to DIX's, which has banked
+the language card's RAM in over the monitor by then.
 - `SoftCardZ80` (`cards/softcard/`) - Microsoft Z-80 SoftCard with Z80 CPU emulation (`cards/softcard/z80/`)
 - `SSCCard` (`cards/ssc/`) - Super Serial Card with ACIA 6551; drives ImageWriter I and ImageWriter II virtual printers (slots 1–2)
 - `SerialPort` (`cards/serial/`) - One of a //c's two built-in ports: the same ACIA 6551, no DIP switches and no ROM (slots 1 and 2, fixed)

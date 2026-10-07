@@ -57,15 +57,11 @@ public:
     void setSlotNumber(uint8_t slot);
 
     /**
-     * Where the entry points sit in the slot's 256 bytes.
-     *
-     * A card of its own puts the ProDOS entry at $Cn10 and the SmartPort
-     * entry three past it. A IIgs's own slot 5 firmware has them at $Cn0A
-     * and $Cn0D, and software written for the machine hard-codes that
-     * rather than reading $CnFF — so a card standing in for that firmware
-     * has to answer where the firmware would.
+     * Whether the card stands in for a IIgs's own slot 5 firmware, and so
+     * answers $CnFE as that firmware does: $BF, four volumes, whatever is
+     * fitted. A card of its own counts the images it holds.
      */
-    void setProDOSEntry(uint8_t offset);
+    void setStandsInForFirmware(bool standsIn);
 
     /**
      * Whether the ROM appears with the first image or at the next reset.
@@ -89,8 +85,16 @@ public:
     void latchROM() { romLatched_ = hasAnyDevice(); }
     /** An image is inserted whose ROM will only appear at the next reset. */
     bool isROMPending() const { return romFollowsReset_ && hasAnyDevice() && !romLatched_; }
-    uint8_t prodosEntry() const { return prodosEntry_; }
-    uint8_t smartPortEntry() const { return static_cast<uint8_t>(prodosEntry_ + 3); }
+    /**
+     * Where the entry points sit in the slot's 256 bytes: where Apple's own
+     * SmartPort firmware has them, the ProDOS entry at $Cn0A ($CnFF = $0A)
+     * and the SmartPort entry three past it. The documented way to find them
+     * is $CnFF, but software hard-codes Apple's: a IIgs boot loader's
+     * `JSR $C50D`, and French Touch's DIX, booted from a Liron card or a //c,
+     * calling `JSR $Cn0A`.
+     */
+    static constexpr uint8_t prodosEntry() { return 0x0A; }
+    static constexpr uint8_t smartPortEntry() { return 0x0D; }
     uint8_t getSlotNumber() const { return slotNum_; }
 
     // Device management
@@ -127,7 +131,7 @@ public:
     void setSetSP(RegSetCallback16 cb) { setSP_ = cb; }
     /**
      * Whether the CPU is *executing* this ROM address, rather than reading it
-     * as data. The card's entry points are traps: a read of $Cn10 during a
+     * as data. The card's entry points are traps: a read of $Cn0A during a
      * fetch is a driver call to service, and a read of the same byte by a
      * ProDOS scan is just a byte.
      *
@@ -182,7 +186,7 @@ private:
     int deviceCount() const;
 
     uint8_t slotNum_ = 7;
-    uint8_t prodosEntry_ = 0x10;
+    bool standsInForFirmware_ = false;
     std::array<uint8_t, 256> rom_;
     std::array<BlockDevice, MAX_DEVICES> devices_;
 

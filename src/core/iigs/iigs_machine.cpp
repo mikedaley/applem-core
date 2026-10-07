@@ -143,12 +143,10 @@ IIgsMachine::IIgsMachine(size_t fastRamSize)
   {
     auto smartPort = std::make_unique<SmartPortCard>();
     smartPort->setSlotNumber(SMARTPORT_SLOT);
-    // The machine's own slot 5 firmware has its ProDOS entry at $C50A and its
-    // SmartPort entry at $C50D, and software written for a IIgs hard-codes
-    // those rather than reading $C5FF — a boot loader that did `JSR $C50D`
-    // into a card laid out like a card found an RTS there, came back without
-    // its inline parameters skipped, and executed them.
-    smartPort->setProDOSEntry(0x0A);
+    // It stands in for the machine's own slot 5 firmware, so it answers that
+    // firmware's status byte. Its entries are where the firmware has them,
+    // $C50A and $C50D, as every SmartPort card's are.
+    smartPort->setStandsInForFirmware(true);
     // Its ROM replaces the machine's own slot 5 firmware, so it changes only
     // at reset (see SmartPortCard::setROMFollowsReset).
     smartPort->setROMFollowsReset(true);
