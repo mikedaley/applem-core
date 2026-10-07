@@ -6,13 +6,15 @@ cmake_minimum_required(VERSION 3.20)
 # for the same macOS as the app it is linked into, and set outright rather
 # than defaulted, so a build directory that cached another value follows a
 # change here. The WebAssembly build, which comes through Emscripten's
-# toolchain, is left alone.
+# toolchain, is left alone. As a subdirectory of a front end, the front end
+# sets it.
 set(A2E_MACOS_MINIMUM "15.0")
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_TOOLCHAIN_FILE MATCHES "Emscripten")
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND
+   CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_TOOLCHAIN_FILE MATCHES "Emscripten")
   set(CMAKE_OSX_DEPLOYMENT_TARGET "${A2E_MACOS_MINIMUM}" CACHE STRING "Oldest macOS the native builds run on" FORCE)
 endif()
 
-project(web-a2e VERSION 1.0.0 LANGUAGES CXX)
+project(applem-core VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -131,503 +133,97 @@ set(ROM_FILES_OPTIONAL_CANDIDATES
 # never exist, and vice versa. Re-run cmake after adding ROMs.
 set(ROM_FILES_OPTIONAL "")
 foreach(candidate ${ROM_FILES_OPTIONAL_CANDIDATES})
-    if(EXISTS ${CMAKE_SOURCE_DIR}/${candidate})
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${candidate})
         list(APPEND ROM_FILES_OPTIONAL ${candidate})
     endif()
 endforeach()
 
 # Custom command to generate ROM header
 add_custom_command(
-    OUTPUT ${CMAKE_BINARY_DIR}/generated/roms.cpp
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/generated
-    COMMAND ${CMAKE_SOURCE_DIR}/scripts/generate_roms.sh ${CMAKE_SOURCE_DIR}/roms ${CMAKE_BINARY_DIR}/generated/roms.cpp
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/roms.cpp
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/generated
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_roms.sh ${CMAKE_CURRENT_SOURCE_DIR}/roms ${CMAKE_CURRENT_BINARY_DIR}/generated/roms.cpp
     # ROM_FILES_OPTIONAL must be listed too. Without it, dropping the II+ ROMs
     # into roms/ changed nothing the build was watching, so roms.cpp stayed as
     # it was and the machine reported having no ROM long after its ROM existed.
     DEPENDS ${ROM_FILES} ${ROM_FILES_OPTIONAL}
-            ${CMAKE_SOURCE_DIR}/scripts/generate_roms.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_roms.sh
     COMMENT "Generating ROM data arrays"
 )
 
-if(EMSCRIPTEN)
-    add_executable(a2e
-        ${CORE_SOURCES}
-        ${HOST_SOURCES}
-        src/bindings/wasm_interface.cpp
-    )
+# ============================================================================
+# The library
+# ============================================================================
 
-    # Ensure roms.cpp is generated before building
-    add_custom_target(generate_roms DEPENDS ${CMAKE_BINARY_DIR}/generated/roms.cpp)
-    add_dependencies(a2e generate_roms)
+# All core include directories
+set(ALL_CORE_INCLUDES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cpu/6502
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cpu/65816
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/machine
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/iigs
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/mmu
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/video
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/audio
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/input
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/mockingboard
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/disk2
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/iwm
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/serial
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/ssc
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/thunderclock
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/mouse
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/softcard
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/softcard/z80
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/cards/smartport
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/disk-image
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/disassembler
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/debug
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/filesystem
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/basic
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/assembler
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
 
-    target_include_directories(a2e PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
-        ${CMAKE_SOURCE_DIR}/src/core/cpu/65816
-        ${CMAKE_SOURCE_DIR}/src/core/cards
-        ${CMAKE_SOURCE_DIR}/src/core/disk-image
-        ${CMAKE_BINARY_DIR}/generated
-    )
+# roms.cpp is generated before anything that includes it is compiled.
+add_custom_target(generate_roms_native DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/generated/roms.cpp)
 
-    # Emscripten-specific flags
-    # MAXIMUM_MEMORY is 512MB. The ceiling only has to hold the largest machine
-    # anyone can configure, and that is a IIgs with 8MB of fast RAM and two 32MB
-    # SmartPort volumes: about 72MB live, and a save state is a second copy of
-    # the images on top. At 256MB that aborted the module outright — and an
-    # aborted module answers nothing afterwards, so the symptom was every
-    # control in the app going dead rather than one save failing. Growth is
-    # still on, so the ceiling costs nothing until it is needed.
-    set_target_properties(a2e PROPERTIES
-        SUFFIX ".js"
-        LINK_FLAGS "\
-            -s WASM=1 \
-            -s MODULARIZE=1 \
-            -s EXPORT_NAME='createA2EModule' \
-            -s EXPORTED_FUNCTIONS='[ \
-                \"_init\", \
-                \"_reset\", \
-                \"_warmReset\", \
-                \"_runCycles\", \
-                \"_consumeFrameSamples\", \
-                \"_getFramebuffer\", \
-                \"_getFramebufferSize\", \
-                \"_getMachineCount\", \
-                \"_getMachineKey\", \
-                \"_getMachineKeyAt\", \
-                \"_getMachineName\", \
-                \"_getMachineProfileJSON\", \
-                \"_getMachineProfileJSONAt\", \
-                \"_hasSystemROM\", \
-                \"_isMachineRunnable\", \
-                \"_setMachine\", \
-                \"_getIIgsMemoryKB\", \
-                \"_setIIgsMemoryKB\", \
-                \"_getVideoStandard\", \"_setVideoStandard\", \
-                \"_forceRenderFrame\", \
-                \"_isFrameReady\", \
-                \"_keyDown\", \
-                \"_keyUp\", \
-                \"_handleRawKeyDown\", \
-                \"_handleRawKeyUp\", \
-                \"_releaseModifiers\", \
-                \"_charToAppleKey\", \
-                \"_pasteText\", \
-                \"_pasteKey\", \
-                \"_pastePending\", \
-                \"_clearPasteBuffer\", \
-                \"_insertDisk\", \
-                \"_insertBlankDisk\", \
-                \"_ejectDisk\", \
-                \"_getDiskData\", \
-                \"_getDiskDataAs\", \
-                \"_getDiskSectorDataDOSOrder\", \
-                \"_canSaveDiskAs\", \
-                \"_getDiskNativeFormat\", \
-                \"_addBreakpoint\", \
-                \"_removeBreakpoint\", \
-                \"_enableBreakpoint\", \
-                \"_isBreakpointHit\", \
-                \"_getBreakpointAddress\", \
-                \"_addBreakpointRange\", \
-                \"_removeBreakpointRange\", \
-                \"_enableBreakpointRange\", \
-                \"_addStackBreakpoint\", \
-                \"_removeStackBreakpoint\", \
-                \"_enableStackBreakpoint\", \
-                \"_isStackBreakpointHit\", \
-                \"_getStackBreakpointHitLow\", \
-                \"_addBasicBreakpoint\", \
-                \"_removeBasicBreakpoint\", \
-                \"_clearBasicBreakpoints\", \
-                \"_clearBasicBreakpointHit\", \
-                \"_addBasicConditionRule\", \
-                \"_removeBasicConditionRule\", \
-                \"_clearBasicConditionRules\", \
-                \"_getBasicConditionRuleHitId\", \
-                \"_hasBasicBreakpoints\", \
-                \"_isBasicBreakpointHit\", \
-                \"_getBasicBreakLine\", \
-                \"_isBasicProgramRunning\", \
-                \"_stepBasicLine\", \
-                \"_stepBasicStatement\", \
-                \"_getBasicTxtptr\", \
-                \"_getBasicStatementIndex\", \
-                \"_getBasicStatementCountForLine\", \
-                \"_getBasicStatementIndexForLine\", \
-                \"_setBasicHeatMapEnabled\", \
-                \"_clearBasicHeatMap\", \
-                \"_getBasicHeatMapSize\", \
-                \"_getBasicHeatMapData\", \
-                \"_getBasicLineBytes\", \
-                \"_getPC\", \
-                \"_getPBR\", \
-                \"_getDBR\", \
-                \"_getDirectPage\", \
-                \"_getCpuWidths\", \
-                \"_setRegPBR\", \
-                \"_setRegDBR\", \
-                \"_setRegDirectPage\", \
-                \"_getTraceEntrySize\", \
-                \"_formatTraceRange\", \
-                \"_getMemoryBanksJSON\", \
-                \"_getBatteryRam\", \
-                \"_getBatteryRamSize\", \
-                \"_setBatteryRam\", \
-                \"_batteryRamChanged\", \
-                \"_setIIgsLoopbackCable\", \
-                \"_hasIIgsLoopbackCable\", \
-                \"_getSP\", \
-                \"_getA\", \
-                \"_getX\", \
-                \"_getY\", \
-                \"_getP\", \
-                \"_getTotalCycles\", \
-                \"_isPaused\", \
-                \"_setPaused\", \
-                \"_stepInstruction\", \
-                \"_readMemory\", \
-                \"_writeMemory\", \
-                \"_disassembleAt\", \
-                \"_disassembleRange\", \
-                \"_getSoftSwitchState\", \
-                \"_screenCodeToAscii\", \
-                \"_readScreenText\", \
-                \"_getDiskTrack\", \
-                \"_getDiskPhase\", \
-                \"_getDiskMotorOn\", \
-                \"_getDiskWriteMode\", \
-                \"_getDiskHeadPosition\", \
-                \"_getSelectedDrive\", \
-                \"_isDiskInserted\", \
-                \"_isDiskModified\", \
-                \"_getDiskFilename\", \
-                \"_getDiskOverview\", \
-                \"_getDiskTrackDetail\", \
-                \"_getDiskRotation\", \
-                \"_getDiskRevision\", \
-                \"_getLastDiskByte\", \
-                \"_exportState\", \
-                \"_importState\", \
-                \"_setMonochrome\", \
-                \"_isMonochrome\", \
-                \"_setVideoColorMode\", \
-                \"_getVideoColorMode\", \
-                \"_disassembleRawData\", \
-                \"_getDisasmInstructions\", \
-                \"_getDisasmInstructionLength\", \
-                \"_malloc\", \
-                \"_free\", \
-                \"_getSlotCard\", \
-                \"_setSlotCard\", \
-                \"_isSlotInternal\", \
-                \"_setSlotInternal\", \
-                \"_isSlotEmpty\", \
-                \"_getMockingboardWaveform\", \
-                \"_setMockingboardChannelMute\", \
-                \"_setMockingboardPhaseLock\", \
-                \"_setMockingboardMono\", \
-                \"_getMockingboardChannelMute\", \
-                \"_isKeyboardReady\", \
-                \"_setSpeedMultiplier\", \
-                \"_getSpeedMultiplier\", \
-                \"_mouseMove\", \
-                \"_mouseButton\", \
-                \"_isMouseCardInstalled\", \
-                \"_getMouseCardState\", \
-                \"_getMouseCardPIARegister\", \
-                \"_isIRQPending\", \
-                \"_isNMIPending\", \
-                \"_isNMIEdge\", \
-                \"_setRegA\", \
-                \"_setRegX\", \
-                \"_setRegY\", \
-                \"_setRegSP\", \
-                \"_setRegPC\", \
-                \"_setRegP\", \
-                \"_peekMemory\", \
-                \"_readMainRAM\", \
-                \"_addWatchpoint\", \
-                \"_removeWatchpoint\", \
-                \"_clearWatchpoints\", \
-                \"_isWatchpointHit\", \
-                \"_getWatchpointAddress\", \
-                \"_getWatchpointValue\", \
-                \"_isWatchpointWrite\", \
-                \"_setTraceEnabled\", \
-                \"_clearTrace\", \
-                \"_getTraceCount\", \
-                \"_getTraceHead\", \
-                \"_getTraceBuffer\", \
-                \"_getTraceCapacity\", \
-                \"_setProfileEnabled\", \
-                \"_clearProfile\", \
-                \"_getProfileCycles\", \
-                \"_addBeamBreakpoint\", \
-                \"_removeBeamBreakpoint\", \
-                \"_enableBeamBreakpoint\", \
-                \"_clearAllBeamBreakpoints\", \
-                \"_isBeamBreakpointHit\", \
-                \"_getBeamBreakpointHitId\", \
-                \"_getBeamBreakScanline\", \
-                \"_getBeamBreakHPos\", \
-                \"_getFrameCycle\", \
-                \"_getBeamScanline\", \
-                \"_getBeamHPos\", \
-                \"_getBeamColumn\", \
-                \"_isInVBL\", \
-                \"_isInHBLANK\", \
-                \"_stepOver\", \
-                \"_stepOut\", \
-                \"_clearTempBreakpoint\", \
-                \"_isTempBreakpointHit\", \
-                \"_getOpcodeMnemonic\", \
-                \"_getOpcodeAddressingMode\", \
-                \"_getCallStack\", \
-                \"_getCallStackBuffer\", \
-                \"_isLikelyReturnAddress\", \
-                \"_evaluateCondition\", \
-                \"_evaluateExpression\", \
-                \"_getConditionError\", \
-                \"_isDOS33Format\", \
-                \"_getDOS33Catalog\", \
-                \"_getDOS33CatalogBuffer\", \
-                \"_getDOS33CatalogEntrySize\", \
-                \"_getDOS33EntryFilename\", \
-                \"_getDOS33EntryFileType\", \
-                \"_getDOS33EntryFileTypeName\", \
-                \"_getDOS33EntryIsLocked\", \
-                \"_getDOS33EntrySectorCount\", \
-                \"_readDOS33File\", \
-                \"_getDOS33FileBuffer\", \
-                \"_isProDOSFormat\", \
-                \"_getProDOSVolumeInfo\", \
-                \"_getProDOSVolumeName\", \
-                \"_getProDOSTotalBlocks\", \
-                \"_getProDOSCatalog\", \
-                \"_getProDOSEntryFilename\", \
-                \"_getProDOSEntryPath\", \
-                \"_getProDOSEntryFileType\", \
-                \"_getProDOSEntryFileTypeName\", \
-                \"_getProDOSEntryStorageType\", \
-                \"_getProDOSEntryEOF\", \
-                \"_getProDOSEntryAuxType\", \
-                \"_getProDOSEntryIsLocked\", \
-                \"_getProDOSEntryBlocksUsed\", \
-                \"_getProDOSEntryIsDirectory\", \
-                \"_getProDOSEntryKeyPointer\", \
-                \"_getProDOSDirectory\", \
-                \"_readProDOSFile\", \
-                \"_getProDOSFileBuffer\", \
-                \"_mapProDOSFileType\", \
-                \"_isPascalFormat\", \
-                \"_getPascalVolumeInfo\", \
-                \"_getPascalVolumeName\", \
-                \"_getPascalTotalBlocks\", \
-                \"_getPascalCatalog\", \
-                \"_getPascalEntryFilename\", \
-                \"_getPascalEntryFileType\", \
-                \"_getPascalEntryFileTypeName\", \
-                \"_getPascalEntryFileSize\", \
-                \"_getPascalEntryBlocksUsed\", \
-                \"_readPascalFile\", \
-                \"_getPascalFileBuffer\", \
-                \"_mapPascalFileType\", \
-                \"_detokenizeApplesoft\", \
-                \"_detokenizeIntegerBasic\", \
-                \"_assembleSource\", \
-                \"_getAsmOutputSize\", \
-                \"_getAsmOutputBuffer\", \
-                \"_getAsmOrigin\", \
-                \"_getAsmErrorCount\", \
-                \"_getAsmErrorLine\", \
-                \"_getAsmErrorMessage\", \
-                \"_getAsmErrorIsWarning\", \
-                \"_getAsmSegmentCount\", \
-                \"_getAsmSegmentAddress\", \
-                \"_getAsmSegmentOffset\", \
-                \"_getAsmSegmentLength\", \
-                \"_getAsmLineCount\", \
-                \"_getAsmLineRecordSize\", \
-                \"_getAsmLineBuffer\", \
-                \"_getAsmListing\", \
-                \"_getAsmObjectType\", \
-                \"_loadAsmIntoMemory\", \
-                \"_getAsmSymbolCount\", \
-                \"_getAsmSymbolName\", \
-                \"_getAsmSymbolValue\", \
-                \"_hasAsmObjectFile\", \
-                \"_getAsmObjectFilename\", \
-                \"_getAsmObjectDrive\", \
-                \"_writeAsmObjectToDisk\", \
-                \"_getAsmObjectStatusMessage\", \
-                \"_isBasicErrorHit\", \
-                \"_getBasicErrorLine\", \
-                \"_getBasicErrorTxtptr\", \
-                \"_getBasicErrorCode\", \
-                \"_clearBasicError\", \
-                \"_has35Drives\", \
-                \"_insert35Disk\", \
-                \"_eject35Disk\", \
-                \"_is35DiskInserted\", \
-                \"_is35DiskModified\", \
-                \"_get35DiskFilename\", \
-                \"_export35Disk\", \
-                \"_is35MotorOn\", \
-                \"_get35DiskTrack\", \
-                \"_get35DiskSide\", \
-                \"_has35Ejected\", \
-                \"_export35Ejected\", \
-                \"_clear35Ejected\", \
-                \"_insertSmartPortImage\", \
-                \"_ejectSmartPortImage\", \
-                \"_isSmartPortROMPending\", \
-                \"_isSmartPortImageInserted\", \
-                \"_getSmartPortImageFilename\", \
-                \"_isSmartPortImageModified\", \
-                \"_getSmartPortImageData\", \
-                \"_isSmartPortCardInstalled\", \
-                \"_getSmartPortBlockData\", \
-                \"_getSmartPortActivity\", \
-                \"_getSmartPortActivityWrite\", \
-                \"_clearSmartPortActivity\", \
-                \"_loadBasicProgram\", \
-                \"_refreshBasicVariables\", \
-                \"_getBasicVariableName\", \
-                \"_getBasicVariableType\", \
-                \"_getBasicVariableAddress\", \
-                \"_getBasicVariableReal\", \
-                \"_getBasicVariableInt\", \
-                \"_getBasicVariableString\", \
-                \"_refreshBasicArrays\", \
-                \"_getBasicArrayName\", \
-                \"_getBasicArrayType\", \
-                \"_getBasicArrayAddress\", \
-                \"_getBasicArrayNumDims\", \
-                \"_getBasicArrayDim\", \
-                \"_getBasicArrayElementCount\", \
-                \"_getBasicArrayReals\", \
-                \"_getBasicArrayInts\", \
-                \"_getBasicArrayStrings\", \
-                \"_getBasicArrayStringsSize\", \
-                \"_writeApplesoftFloat\", \
-                \"_generateStereoAudioSamples\", \
-                \"_setAudioVolume\", \
-                \"_setAudioMuted\", \
-                \"_setButton\", \
-                \"_setPaddleValue\", \
-                \"_setGamePortDevice\", \
-                \"_getGamePortDevice\", \
-                \"_setJoyportStick\", \
-                \"_getJoyportStick\", \
-                \"_getPaddleValue\", \
-                \"_getDiskSectorData\", \
-                \"_stopDiskMotor\", \
-                \"_getTrackNibble\", \
-                \"_getTrackNibbleCount\", \
-                \"_getCurrentNibblePosition\", \
-                \"_peekAuxMemory\", \
-                \"_enableMemoryTracking\", \
-                \"_clearMemoryTracking\", \
-                \"_decayMemoryTracking\", \
-                \"_getMemoryReadCounts\", \
-                \"_getMemoryWriteCounts\", \
-                \"_getMainRAM\", \
-                \"_getAuxRAM\", \
-                \"_getSystemROM\", \
-                \"_setUKCharacterSet\", \
-                \"_isUKCharacterSet\", \
-                \"_getSoftSwitchStateHigh\", \
-                \"_getSoftSwitchCatalogJSON\", \
-                \"_getSoftSwitchValue\", \
-                \"_addSwitchBreakpoint\", \
-                \"_removeSwitchBreakpoint\", \
-                \"_enableSwitchBreakpoint\", \
-                \"_clearSwitchBreakpoints\", \
-                \"_isSwitchBreakpointHit\", \
-                \"_getSwitchBreakpointHitId\", \
-                \"_getSwitchHitText\", \
-                \"_disassembleWithFlowAnalysis\", \
-                \"_disassembleWithFlowAnalysisMultiEntry\", \
-                \"_getBasicDebugInfo\", \
-                \"_isMockingboardEnabled\", \
-                \"_getMockingboardPSGRegister\", \
-                \"_getMockingboardPSGRegisters\", \
-                \"_getMockingboardVIAIRQ\", \
-                \"_getMockingboardVIAPort\", \
-                \"_getMockingboardPSGWriteInfo\", \
-                \"_getMockingboardVIATimerInfo\", \
-                \"_setMockingboardDebugLogging\", \
-                \"_enableNoSlotClock\", \
-                \"_isNoSlotClockEnabled\", \
-                \"_serialReceive\", \
-                \"_isSSCInstalled\", \
-                \"_setSerialTxCallback\", \
-                \"_isParallelCardInstalled\", \
-                \"_setParallelTxCallback\" \
-            ]' \
-            -s EXPORTED_RUNTIME_METHODS='[\"ccall\", \"cwrap\", \"UTF8ToString\", \"stringToUTF8\", \"HEAPU8\", \"HEAPF32\"]' \
-            -s ALLOW_MEMORY_GROWTH=1 \
-            -s INITIAL_MEMORY=33554432 \
-            -s MAXIMUM_MEMORY=536870912 \
-            -s NO_EXIT_RUNTIME=1 \
-            -s ASYNCIFY=0 \
-            --no-entry \
-            -O3 \
-            -flto \
-        "
-    )
+# The core and the host layer as one library, which each front end links: the
+# browser's WebAssembly module and the native app. The tests below still
+# compile the core into each binary themselves.
+add_library(a2e_core STATIC ${CORE_SOURCES} ${HOST_SOURCES})
+add_dependencies(a2e_core generate_roms_native)
+target_include_directories(a2e_core PUBLIC ${ALL_CORE_INCLUDES})
+target_compile_features(a2e_core PUBLIC cxx_std_20)
+# The browser build has always compiled the core with no optimisation flags of
+# its own, its link step carrying -O3; that is kept as it was.
+if(NOT EMSCRIPTEN)
+    target_compile_options(a2e_core PRIVATE -O2 -Wall -Wextra)
+endif()
 
-    # Copy output to public directory
-    add_custom_command(TARGET a2e POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:a2e> ${CMAKE_SOURCE_DIR}/public/a2e.js
-        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/a2e.wasm ${CMAKE_SOURCE_DIR}/public/a2e.wasm
-        COMMENT "Copying WASM files to public directory"
-    )
+# ============================================================================
+# Tests: built when the core is the top-level project, not when a front end
+# includes it as a subdirectory, and never for WebAssembly.
+# ============================================================================
 
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(A2E_CORE_TESTS_DEFAULT ON)
 else()
-    # Native build for testing
-    # Note: a2e-native requires src/native/main.cpp which may not exist
-    # The tests below can be built independently
+    set(A2E_CORE_TESTS_DEFAULT OFF)
+endif()
+option(A2E_CORE_TESTS "Build the core's tests" ${A2E_CORE_TESTS_DEFAULT})
 
+if(A2E_CORE_TESTS AND NOT EMSCRIPTEN)
     enable_testing()
 
     # ==========================================================================
     # Common paths and source lists
     # ==========================================================================
 
-    set(CATCH2_INCLUDE ${CMAKE_SOURCE_DIR}/tests/catch2)
-    set(TEST_COMMON_INCLUDE ${CMAKE_SOURCE_DIR}/tests/common)
+    set(CATCH2_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/tests/catch2)
+    set(TEST_COMMON_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/tests/common)
 
-    # All core include directories
-    set(ALL_CORE_INCLUDES
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${CMAKE_SOURCE_DIR}/src/core/cpu/6502
-        ${CMAKE_SOURCE_DIR}/src/core/cpu/65816
-        ${CMAKE_SOURCE_DIR}/src/core/machine
-        ${CMAKE_SOURCE_DIR}/src/core/iigs
-        ${CMAKE_SOURCE_DIR}/src/core/mmu
-        ${CMAKE_SOURCE_DIR}/src/core/video
-        ${CMAKE_SOURCE_DIR}/src/core/audio
-        ${CMAKE_SOURCE_DIR}/src/core/input
-        ${CMAKE_SOURCE_DIR}/src/core/cards
-        ${CMAKE_SOURCE_DIR}/src/core/cards/mockingboard
-        ${CMAKE_SOURCE_DIR}/src/core/cards/disk2
-        ${CMAKE_SOURCE_DIR}/src/core/cards/iwm
-        ${CMAKE_SOURCE_DIR}/src/core/cards/serial
-        ${CMAKE_SOURCE_DIR}/src/core/cards/ssc
-        ${CMAKE_SOURCE_DIR}/src/core/cards/thunderclock
-        ${CMAKE_SOURCE_DIR}/src/core/cards/mouse
-        ${CMAKE_SOURCE_DIR}/src/core/cards/softcard
-        ${CMAKE_SOURCE_DIR}/src/core/cards/softcard/z80
-        ${CMAKE_SOURCE_DIR}/src/core/cards/smartport
-        ${CMAKE_SOURCE_DIR}/src/core/disk-image
-        ${CMAKE_SOURCE_DIR}/src/core/disassembler
-        ${CMAKE_SOURCE_DIR}/src/core/debug
-        ${CMAKE_SOURCE_DIR}/src/core/filesystem
-        ${CMAKE_SOURCE_DIR}/src/core/basic
-        ${CMAKE_SOURCE_DIR}/src/core/assembler
-        ${CMAKE_BINARY_DIR}/generated
-    )
 
     # All core source files (excluding wasm_interface.cpp)
     set(CORE_TEST_SOURCES
@@ -719,27 +315,6 @@ else()
         tests/common/basic_program_builder.cpp
     )
 
-    # Ensure roms.cpp is generated for native builds
-    add_custom_target(generate_roms_native DEPENDS ${CMAKE_BINARY_DIR}/generated/roms.cpp)
-
-    # The core and the host layer as one library, for a native front end to
-    # link. The tests below still compile the core into each binary themselves.
-    add_library(a2e_core STATIC ${CORE_SOURCES} ${HOST_SOURCES})
-    add_dependencies(a2e_core generate_roms_native)
-    target_include_directories(a2e_core PUBLIC ${ALL_CORE_INCLUDES})
-    target_compile_options(a2e_core PRIVATE -O2 -Wall -Wextra)
-
-    # The native macOS front end: Dear ImGui (docking branch) over Metal, on
-    # the same core and host layer as the browser. Off by default so the test
-    # build needs nothing it did not need before. See docs/NATIVE.md.
-    option(A2E_BUILD_NATIVE "Build the native macOS front end (ImGui + Metal)" OFF)
-    if(A2E_BUILD_NATIVE)
-        if(NOT APPLE)
-            message(FATAL_ERROR "The native front end is macOS only (Metal)")
-        endif()
-        enable_language(OBJC OBJCXX)
-        add_subdirectory(native)
-    endif()
 
     # ==========================================================================
     # Helper function: add a Catch2 test with specified sources
@@ -761,7 +336,7 @@ else()
         target_compile_options(${TEST_NAME} PRIVATE -O2 -Wall -Wextra)
         add_test(NAME ${TEST_NAME}
             COMMAND ${TEST_NAME}
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         )
     endfunction()
 
@@ -1404,5 +979,4 @@ else()
         tests/unit/test_applesoft_vars.cpp
         src/core/basic/applesoft_vars.cpp
     )
-
 endif()
