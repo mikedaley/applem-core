@@ -17,6 +17,16 @@ namespace a2e {
 class AY8910 {
 public:
     static constexpr int NUM_CHANNELS = 3;
+
+    // The chip in the socket. Yamaha's YM2149 is pin compatible and plays the
+    // same tones, noise and envelope shapes, but its D/A converter has 32
+    // levels where the AY-3-8910's has 16, so its envelopes step half as far
+    // twice as often and its fixed levels sit on a different curve. Which one
+    // a card carries is a host preference: every chip in the machine follows
+    // it, and it is not part of a save state.
+    enum class Model { AY38910, YM2149 };
+    static void setModel(Model model);
+    static Model model() { return model_; }
     // A Mockingboard clocks its PSGs from the slot's phi0, so the chip runs at
     // whatever the machine's bus does: 1.023MHz on an NTSC machine and about
     // 1.0179MHz on a PAL one. setClock() is how the card says which.
@@ -84,6 +94,7 @@ public:
     size_t exportState(uint8_t* buffer) const;
     void importState(const uint8_t* buffer);
     static constexpr size_t STATE_SIZE = 48;  // Expanded to include noise/envelope counters
+    static constexpr uint8_t ENVELOPE_FORM_5BIT = 1;
 
 private:
     // Registers
@@ -120,7 +131,9 @@ private:
     uint32_t noiseShiftReg_ = 1;  // 17-bit LFSR, must not be 0
     bool noiseToggle_ = false;    // Legacy (kept for state serialization compat)
 
-    // Envelope generator state
+    // Envelope generator state. The counter is the YM2149's 5-bit one, E4-E0,
+    // stepping every EP ticks; an AY-3-8910 plays its top four bits, which
+    // step every 2 EP ticks, its 16-step ramp in the same 256 EP clocks.
     uint32_t envCounter_ = 0;
     uint8_t envVolume_ = 0;
     bool envHolding_ = false;
@@ -141,8 +154,18 @@ private:
     std::array<float, FILTER_TAPS> history_{};
     int historyPos_ = 0;
 
-    // Volume table (4-bit to amplitude)
-    static const float volumeTable_[16];
+    // Each model's output for the 5-bit level (see levelIndex): the AY's
+    // table with each level doubled, or the YM2149's 32-step curve.
+    static const float ayLevels_[32];
+    static const float ymLevels_[32];
+    static inline Model model_ = Model::AY38910;
+    static inline const float* levels_ = ayLevels_;
+
+    // The 5-bit D/A input for an amplitude register: the envelope counter, or
+    // a fixed level L as step 2L + 1, where the YM2149's datasheet puts it.
+    uint8_t levelIndex(uint8_t ampReg) const {
+        return (ampReg & 0x10) ? envVolume_ : static_cast<uint8_t>(((ampReg & 0x0F) << 1) | 1);
+    }
 
     // Debug counters
     uint32_t writeCount_ = 0;
@@ -166,6 +189,7 @@ private:
     void updateNoiseGenerator();
     void updateEnvelopeGenerator();
     void handleEnvelopeCycleEnd();
+    void convertFourBitEnvelope();
     float getChannelOutput(int channel) const;
     // Compute raw mixer output (sum of all unmuted channels, normalized)
     float computeMixerOutput() const;

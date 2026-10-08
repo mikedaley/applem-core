@@ -59,8 +59,10 @@ class ExpansionCard {
 
 **The Mockingboard is measured against the datasheets, and four rules in it
 are load-bearing.** An AY-3-8910 envelope ramp is 16 steps in `256 × EP`
-clocks, so a step is 2 EP ticks of the clock over 8; one step every EP ticks
-is the YM2149's 32-step rate, and played every envelope twice as fast. The
+clocks, so a step is 2 EP ticks of the clock over 8. The envelope counter is
+kept as the YM2149's 5-bit one, a step every EP ticks, and an AY-3-8910
+plays its top four bits; stepping a 4-bit level every EP ticks played every
+envelope twice as fast. The
 PSGs run at the machine's own clock (`AY8910::setClock`, from the profile in
 `setMachine`), so a PAL machine's notes are lower, as on the card. The
 output is taken from the chip's tick stream through a windowed-sinc low pass
@@ -72,6 +74,20 @@ and RESET low holds the chip reset. Reset clears every AY register, the mixer
 included. The two chips play independently, one per side; nothing
 substitutes one for the other when their registers match.
 `test_ay8910.cpp`, `test_via6522.cpp` and `test_mockingboard.cpp` pin each.
+
+**The chip can be a YM2149** (`AY8910::setModel`, a host preference shared
+by every chip, AY-3-8910 by default and not in a save state). Yamaha's
+datasheet settles the differences: the same tones, noise and envelope
+shapes, but a 32-level D/A converter, logarithmic at 1.5dB a step (step *n*
+is 2^((*n* − 31) / 4), step 0 silent), which the envelope walks one step at a
+time, and fixed level *L* played at step 2*L* + 1 ("Output level of DA
+convertor", Fig. 1). So a fixed level 0 is about 45dB down, not silent, and
+the fixed levels are 3dB apart. Both models read one 32-entry table through
+`levelIndex`, so nothing on the per-tick path branches on the model. SEL is
+pulled up inside the YM2149, and an AY-3-8910's socket leaves pin 26
+unconnected, so the master clock is not halved and the pitches match. A
+state saved before the 5-bit envelope (no envelope-form byte) is converted
+on load (`convertFourBitEnvelope`).
 
 **A register write lands on the chip at the cycle it was made.** The card
 reads the machine's cycle through its cycle callback and runs both chips up

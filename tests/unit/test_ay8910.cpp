@@ -360,8 +360,8 @@ TEST_CASE("The chip runs at the clock it is given", "[ay8910][timing]") {
 
 TEST_CASE("An envelope ramp lasts 256 clocks times its period", "[ay8910][envelope][timing]") {
     // Datasheet: fE = fCLOCK / (256 * EP), one ramp of the AY-3-8910's 16
-    // steps. The 32-step ramp in the same time is the YM2149's; counting a
-    // step every EP ticks of clock/8 played every envelope twice as fast.
+    // steps. The YM2149 takes 32 steps over the same ramp, so both chips
+    // must repeat at this rate.
     AY8910 psg;
     writeReg(psg, 7, 0x3F);  // tone and noise off: the output is the envelope
     writeReg(psg, 8, 0x10);  // channel A follows the envelope
@@ -498,4 +498,114 @@ TEST_CASE("The noise register is maximal length", "[ay8910][noise]") {
         states++;
     } while (rng != 1);
     CHECK(states == (1 << 17) - 1);
+}
+
+// ============================================================================
+// The YM2149
+// ============================================================================
+
+namespace {
+
+// The model is shared by every chip; each test puts the AY-3-8910 back.
+struct ModelScope {
+    explicit ModelScope(AY8910::Model model) { AY8910::setModel(model); }
+    ~ModelScope() { AY8910::setModel(AY8910::Model::AY38910); }
+};
+
+// The steady output for one channel at a 5-bit step, as the mixer gives it.
+float ymStep(int n) { return n == 0 ? 0.0f : static_cast<float>(std::pow(2.0, (n - 31) / 4.0)) / 3.0f; }
+
+// What channels B and C add at fixed level 0. On a YM2149 that is step 1,
+// about 45dB down: quiet, not silent.
+float ymQuiet() { return 2.0f * ymStep(1); }
+
+// The level in the middle of each of the first `steps` envelope steps of a
+// single decay (shape 0) of period `ep`.
+std::vector<float> envelopeSteps(int ep, int steps) {
+    AY8910 psg;
+    writeReg(psg, 7, 0x3F);
+    writeReg(psg, 8, 0x10);
+    writeReg(psg, 11, static_cast<uint8_t>(ep & 0xFF));
+    writeReg(psg, 12, static_cast<uint8_t>(ep >> 8));
+    writeReg(psg, 13, 0x00);
+    std::vector<float> levels;
+    psg.advance(ep / 2.0);
+    for (int k = 0; k < steps; k++) {
+        levels.push_back(psg.sampleNow());
+        psg.advance(ep);
+    }
+    return levels;
+}
+
+} // namespace
+
+TEST_CASE("A YM2149's envelope steps 32 times in a ramp", "[ay8910][ym2149][envelope]") {
+    // Datasheet: "The envelope generator counts the envelope clock fEA 32
+    // times for each envelope pattern cycle", a cycle of 256 EP clocks.
+    ModelScope ym(AY8910::Model::YM2149);
+    const std::vector<float> levels = envelopeSteps(1000, 32);
+    for (int k = 0; k < 32; k++) {
+        INFO("step " << k);
+        CHECK(levels[k] == Approx(ymStep(31 - k) + ymQuiet()).margin(1e-4));
+    }
+}
+
+TEST_CASE("An AY-3-8910's envelope holds each of its 16 levels for two steps", "[ay8910][envelope]") {
+    // The same ramp on an AY-3-8910: the 32 steps' top four bits.
+    const std::vector<float> levels = envelopeSteps(1000, 32);
+    for (int k = 0; k < 32; k += 2) {
+        INFO("step " << k);
+        CHECK(levels[k] == Approx(levels[k + 1]).margin(1e-6));
+        if (k > 0) CHECK(levels[k] < levels[k - 1]);
+    }
+    CHECK(levels[0] == Approx(1.0f / 3.0f).margin(1e-4));
+}
+
+TEST_CASE("A YM2149's fixed levels sit on every other step of its curve", "[ay8910][ym2149][volume]") {
+    // Datasheet Fig. 1: fixed level L is labelled at step 2L + 1, 15 at the
+    // top, each 3dB below the one above.
+    ModelScope ym(AY8910::Model::YM2149);
+    for (int level = 0; level < 16; level++) {
+        INFO("level " << level);
+        AY8910 psg;
+        writeReg(psg, 7, 0x3F);
+        writeReg(psg, 8, static_cast<uint8_t>(level));
+        psg.advance(100);
+        CHECK(psg.sampleNow() == Approx(ymStep(level * 2 + 1) + ymQuiet()).margin(1e-5));
+    }
+}
+
+TEST_CASE("Choosing the AY-3-8910 again restores its levels", "[ay8910][ym2149][volume]") {
+    { ModelScope ym(AY8910::Model::YM2149); }
+    CHECK(AY8910::model() == AY8910::Model::AY38910);
+    AY8910 psg;
+    writeReg(psg, 7, 0x3F);
+    writeReg(psg, 8, 14);
+    psg.advance(100);
+    CHECK(psg.sampleNow() == Approx(0.8482f / 3.0f).margin(1e-5));
+}
+
+TEST_CASE("A state saved with a 4-bit envelope loads at the same level", "[ay8910][state]") {
+    AY8910 psg;
+    writeReg(psg, 7, 0x3F);
+    writeReg(psg, 8, 0x10);
+    writeReg(psg, 11, 0x60);
+    writeReg(psg, 12, 0xEA);  // EP 60000: no step while the test runs
+    writeReg(psg, 13, 0x00);
+    std::vector<uint8_t> state(AY8910::STATE_SIZE);
+    psg.exportState(state.data());
+
+    // The older form: level 7 of 16, falling, no envelope-form byte.
+    state[31] = 7;
+    state[44] = 0;
+    state[45] = 0;
+    AY8910 loaded;
+    loaded.importState(state.data());
+    loaded.advance(100);
+
+    AY8910 fixed;
+    writeReg(fixed, 7, 0x3F);
+    writeReg(fixed, 8, 7);
+    fixed.advance(100);
+    CHECK(loaded.sampleNow() == Approx(fixed.sampleNow()).margin(1e-6));
 }

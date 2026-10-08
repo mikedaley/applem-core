@@ -32,15 +32,37 @@ static const char* getRegisterName(int reg) {
     return (reg >= 0 && reg < 16) ? names[reg] : "Unknown";
 }
 
-// Volume table based on AppleWin/MAME measurements
-// Values represent amplitude levels for 4-bit volume (0-15)
-// Converted from 16-bit values: 0x0000, 0x0385, 0x053D, 0x0770, etc.
-const float AY8910::volumeTable_[16] = {
-    0.0000f, 0.0137f, 0.0205f, 0.0291f,
-    0.0423f, 0.0618f, 0.0847f, 0.1369f,
-    0.1691f, 0.2647f, 0.3527f, 0.4499f,
-    0.5704f, 0.6873f, 0.8482f, 1.0000f
+// The AY-3-8910's 16 output levels, 0 silent and 15 the maximum, each
+// doubled onto the 5-bit scale: level L is steps 2L and 2L + 1, so a fixed
+// level (step 2L + 1) and the envelope's top four bits play the same value.
+const float AY8910::ayLevels_[32] = {
+    0.0000f, 0.0000f, 0.0137f, 0.0137f, 0.0205f, 0.0205f, 0.0291f, 0.0291f,
+    0.0423f, 0.0423f, 0.0618f, 0.0618f, 0.0847f, 0.0847f, 0.1369f, 0.1369f,
+    0.1691f, 0.1691f, 0.2647f, 0.2647f, 0.3527f, 0.3527f, 0.4499f, 0.4499f,
+    0.5704f, 0.5704f, 0.6873f, 0.6873f, 0.8482f, 0.8482f, 1.0000f, 1.0000f
 };
+
+// The YM2149's D/A converter, from Yamaha's datasheet (YM2149, "2. D-A
+// Convertor" and Fig. 1, "Output level of DA convertor"): logarithmic, the
+// maximum normalised to 1, each of the 32 steps 1.5dB below the next
+// (1, .841, .707, .595, .5 ... on the figure's axis), so step n is
+// 2^((n - 31) / 4); step 0 is the figure's floor, silence. Fixed levels are
+// labelled on every other step, 15 at the top: level L is step 2L + 1.
+const float AY8910::ymLevels_[32] = {
+    0.000000f, 0.005524f, 0.006570f, 0.007812f,
+    0.009291f, 0.011049f, 0.013139f, 0.015625f,
+    0.018581f, 0.022097f, 0.026278f, 0.031250f,
+    0.037163f, 0.044194f, 0.052556f, 0.062500f,
+    0.074325f, 0.088388f, 0.105112f, 0.125000f,
+    0.148651f, 0.176777f, 0.210224f, 0.250000f,
+    0.297302f, 0.353553f, 0.420448f, 0.500000f,
+    0.594604f, 0.707107f, 0.840896f, 1.000000f,
+};
+
+void AY8910::setModel(Model model) {
+    model_ = model;
+    levels_ = (model == Model::YM2149) ? ymLevels_ : ayLevels_;
+}
 
 namespace {
 
@@ -185,7 +207,7 @@ void AY8910::applyRegisterWrite(uint8_t reg, uint8_t value) {
             if (envAttack_) {
                 envVolume_ = 0;   // Start at 0 for attack (rising)
             } else {
-                envVolume_ = 15;  // Start at 15 for decay (falling)
+                envVolume_ = 31;  // Start at 31 for decay (falling)
             }
             break;
     }
@@ -252,23 +274,23 @@ void AY8910::updateEnvelopeGenerator() {
     uint16_t period = getEnvPeriod();
 
     envCounter_++;
-    // The datasheet's fE = fCLOCK / (256 * EP) is one ramp, and an
-    // AY-3-8910's ramp is 16 steps, so a step is 16 * EP master clocks: 2 * EP
-    // of these clock/8 ticks. (The 32-step ramp in the same time is the
-    // YM2149's.) FUSE, which AppleWin's PSG comes from, gets the same rate by
-    // counting EP at clock/16. Period 0 behaves as period 1.
-    uint32_t effectivePeriod = (period == 0) ? 1 : period;
-    uint32_t threshold = effectivePeriod * 2;
+    // The datasheets' fE = fCLOCK / (256 * EP) is one ramp. The YM2149's
+    // counts 32 steps in it ("the envelope generator counts the envelope
+    // clock fEA 32 times for each envelope pattern cycle"), a step every
+    // 8 * EP master clocks: EP of these clock/8 ticks. An AY-3-8910 plays the
+    // counter's top four bits, 16 steps of 2 * EP ticks in the same ramp.
+    // Period 0 behaves as period 1.
+    uint32_t threshold = (period == 0) ? 1 : period;
     if (envCounter_ >= threshold) {
         envCounter_ = 0;
 
         // Update envelope volume based on current direction
         if (envAttack_) {
             // Attack (rising)
-            if (envVolume_ < 15) {
+            if (envVolume_ < 31) {
                 envVolume_++;
             } else {
-                // Reached max (15) - handle end of cycle
+                // Reached max (31) - handle end of cycle
                 handleEnvelopeCycleEnd();
             }
         } else {
@@ -284,7 +306,7 @@ void AY8910::updateEnvelopeGenerator() {
 }
 
 void AY8910::handleEnvelopeCycleEnd() {
-    // Called when envelope reaches its limit (0 or 15)
+    // Called when envelope reaches its limit (0 or 31)
     // Envelope shape bits: CONT(3) ATT(2) ALT(1) HOLD(0)
 
     if (!envContinue_) {
@@ -300,8 +322,8 @@ void AY8910::handleEnvelopeCycleEnd() {
         if (envAlternate_) {
             // ALT=1, HOLD=1: Hold at opposite extreme
             // If we were attacking (going up), hold at 0
-            // If we were decaying (going down), hold at 15
-            envVolume_ = envAttack_ ? 0 : 15;
+            // If we were decaying (going down), hold at 31
+            envVolume_ = envAttack_ ? 0 : 31;
         }
         // else ALT=0, HOLD=1: Hold at current extreme (already there)
         envHolding_ = true;
@@ -312,7 +334,7 @@ void AY8910::handleEnvelopeCycleEnd() {
             envAttack_ = !envAttack_;
         } else {
             // ALT=0: Reset to start (sawtooth wave)
-            envVolume_ = envAttack_ ? 0 : 15;
+            envVolume_ = envAttack_ ? 0 : 31;
         }
     }
 }
@@ -321,16 +343,8 @@ float AY8910::getChannelOutput(int channel) const {
     uint8_t mixer = registers_[REG_MIXER];
     uint8_t ampReg = registers_[REG_AMP_A + channel];
 
-    uint8_t volume;
-    if (ampReg & 0x10) {
-        volume = envVolume_;
-    } else {
-        volume = ampReg & 0x0F;
-    }
-
-    if (volume == 0) return 0.0f;
-
-    float level = volumeTable_[volume];
+    float level = levels_[levelIndex(ampReg)];
+    if (level == 0.0f) return 0.0f;
 
     // MAME mixer: output = (tone_out | tone_disable) & (noise_out | noise_disable)
     // Register bit = 1 means disabled (bypassed/always high)
@@ -363,11 +377,8 @@ float AY8910::computeMixerOutput() const {
     for (int ch = 0; ch < NUM_CHANNELS; ch++) {
         if (channelMuted_[ch]) continue;
 
-        uint8_t ampReg = registers_[REG_AMP_A + ch];
-        uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
-        if (volume == 0) continue;
-
-        float level = volumeTable_[volume];
+        float level = levels_[levelIndex(registers_[REG_AMP_A + ch])];
+        if (level == 0.0f) continue;
 
         bool toneDisable = (mixer & (1 << ch)) != 0;
         bool noiseDisable = (mixer & (1 << (ch + 3))) != 0;
@@ -451,14 +462,11 @@ void AY8910::generateChannelSamples(float* buffer, int count, int sampleRate, in
 
         // Unipolar output for visualization (no DC removal - shows raw waveform)
         uint8_t mixer = registers_[REG_MIXER];
-        uint8_t ampReg = registers_[REG_AMP_A + channel];
-        uint8_t volume = (ampReg & 0x10) ? envVolume_ : (ampReg & 0x0F);
-        if (volume == 0) {
+        float level = levels_[levelIndex(registers_[REG_AMP_A + channel])];
+        if (level == 0.0f) {
             buffer[i] = 0.0f;
             continue;
         }
-
-        float level = volumeTable_[volume];
 
         bool toneDisable = (mixer & (1 << channel)) != 0;
         bool noiseDisable = (mixer & (1 << (channel + 3))) != 0;
@@ -522,12 +530,35 @@ size_t AY8910::exportState(uint8_t* buffer) const {
     buffer[offset++] = (envHolding_ ? 0x01 : 0) |
                        (envAttack_ ? 0x02 : 0);
 
+    // The envelope's form: 1, a 5-bit counter stepping every EP ticks. A
+    // state without it (0, from the padding) has a 4-bit level stepping every
+    // 2 EP ticks.
+    buffer[offset++] = ENVELOPE_FORM_5BIT;
+
     // Pad to STATE_SIZE for consistent serialization
     while (offset < STATE_SIZE) {
         buffer[offset++] = 0;
     }
 
     return offset;  // Exactly STATE_SIZE bytes
+}
+
+// An older state's envelope: a 4-bit level and a count towards a step of
+// 2 EP ticks. The same moment on the 5-bit counter is the first of the
+// level's two steps in the direction it is going, or the second once EP of
+// those ticks have passed.
+void AY8910::convertFourBitEnvelope() {
+    const uint8_t level = envVolume_ & 0x0F;
+    if (envHolding_) {
+        envVolume_ = level == 0 ? 0 : static_cast<uint8_t>(level * 2 + 1);
+        return;
+    }
+    envVolume_ = static_cast<uint8_t>(level * 2 + (envAttack_ ? 0 : 1));
+    const uint32_t period = getEnvPeriod() == 0 ? 1 : getEnvPeriod();
+    if (envCounter_ >= period) {
+        envCounter_ -= period;
+        envVolume_ = envAttack_ ? envVolume_ + 1 : envVolume_ - 1;
+    }
 }
 
 void AY8910::importState(const uint8_t* buffer) {
@@ -588,6 +619,7 @@ void AY8910::importState(const uint8_t* buffer) {
     uint8_t envFlags = buffer[offset++];
     envHolding_ = (envFlags & 0x01) != 0;
     envAttack_ = (envFlags & 0x02) != 0;
+    if (buffer[offset++] != ENVELOPE_FORM_5BIT) convertFourBitEnvelope();
 
     // Restore envelope shape flags from register 13 (these are constant per shape)
     uint8_t envShape = registers_[REG_ENV_SHAPE] & 0x0F;
