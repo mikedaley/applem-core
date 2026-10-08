@@ -396,8 +396,14 @@ void IIgsSound::generateSamples(float *buffer, int frames, int rate) {
   // other way to hold it near a few milliseconds' worth. A step that was
   // simply "whatever spreads the backlog over this buffer" warbled by the
   // rounding of each buffer's share.
+  //
+  // The backlog is measured after the machine has made this buffer's frames,
+  // so the target is those frames plus the margin. Aiming at the margin alone
+  // read every buffer as far ahead, leaned fast for good, and ran the ring dry
+  // a few samples before each buffer's end: those samples were held flat, a
+  // step sixty times a second that crackled on loud, bright sound.
   const double nominal = sampleRate() / rate;
-  const double target = sampleRate() * 0.004;
+  const double target = frames * nominal + sampleRate() * 0.004;
   const double available = static_cast<double>(produced_) - consumed_;
   double error = (available - target) / target;
   if (error > 1.0) error = 1.0;

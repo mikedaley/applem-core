@@ -938,6 +938,40 @@ TEST_CASE("The chip divides its clock between the oscillators in use",
   REQUIRE(sound.oscillator(0).accumulator == 0); // halted: nothing to hear, but the clock ran
 }
 
+TEST_CASE("The host's buffers never run the chip's output dry", "[iigs][sound]") {
+  // A rising ramp, so every sample the host takes differs from the one before
+  // unless the output was held for want of frames. The host takes 800 at a
+  // time, a video frame's worth, as the machine is run. Measuring the backlog
+  // against the margin alone, not this buffer plus the margin, held the last
+  // four samples of every buffer: a step sixty times a second.
+  for (int enabled : {4, 16, 32}) {
+    INFO(enabled << " oscillators");
+    IIgsSound sound;
+    sound.writeControl(0x0F);
+    for (int i = 0; i < 256; i++) {
+      sound.setSoundRam(static_cast<uint16_t>(0x0100 + i), static_cast<uint8_t>(1 + i * 254 / 255));
+    }
+    setDocRegister(sound, IIgsSound::DOC_OSCILLATOR_ENABLE, static_cast<uint8_t>((enabled - 1) << 1));
+    setDocRegister(sound, IIgsSound::DOC_WAVE_POINTER, 0x01);
+    setDocRegister(sound, IIgsSound::DOC_VOLUME, 0xFF);
+    setDocRegister(sound, IIgsSound::DOC_FREQUENCY_HIGH, 0x04); // two bytes a scan
+    setDocRegister(sound, IIgsSound::DOC_CONTROL, 0x00);        // running, free-run
+
+    std::vector<float> samples(800 * 2, 0.0f);
+    for (int i = 0; i < 100; i++) render(sound, samples, 800); // settle
+    int held = 0;
+    float previous = samples[(800 - 1) * 2];
+    for (int i = 0; i < 200; i++) {
+      render(sound, samples, 800);
+      for (int at = 0; at < 800; at++) {
+        if (samples[at * 2] == previous) held++;
+        previous = samples[at * 2];
+      }
+    }
+    CHECK(held == 0);
+  }
+}
+
 TEST_CASE("A swapped pair hand over to each other, and say so", "[iigs][sound][interrupt]") {
   // The sound tools play a long sample through two oscillators in swap mode:
   // when one reaches the end of its table it halts, starts its partner from

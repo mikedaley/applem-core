@@ -532,7 +532,12 @@ oscillator below, one scan per `8 × (oscillators + 2)` ticks of 7.16MHz.
 `IIgsMachine::step` feeds `advance()` the slow clock and the chip produces a
 frame per scan into a ring that `generateSamples()` resamples to the host at
 the chip's rate over the host's, nudged by up to half a percent to hold the
-backlog near four milliseconds. **The output is the average of the scan's
+backlog near four milliseconds beyond the buffer being made. The machine has
+already produced that buffer's frames when the backlog is measured, so the
+target counts them: aiming at four milliseconds alone leaned fast on every
+buffer and ran the ring dry before its end, holding the last few samples
+flat sixty times a second, which crackled (`test_iigs_devices.cpp`, "never
+run the chip's output dry"). **The output is the average of the scan's
 slots, whatever channel each oscillator is assigned to.** The chip has one
 analogue output and the oscillators take turns on it: each gets one cycle of
 the scan, its byte through "two cascaded eight bit Digital to Analog
