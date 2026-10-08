@@ -1077,6 +1077,23 @@ TEST_CASE("A program put into memory starts through the reset, on every machine"
   }
 }
 
+TEST_CASE("A program over the trampoline is refused, and memory is left as it was",
+          "[host][develop]") {
+  MachineHost host;
+  REQUIRE(host.setMachine(MachineId::AppleIIe));
+  host.build();
+  host.reset();
+  runSeconds(host, 1.0);
+  const std::vector<uint8_t> code(16, 0xEA);
+  const uint8_t before = host.peek(0x02F0);
+  // $02F0-$02FF covers the trampoline at $02F8-$02FD.
+  REQUIRE_FALSE(host.startProgram(code.data(), code.size(), 0x02F0, 0x02F0));
+  REQUIRE(host.peek(0x02F0) == before);
+  // Ending just before it, or starting just after it, is fine.
+  REQUIRE(host.startProgram(code.data(), 8, 0x02F0, 0x02F0));
+  REQUIRE(host.startProgram(code.data(), code.size(), 0x02FE, 0x02FE));
+}
+
 TEST_CASE("A breakpoint on a program's first instruction stops it as it starts",
           "[host][develop]") {
   // What a developer does to break at the start: a breakpoint at the entry,

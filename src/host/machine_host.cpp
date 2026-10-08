@@ -226,6 +226,9 @@ void MachineHost::warmReset() {
 
 bool MachineHost::startProgram(const uint8_t *data, size_t size, uint16_t load, uint16_t entry) {
   if (!data || size == 0 || load + size > 0xC000 || (!emulator_ && !iigs_)) return false;
+  // Refused before anything is written, so a program that cannot start
+  // leaves the machine as it was.
+  if (load < PROGRAM_TRAMPOLINE + PROGRAM_TRAMPOLINE_SIZE && load + size > PROGRAM_TRAMPOLINE) return false;
   // Main RAM itself, whatever the switches say: a program left running may
   // have the auxiliary bank or the language card switched in.
   auto put = [&](uint16_t address, uint8_t value) {
@@ -240,12 +243,10 @@ bool MachineHost::startProgram(const uint8_t *data, size_t size, uint16_t load, 
   // cold start, not its warm one: on a machine that has never started BASIC
   // (it looked for a disk instead) a warm start finds nothing set up and ends
   // in the monitor.
-  constexpr uint16_t TRAMPOLINE = 0x02F8;
-  const uint8_t trampoline[] = {0x20, static_cast<uint8_t>(entry & 0xFF), static_cast<uint8_t>(entry >> 8),
-                                0x4C, 0x00, 0xE0};
-  if (load <= TRAMPOLINE + sizeof trampoline && load + size > TRAMPOLINE) return false;
-  for (size_t i = 0; i < sizeof trampoline; i++) put(static_cast<uint16_t>(TRAMPOLINE + i), trampoline[i]);
-  entry = TRAMPOLINE;
+  const uint8_t trampoline[PROGRAM_TRAMPOLINE_SIZE] = {
+      0x20, static_cast<uint8_t>(entry & 0xFF), static_cast<uint8_t>(entry >> 8), 0x4C, 0x00, 0xE0};
+  for (size_t i = 0; i < sizeof trampoline; i++) put(static_cast<uint16_t>(PROGRAM_TRAMPOLINE + i), trampoline[i]);
+  entry = PROGRAM_TRAMPOLINE;
   if (iigs_) {
     // A IIgs's firmware takes Control-Reset during its startup scan as a
     // reason to scan again, whatever the vector says, so the reset is not

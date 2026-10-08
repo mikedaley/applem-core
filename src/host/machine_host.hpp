@@ -223,9 +223,13 @@ public:
   // is run: the bytes at their load address, the soft entry vector at $3F2
   // pointed at `entry` and marked valid at $3F4, then Control-Reset. The
   // firmware sets the screen and the keyboard up as it does for any program
-  // and jumps there, and no DOS is involved. False if it does not fit in
-  // $0000-$BFFF.
+  // and jumps there, and no DOS is involved. False, with memory untouched, if
+  // it does not fit in $0000-$BFFF or would cover the few bytes at
+  // PROGRAM_TRAMPOLINE that call it.
   bool startProgram(const uint8_t *data, size_t size, uint16_t load, uint16_t entry);
+  // Where startProgram puts its JSR entry / JMP $E000, and how long it is.
+  static constexpr uint16_t PROGRAM_TRAMPOLINE = 0x02F8;
+  static constexpr size_t PROGRAM_TRAMPOLINE_SIZE = 6;
   void runCycles(int cycles);
   int generateStereoAudioSamples(float *buffer, int sampleCount);
   // How many whole frames' worth of samples have been generated since the
