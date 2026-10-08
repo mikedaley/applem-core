@@ -6,6 +6,7 @@
 #include "catch.hpp"
 
 #include "audio.hpp"
+#include "cards/mockingboard/mockingboard_card.hpp"
 
 #include <cmath>
 #include <vector>
@@ -240,4 +241,53 @@ TEST_CASE("Accelerated buffers cover the whole accelerated window",
     Audio unaware;
     const int slow = renderSquareWave(unaware);
     CHECK(slow < fast / 4);
+}
+
+// ============================================================================
+// Speaker and Mockingboard together
+// ============================================================================
+
+TEST_CASE("A loud speaker and a loud Mockingboard together are not clipped", "[audio][mix]") {
+    // Each is mixed at half level, which keeps either alone inside full
+    // scale; but a Mockingboard's output reaches about 1.08 where a held level
+    // drops away, so with the speaker swinging too the sum passes full scale.
+    // It used to be clamped flat there. Now it is turned down, never past the
+    // limiter's ceiling, and still reaches it.
+    Audio audio;
+    MockingboardCard card;
+    audio.setMockingboard(&card);
+    auto reg = [](AY8910& ay, uint8_t r, uint8_t v) { ay.setRegisterAddress(r); ay.writeRegister(v); };
+    auto everyChannel = [&](uint8_t mixer, uint8_t amp) {
+        for (AY8910* ay : {&card.getPSG1(), &card.getPSG2()}) {
+            for (uint8_t ch = 0; ch < 3; ch++) {
+                reg(*ay, ch * 2, 0x00);
+                reg(*ay, ch * 2 + 1, 0x04); // a low square
+                reg(*ay, 8 + ch, amp);
+            }
+            reg(*ay, 7, mixer);
+        }
+    };
+
+    std::vector<float> buffer(800 * 2);
+    uint64_t cycle = 0;
+    float loudest = 0;
+    auto play = [&](int buffers) {
+        for (int b = 0; b < buffers; b++) {
+            // About 17,000 cycles a buffer, with the speaker toggled at 200Hz.
+            for (int t = 0; t < 7; t++) audio.toggleSpeaker(cycle + t * 2557);
+            for (int step = 0; step < 17; step++) card.update(1000);
+            cycle += 17000;
+            audio.generateStereoSamples(buffer.data(), 800, cycle);
+            for (float s : buffer) loudest = std::max(loudest, std::fabs(s));
+        }
+    };
+    everyChannel(0x3F, 0x0F); // tone and noise off: a steady full level
+    play(60);
+    everyChannel(0x38, 0x0F); // and then a full-volume square on every channel
+    play(30);
+    everyChannel(0x3F, 0x00); // and then silence
+    play(10);
+
+    REQUIRE(loudest <= PeakLimiter::CEILING + 1e-5f);
+    REQUIRE(loudest > 0.9f);
 }

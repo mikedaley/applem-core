@@ -53,7 +53,7 @@ src/core/      C++ emulation, namespace a2e::, no host dependencies
   cpu/65816/     the IIgs CPU, separate class (cycle counts only)
   mmu/           128KB map, soft switches, slots, video scanner / floating bus
   video/         signal stage (dot stream) + decode stage (ntsc.cpp)
-  audio/         speaker
+  audio/         speaker, and the peak limiter the IIgs mix goes through
   disk-image/    DSK/DO/PO/NIB/WOZ, gcr_encoding, gcr35, disk_converter, disk_inspection
   disassembler/  6502 and 65816 disassemblers
   assembler/     Merlin-compatible 65C02 assembler

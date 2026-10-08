@@ -31,7 +31,11 @@ each with its own `serialize`/`deserialize` — ADB (queues included), the clock
 chip (battery RAM, seconds, a transaction in flight), the SCC's two channels,
 the Ensoniq (RAM, oscillators, registers; not its output ring, which is the
 host's backlog). Then the machine's own counters, the IWM, the floppies and
-the SmartPort with its images. `test_iigs_state.cpp` round-trips each part.
+the SmartPort with its images, the 3.5" disks (version 3), and last the
+Ensoniq's interrupt queue in the order it filled with the oscillators that
+finished with their interrupts off (version 4,
+`IIgsSound::serializeInterrupts`); a version 3 state queues what was waiting
+in oscillator order. `test_iigs_state.cpp` round-trips each part.
 
 **A card's state is written straight into the buffer, and the buffer is
 reserved for it.** A SmartPort card's state is its hard drive images, so a

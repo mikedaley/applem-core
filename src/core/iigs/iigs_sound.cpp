@@ -18,6 +18,8 @@ void IIgsSound::reset() {
   oscillatorsEnabled_ = 1;
   enableRegister_ = 0;
   interruptRegister_ = 0xFF;
+  queue_.fill(0);
+  queued_ = 0;
   ram_.fill(0);
   address_ = 0;
   control_ = 0;
@@ -116,14 +118,19 @@ uint8_t IIgsSound::readDocRegister(uint8_t reg) {
   // With nothing waiting it says so — the ROM's interrupt manager asks this
   // register on every interrupt it cannot otherwise place, and a zero here
   // is "Unclaimed Sound Interrupt" on a machine whose chip did nothing.
+  //
+  // The one reported is the oldest waiting, not the lowest-numbered: the
+  // queue is first-in, first-out.
   uint8_t value = interruptRegister_;
-  for (int i = 0; i < oscillatorsEnabled_; i++) {
-    if (voices_[i].interruptPending) {
-      value = static_cast<uint8_t>(i << 1);
-      interruptRegister_ = static_cast<uint8_t>(value | 0x80);
-      voices_[i].interruptPending = false;
-      break;
-    }
+  for (int at = 0; at < queued_; at++) {
+    const int i = queue_[at];
+    if (i >= oscillatorsEnabled_) continue;
+    value = static_cast<uint8_t>(i << 1);
+    interruptRegister_ = static_cast<uint8_t>(value | 0x80);
+    voices_[i].interruptPending = false;
+    std::copy(queue_.begin() + at + 1, queue_.begin() + queued_, queue_.begin() + at);
+    queued_--;
+    break;
   }
   return static_cast<uint8_t>(value | 0x41);
 }
@@ -146,17 +153,35 @@ void IIgsSound::writeDocRegister(uint8_t reg, uint8_t value) {
     case DOC_WAVE_POINTER:
       v.wavePointer = (v.wavePointer & 0x10000) | (static_cast<uint32_t>(value) << 8);
       break;
-    case DOC_CONTROL:
-      // Key on: clearing the halt bit starts the sound from the top.
-      if ((v.control & OSC_HALT) && !(value & OSC_HALT)) v.accumulator = 0;
+    case DOC_CONTROL: {
+      const int index = reg & 0x1F;
+      const bool keyOn = (v.control & OSC_HALT) && !(value & OSC_HALT);
+      const bool interruptOn = !(v.control & OSC_INTERRUPT_ENABLE) && (value & OSC_INTERRUPT_ENABLE);
+      // Key on: clearing the halt bit starts the sound from the top. What the
+      // last run finished with goes with it: a write that starts a new run is
+      // not asking to hear about the old one, and a player keys a voice on
+      // with its interrupt bit set in the same write.
+      if (keyOn) {
+        v.accumulator = 0;
+        v.completed = false;
+      }
       // Halting a running oscillator whose new mode is one-shot or swap goes
       // through the same motions as reaching the end — in swap mode that is
       // what starts the partner.
       if (!(v.control & OSC_HALT) && (value & OSC_HALT) && (value & 0x02)) {
-        haltOscillator(reg & 0x1F, true, value);
+        haltOscillator(index, true, value, true);
       }
       v.control = value;
+      // "If the IE bit is a zero, then when the oscillator completes its cycle
+      // the oscillator status will be passed to the interrupt table, but will
+      // not be passed to the OIR. However if the IE bit is changed to a one
+      // then the interrupt will be sent to the OIR." (Ensoniq DOC ERS)
+      if (interruptOn && v.completed) {
+        v.completed = false;
+        queueInterrupt(index);
+      }
       break;
+    }
     case DOC_WAVE_SIZE:
       v.wavePointer = (value & SIZE_BANK) ? (v.wavePointer | 0x10000)
                                           : (v.wavePointer & 0xFFFF);
@@ -189,24 +214,37 @@ double IIgsSound::sampleRate() const {
 }
 
 bool IIgsSound::interruptPending() const {
-  for (int i = 0; i < oscillatorsEnabled_; i++) {
-    if (voices_[i].interruptPending) return true;
+  for (int at = 0; at < queued_; at++) {
+    if (queue_[at] < oscillatorsEnabled_) return true;
   }
   return false;
 }
 
-void IIgsSound::haltOscillator(int index, bool fromEnd, uint8_t newControl) {
+void IIgsSound::queueInterrupt(int index) {
+  Voice &v = voices_[index];
+  if (v.interruptPending) return; // already waiting
+  v.interruptPending = true;
+  queue_[queued_++] = static_cast<uint8_t>(index);
+}
+
+void IIgsSound::finished(int index, bool interruptEnabled) {
+  if (interruptEnabled) queueInterrupt(index);
+  else voices_[index].completed = true;
+}
+
+void IIgsSound::haltOscillator(int index, bool fromEnd, uint8_t newControl, bool byProgram) {
   Voice &v = voices_[index];
   Voice &partner = voices_[index ^ 1];
   int mode = (v.control & OSC_MODE_MASK) >> 1;
   const int partnerMode = (partner.control & OSC_MODE_MASK) >> 1;
 
   if (mode == (OSC_MODE_SYNC >> 1)) {
-    // An even oscillator reaching its end restarts the odd one below it, if
-    // that one is running; for its own part it loops like a free-running one.
-    if ((index & 1) == 0 && index > 0 && !(voices_[index - 1].control & OSC_HALT)) {
-      voices_[index - 1].accumulator = 0;
-    }
+    // Sync pairs a lower even oscillator with the odd one above it: "When the
+    // even-numbered oscillator begins its wavetable, the odd-mate oscillator
+    // will synchronize and begin its wavetable simultaneously" (Apple IIGS
+    // Hardware Reference; the Ensoniq DOC ERS says the same). For its own
+    // part it loops like a free-running one.
+    if ((index & 1) == 0 && index + 1 < DOC_OSCILLATOR_COUNT) voices_[index + 1].accumulator = 0;
     mode = OSC_MODE_FREE_RUN >> 1;
   }
 
@@ -231,22 +269,28 @@ void IIgsSound::haltOscillator(int index, bool fromEnd, uint8_t newControl) {
     v.accumulator -= (tableLength(v) - 1) << resolutionShift(v);
   }
 
-  if (v.control & OSC_INTERRUPT_ENABLE) {
-    // A halt the processor wrote raises an interrupt only if the value it
-    // wrote still asks for one: a player switching a voice off with the
-    // interrupt bit clear does not want to hear about it.
-    if (fromEnd && !(newControl & OSC_INTERRUPT_ENABLE)) return;
-    v.interruptPending = true;
-  }
+  // A halt the processor wrote raises an interrupt only if the value it
+  // wrote still asks for one: a player switching a voice off with the
+  // interrupt bit clear does not want to hear about it, then or later. An
+  // oscillator that finished by itself with its interrupt off keeps that it
+  // did, for when the interrupt is turned on.
+  const bool enabled = (v.control & OSC_INTERRUPT_ENABLE) && (newControl & OSC_INTERRUPT_ENABLE);
+  if (enabled || !byProgram) finished(index, enabled);
 }
 
 void IIgsSound::scan() {
-  // Everything the oscillators produce is summed, because the chip has one
-  // analogue output pin: it visits its channels in turn and puts each one's
-  // sample on that same pin, with the channel strobes saying which channel is
-  // on it at the time. A stock machine low-pass filters the pin and hears the
-  // sum of all of them; only a stereo card in a slot uses the strobes to pull
-  // the channels apart, and there is no such card here.
+  // The chip has one analogue output and the oscillators take turns on it:
+  // each gets one cycle of the scan, its byte through "two cascaded eight bit
+  // Digital to Analog Converters", the upper one the volume and the lower
+  // the waveform, and the last two cycles of the scan refresh the RAM. "Each
+  // oscillator has only output a step of its total waveform [and] the results
+  // are integrated over time" (Apple, Ensoniq DOC ERS, 1986; "the 32
+  // oscillators are time-domain multiplexed", Apple IIGS Hardware Reference,
+  // chapter 6). A stock machine low-pass filters that pin, so what it hears is
+  // the average of the scan's slots, not their sum: each oscillator's share is
+  // one slot in (enabled + 2), and the output can never be louder than one
+  // slot at full scale. Only a stereo card in a slot uses the channel strobes
+  // to pull the channels apart, and there is no such card here.
   //
   // Splitting by the channel field instead — odd channels one side, even the
   // other — is what a stereo card would do, and it put a game's bass in one
@@ -286,7 +330,8 @@ void IIgsSound::scan() {
       }
     } else {
       // The chip's own quirk: the last enabled oscillator is heard three
-      // times over.
+      // times over, its own slot and the two refresh cycles after it, so
+      // the weights fill the scan's (enabled + 2) slots.
       const float weight = (index == oscillatorsEnabled_ - 1) ? 3.0f : 1.0f;
       // Which channel it is assigned to makes no difference without a card to
       // separate them: it reaches the same pin either way.
@@ -309,16 +354,21 @@ void IIgsSound::scan() {
   // instantly is worse still: it chops the waveform.
   //
   // So the chip plays at its own level and the host's volume control is the
-  // amplifier. GSSquared does the same, for the same reason, and notes two
-  // more: a stereo card taps these channels ahead of the volume control, and
+  // amplifier. There are two more reasons: a stereo card taps these
+  // channels ahead of the volume control, and
   // at least one game (Alien Mind) sets the nibble to zero while playing
   // through one. The speaker keeps the nibble — see IIgsMachine — because the
   // ROM's bell fades by walking it down, and that is audible and right.
   //
-  // Eight bits of sample by eight of volume, and the chip's own mixer divides
-  // by eight: one full-volume oscillator is an eighth of full scale. That
-  // eighth is the same one GSSquared uses.
-  constexpr float SCALE = 1.0f / (128.0f * 255.0f * 8.0f);
+  // Eight bits of sample by eight of volume, averaged over the scan's slots:
+  // one slot at full scale for the whole scan is the DAC's full scale. The
+  // amplifier after the chip is not documented (the Hardware Reference gives
+  // only the connector's ±5V); ENSONIQ_LEVEL is its gain, set so that with
+  // all 32 oscillators enabled a voice is as loud as it was when this summed them at an eighth of full scale each.
+  // Fewer enabled oscillators share fewer slots, and each is louder, as on
+  // the chip. A loud mix can pass full scale, and IIgsMachine's PeakLimiter
+  // holds it under.
+  const float SCALE = ENSONIQ_LEVEL / (128.0f * 255.0f * static_cast<float>(oscillatorsEnabled_ + 2));
   const size_t slot = static_cast<size_t>(produced_ % RING_FRAMES) * 2;
   // The one signal goes to both speakers, which is what a mono machine's
   // output does when the host plays it in stereo.
@@ -452,10 +502,42 @@ void IIgsSound::deserialize(StateReader &r) {
   control_ = r.u8();
   latch_ = r.u8();
   ticks_ = r.f64();
+  // The queue in oscillator order, which is all a state without its order
+  // can say; serializeInterrupts' part, if the state has it, replaces this.
+  queued_ = 0;
+  for (int i = 0; i < DOC_OSCILLATOR_COUNT; i++) {
+    voices_[i].completed = false;
+    if (voices_[i].interruptPending) queue_[queued_++] = static_cast<uint8_t>(i);
+  }
   ring_.assign(RING_FRAMES * 2, 0.0f);
   produced_ = 0;
   consumed_ = 0.0;
   lastLeft_ = lastRight_ = 0.0f;
+}
+
+void IIgsSound::serializeInterrupts(StateWriter &w) const {
+  w.u8(static_cast<uint8_t>(queued_));
+  for (int at = 0; at < queued_; at++) w.u8(queue_[at]);
+  uint32_t completed = 0;
+  for (int i = 0; i < DOC_OSCILLATOR_COUNT; i++) {
+    if (voices_[i].completed) completed |= 1u << i;
+  }
+  w.u32(completed);
+}
+
+void IIgsSound::deserializeInterrupts(StateReader &r) {
+  const int count = std::min<int>(r.u8(), DOC_OSCILLATOR_COUNT);
+  queued_ = 0;
+  for (Voice &v : voices_) v.interruptPending = false;
+  for (int at = 0; at < count; at++) {
+    const int i = r.u8() & 0x1F;
+    if (!voices_[i].interruptPending) {
+      voices_[i].interruptPending = true;
+      queue_[queued_++] = static_cast<uint8_t>(i);
+    }
+  }
+  const uint32_t completed = r.u32();
+  for (int i = 0; i < DOC_OSCILLATOR_COUNT; i++) voices_[i].completed = (completed >> i) & 1;
 }
 
 } // namespace a2e::iigs

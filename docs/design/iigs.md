@@ -514,6 +514,16 @@ buffer's end, made the fade a staircase and brought the speaker's decaying
 tail back at full level when the ROM put the volume back — a note after the
 bell. `test_iigs_boot.cpp` rings it and checks the envelope.
 
+**The mix is held under full scale, not clipped.** The Ensoniq can reach
+`ENSONIQ_LEVEL` (4.25) times full scale with every slot of its scan at full
+scale, and the speaker and a Mockingboard add to that. The device clipped
+whatever went past, a buzz on every loud peak. `PeakLimiter`
+(`audio/peak_limiter.hpp`) runs over the whole mix at the end of
+`IIgsMachine::generateStereoAudioSamples`: it does nothing below its ceiling
+(0.98), and when a peak would go past, it drops the gain of both channels at
+once to put that sample on the ceiling, then lets it back up over about a
+quarter of a second. `test_peak_limiter.cpp` pins it.
+
 **The Ensoniq runs on the machine's clock and it interrupts.** `IIgsSound` is
 the chip as GSSquared and MAME model it — resolution-shifted table addressing,
 a zero byte halting every mode, the table's end wrapping free-run and halting
@@ -522,19 +532,46 @@ oscillator below, one scan per `8 × (oscillators + 2)` ticks of 7.16MHz.
 `IIgsMachine::step` feeds `advance()` the slow clock and the chip produces a
 frame per scan into a ring that `generateSamples()` resamples to the host at
 the chip's rate over the host's, nudged by up to half a percent to hold the
-backlog near four milliseconds. **Every oscillator is summed, whatever channel it
-is assigned to**, because the chip has one analogue output pin: it visits its
-channels in turn and puts each one's sample on that same pin, with the channel
-strobes saying which channel is on it. A stock machine filters the pin and
-hears the sum; only a stereo card in a slot uses the strobes to pull the
+backlog near four milliseconds. **The output is the average of the scan's
+slots, whatever channel each oscillator is assigned to.** The chip has one
+analogue output and the oscillators take turns on it: each gets one cycle of
+the scan, its byte through "two cascaded eight bit Digital to Analog
+Converters", volume in the upper and waveform in the lower, the last two
+cycles refresh the RAM, and "the results are integrated over time" (Apple,
+*Ensoniq DOC ERS*, Rev. 1.0, June 1986; "the 32 oscillators are time-domain
+multiplexed", *Apple IIGS Hardware Reference*, chapter 6, whose stereo example
+demultiplexes that one output on the channel strobe "to low-pass filter"). A
+stock machine filters the pin, so it hears each oscillator as one slot in
+`enabled + 2`: the chip can never be louder than one slot at full scale, and
+a voice is louder the fewer oscillators share the scan. It used to sum the
+oscillators at a fixed eighth of full scale each, which had sixteen of them
+at twice full scale and no document behind the eighth. The amplifier after
+the chip is not documented — the Hardware Reference gives only the
+connector's ±5V — so `IIgsSound::ENSONIQ_LEVEL` is its gain, 34/8, which
+keeps a voice with all 32 oscillators enabled as loud as the old eighth.
+`test_iigs_devices.cpp` pins both: every slot at full scale is the same level
+with 4, 16 or 32 enabled, and one voice is 34/4 times louder with 2 enabled
+than with 32. Only a stereo card in a slot uses the strobes to pull the
 channels apart, and there is no such card here. Splitting by the channel field
 instead put a game's bass in one speaker and its melody in the other — Spy
 Hunter played one or the other rather than both. **The uppermost enabled
-oscillator is heard three times over**, which is real silicon and is MAME's
-note. An
+oscillator is heard three times over**, its own slot and the two refresh
+cycles after it, which fills the scan's `enabled + 2` slots. Neither Apple
+document says what the pin carries during refresh, so this is undocumented. An
 oscillator with its interrupt bit set raises one when it halts; `$E0` names it
 active low and clears it on the read; `IIgsMemory::interruptPending()` includes
-the chip. The sound tools play every sample through swapped pairs refilled
+the chip. Interrupts waiting are reported oldest first — "pushed onto a
+first-in, first-out buffer, and handled in that order" (*Apple IIGS Hardware
+Reference*, the Oscillator Control register) — where the lowest-numbered used
+to go first. One that finishes with its bit off is kept, and turning the bit
+on delivers it: "if the IE bit is changed to a one then the interrupt will be
+sent to the OIR" (*Ensoniq DOC ERS*). A write that keys the oscillator on
+again drops what the last run kept, since a player keys a voice on with its
+interrupt bit set in the same write; neither document says, so that is a
+choice. Sync mode pairs a lower even oscillator with the odd one above it,
+which restarts with it ("the odd-mate oscillator will synchronize and begin
+its wavetable simultaneously"); it used to restart the odd one below.
+`test_iigs_devices.cpp` pins all three. The sound tools play every sample through swapped pairs refilled
 from those interrupts, so a chip that only ran when the host asked for a
 buffer, and never interrupted, played the first buffer of anything and stopped.
 

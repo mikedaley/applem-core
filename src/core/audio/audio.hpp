@@ -8,6 +8,7 @@
 #pragma once
 
 #include "../machine/machine_profile.hpp"
+#include "peak_limiter.hpp"
 #include "../types.hpp"
 #include <array>
 #include <cstdint>
@@ -95,6 +96,12 @@ private:
   // DC offset removal - fast enough to track speaker state changes
   float dcOffset_ = 0.0f;
   static constexpr float DC_ALPHA = 0.995f;
+
+  // The speaker and a Mockingboard together can pass full scale: a card's
+  // output alone reaches about 1.08 when a held level drops away, half that
+  // in the mix, and the speaker adds up to half again. Held under it here
+  // rather than clipped.
+  PeakLimiter limiter_;
 
   // Mockingboard
   MockingboardCard* mockingboard_ = nullptr;

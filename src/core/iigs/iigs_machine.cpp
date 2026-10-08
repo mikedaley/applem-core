@@ -249,6 +249,7 @@ void IIgsMachine::reset() {
   volumeChanges_.clear();
   speakerGain_ = 0.0f;
   speakerNibble_ = 0;
+  limiter_.reset();
   frameReady_ = false;
   framesCompleted_ = 0;
   screen_->restartFrame();
@@ -1114,6 +1115,10 @@ int IIgsMachine::generateStereoAudioSamples(float *buffer, int sampleCount) {
         buffer[at] += cardMix_[at] * 0.5f;
       }
     }
+
+    // All of it together can be past full scale, and the device would clip
+    // what is: held under it here, and left alone when it is not.
+    limiter_.process(buffer, sampleCount);
   }
   return sampleCount;
 }

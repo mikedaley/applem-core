@@ -163,6 +163,13 @@ public:
    */
   void serialize(StateWriter &w) const;
   void deserialize(StateReader &r);
+  /**
+   * The interrupt queue's order and the finishes kept with interrupts off,
+   * which a state carries at its end from version 4. deserialize() rebuilds
+   * the queue in oscillator order from the flags for an older state.
+   */
+  void serializeInterrupts(StateWriter &w) const;
+  void deserializeInterrupts(StateReader &r);
 
   // A DOC register's address space: 32 of each kind, one after another.
   static constexpr uint8_t DOC_FREQUENCY_LOW = 0x00;
@@ -198,6 +205,10 @@ public:
 
   /** The 7.16MHz clock the chip divides, in ticks per second. */
   static constexpr double DOC_CLOCK_HZ = 7159090.0;
+  // The gain after the chip, as a multiple of the DAC's full scale: with all
+  // 32 oscillators enabled, a full-volume voice is an eighth of full scale.
+  // See scan().
+  static constexpr float ENSONIQ_LEVEL = 34.0f / 8.0f;
 
 private:
   struct Voice {
@@ -209,7 +220,8 @@ private:
     uint8_t resolution = 0;   // 0-7
     uint32_t accumulator = 0;
     uint8_t data = 0x80;
-    bool interruptPending = false;
+    bool interruptPending = false; // in the queue behind $E0
+    bool completed = false;        // finished with its interrupt off, and kept
   };
 
   uint8_t readDocRegister(uint8_t reg);
@@ -224,7 +236,15 @@ private:
    * byte (!fromEnd): loop, halt, hand over to a partner, and interrupt, as
    * its mode says.
    */
-  void haltOscillator(int index, bool fromEnd, uint8_t newControl);
+  void haltOscillator(int index, bool fromEnd, uint8_t newControl, bool byProgram = false);
+
+  /**
+   * An oscillator has finished. With its interrupt enabled it joins the back
+   * of the queue $E0 reads from; without, the chip keeps that it finished,
+   * and turning the interrupt on later delivers it (Apple, Ensoniq DOC ERS).
+   */
+  void finished(int index, bool interruptEnabled);
+  void queueInterrupt(int index);
 
   uint32_t tableLength(const Voice &v) const { return 256u << v.sizeCode; }
   int resolutionShift(const Voice &v) const {
@@ -235,6 +255,11 @@ private:
   int oscillatorsEnabled_ = 1;
   uint8_t enableRegister_ = 0;
   uint8_t interruptRegister_ = 0xFF;
+  // The oscillators waiting to interrupt, oldest first: "pushed onto a
+  // first-in, first-out buffer, and handled in that order" (Apple IIGS
+  // Hardware Reference, the Oscillator Control register).
+  std::array<uint8_t, DOC_OSCILLATOR_COUNT> queue_{};
+  int queued_ = 0;
   uint32_t mutes_ = 0; // A bit an oscillator
 
   std::array<uint8_t, SOUND_RAM_SIZE> ram_{};

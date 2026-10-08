@@ -33,13 +33,19 @@ static constexpr uint32_t STATE_MAGIC = 0x53324541; // "A2ES"
  * well as a socket, so a state has to carry both what the user fitted and the
  * Control Panel's setting that says which of the two answers.
  */
-static constexpr uint32_t STATE_VERSION = 3;
+static constexpr uint32_t STATE_VERSION = 4;
 /*
  * Version 3: the 3.5" drives' disks, at the end. Their mechanism is the IWM's
  * card state, which a version 2 state ends without, so one restores as a
  * machine with both 3.5" drives empty.
  */
 static constexpr uint32_t STATE_VERSION_WITHOUT_35 = 2;
+/*
+ * Version 4: the Ensoniq's interrupt queue in the order it filled, and the
+ * oscillators that finished with their interrupts off, at the end. A version
+ * 3 state queues what was waiting in oscillator order, with nothing kept.
+ */
+static constexpr uint32_t STATE_VERSION_WITHOUT_DOC_QUEUE = 3;
 
 const uint8_t *IIgsMachine::exportState(size_t *size) {
   stateBuffer_.clear();
@@ -140,6 +146,8 @@ const uint8_t *IIgsMachine::exportState(size_t *size) {
     w.string(sony.filename());
   }
 
+  memory_->sound().serializeInterrupts(w);
+
   *size = stateBuffer_.size();
   return stateBuffer_.data();
 }
@@ -148,7 +156,10 @@ bool IIgsMachine::importState(const uint8_t *data, size_t size) {
   StateReader r(data, size);
   if (r.u32() != STATE_MAGIC) return false;
   const uint32_t version = r.u32();
-  if (version != STATE_VERSION && version != STATE_VERSION_WITHOUT_35) return false;
+  if (version != STATE_VERSION && version != STATE_VERSION_WITHOUT_DOC_QUEUE &&
+      version != STATE_VERSION_WITHOUT_35) {
+    return false;
+  }
   if (r.u32() != static_cast<uint32_t>(MachineId::AppleIIgs)) return false;
   if (r.failed()) return false;
 
@@ -237,6 +248,7 @@ bool IIgsMachine::importState(const uint8_t *data, size_t size) {
     const std::string filename = r.string();
     if (r.failed() || !image || !sony.restore(image, bytes, filename)) return false;
   }
+  if (version == STATE_VERSION) memory_->sound().deserializeInterrupts(r);
   if (r.failed()) return false;
 
   // The video decodes from the switches as they are now, and the frame that

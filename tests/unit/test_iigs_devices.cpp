@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 #include "iigs_sound.hpp"
+#include "emulator/state_stream.hpp"
 
 using namespace a2e::iigs;
 
@@ -805,8 +806,7 @@ TEST_CASE("An oscillator plays what is in the sound RAM", "[iigs][sound]") {
     // access, in flips lasting well under ten milliseconds, so scaling the
     // chip by it turns a steady note into one wobbling at whatever rate the
     // software happens to be transferring at. The host's volume control is
-    // the amplifier instead, which is what GSSquared does and for the same
-    // reason. The speaker keeps the nibble, because the ROM's bell fades by
+    // the amplifier instead. The speaker keeps the nibble, because the ROM's bell fades by
     // walking it down — test_iigs_boot.cpp pins that.
     const float atFull = loudest(samples);
     sound.writeControl(0x05);
@@ -1371,4 +1371,184 @@ TEST_CASE("The SCC's transmitter is clocked from whatever WR11 selects",
   INFO("all sent after " << cycles << " cycles");
   REQUIRE(cycles >= 170);
   REQUIRE(cycles <= 190);
+}
+
+namespace {
+// An Ensoniq with `enabled` oscillators, the first `running` of them playing
+// a table of the loudest byte there is at full volume, and how loud it is.
+float ensoniqPeak(int enabled, int running) {
+  IIgsSound sound;
+  for (uint16_t at = 0; at < 0x100; at++) sound.setSoundRam(at, 0xFF);
+  auto doc = [&](uint8_t reg, uint8_t value) {
+    sound.writeControl(0x0F); // the registers, not RAM; no auto-increment
+    sound.writeAddressLow(reg);
+    sound.writeData(value);
+  };
+  doc(IIgsSound::DOC_OSCILLATOR_ENABLE, static_cast<uint8_t>(enabled * 2 - 2));
+  for (int i = 0; i < enabled; i++) {
+    const auto o = static_cast<uint8_t>(i);
+    doc(static_cast<uint8_t>(IIgsSound::DOC_FREQUENCY_LOW + o), 0x00);
+    doc(static_cast<uint8_t>(IIgsSound::DOC_FREQUENCY_HIGH + o), 0x01);
+    doc(static_cast<uint8_t>(IIgsSound::DOC_VOLUME + o), 0xFF);
+    doc(static_cast<uint8_t>(IIgsSound::DOC_WAVE_POINTER + o), 0x00);
+    doc(static_cast<uint8_t>(IIgsSound::DOC_WAVE_SIZE + o), 0x00);
+    doc(static_cast<uint8_t>(IIgsSound::DOC_CONTROL + o),
+        i < running ? IIgsSound::OSC_MODE_FREE_RUN : IIgsSound::OSC_HALT);
+  }
+  sound.advance(20000);
+  std::vector<float> stereo(256 * 2);
+  sound.generateSamples(stereo.data(), 256, 48000);
+  float loudest = 0;
+  for (float s : stereo) loudest = std::max(loudest, std::fabs(s));
+  return loudest;
+}
+} // namespace
+
+TEST_CASE("The Ensoniq's output is the average of its time slots, not their sum",
+          "[iigs][sound]") {
+  // The oscillators take turns on the chip's one output, a slot each and two
+  // for refresh, and the machine hears that integrated over time (Apple's
+  // Ensoniq DOC ERS). Every slot at full scale is the loudest the chip can
+  // be, however many oscillators share the scan: it used to sum them, and
+  // sixteen were twice what four were.
+  const float full = IIgsSound::ENSONIQ_LEVEL * 127.0f / 128.0f;
+  REQUIRE(ensoniqPeak(4, 4) == Approx(full).epsilon(0.001));
+  REQUIRE(ensoniqPeak(16, 16) == Approx(full).epsilon(0.001));
+  REQUIRE(ensoniqPeak(32, 32) == Approx(full).epsilon(0.001));
+}
+
+TEST_CASE("An Ensoniq voice is louder with fewer oscillators sharing the scan",
+          "[iigs][sound]") {
+  // One voice is one slot in (enabled + 2). With all 32 enabled, a voice at
+  // full volume is an eighth of full scale, as it was before the scan was
+  // averaged.
+  const float alone = ensoniqPeak(2, 1);   // one slot in four
+  const float crowded = ensoniqPeak(32, 1); // one slot in thirty-four
+  REQUIRE(alone / crowded == Approx(34.0f / 4.0f).epsilon(0.001));
+  REQUIRE(crowded == Approx(127.0f / 128.0f / 8.0f).epsilon(0.001));
+}
+
+namespace {
+// The chip's registers through the Sound GLU, as a program reaches them.
+struct Doc {
+  IIgsSound sound;
+  Doc() {
+    for (uint32_t at = 0; at < 0x100; at++) sound.setSoundRam(static_cast<uint16_t>(at), 0x80); // silence, not a stop
+  }
+  void write(uint8_t reg, uint8_t value) {
+    sound.writeControl(0x0F); // the registers, no auto-increment
+    sound.writeAddressLow(reg);
+    sound.writeData(value);
+  }
+  // One fetch of $E0 through the data port, which takes the interrupt it
+  // reports, and the oscillator it named. Once it has, the register already
+  // says nothing is waiting (bit 7) for the next read, and keeps the number.
+  int nextInterrupt() {
+    sound.writeControl(0x0F);
+    sound.writeAddressLow(IIgsSound::DOC_INTERRUPT);
+    sound.readData();
+    return (sound.docRegister(IIgsSound::DOC_INTERRUPT) >> 1) & 0x1F;
+  }
+  void voice(int i, uint16_t frequency, uint8_t control) {
+    const auto o = static_cast<uint8_t>(i);
+    write(static_cast<uint8_t>(IIgsSound::DOC_FREQUENCY_LOW + o), static_cast<uint8_t>(frequency));
+    write(static_cast<uint8_t>(IIgsSound::DOC_FREQUENCY_HIGH + o), static_cast<uint8_t>(frequency >> 8));
+    write(static_cast<uint8_t>(IIgsSound::DOC_VOLUME + o), 0x80);
+    write(static_cast<uint8_t>(IIgsSound::DOC_WAVE_POINTER + o), 0x00);
+    write(static_cast<uint8_t>(IIgsSound::DOC_WAVE_SIZE + o), 0x00); // 256 bytes
+    write(static_cast<uint8_t>(IIgsSound::DOC_CONTROL + o), control);
+  }
+};
+} // namespace
+
+TEST_CASE("Sync mode restarts the odd oscillator above the even one", "[iigs][sound]") {
+  // "When the even-numbered oscillator begins its wavetable, the odd-mate
+  // oscillator will synchronize and begin its wavetable simultaneously"
+  // (Apple IIGS Hardware Reference). The mate is the odd one above; the odd
+  // one below is another pair's, and is left alone.
+  Doc doc;
+  doc.write(IIgsSound::DOC_OSCILLATOR_ENABLE, 4 * 2 - 2);
+  doc.voice(0, 0, IIgsSound::OSC_HALT);
+  doc.voice(1, 1, IIgsSound::OSC_MODE_FREE_RUN);       // creeping, one a scan
+  doc.voice(2, 0x8000, IIgsSound::OSC_MODE_SYNC);      // round its table every few scans
+  doc.voice(3, 1, IIgsSound::OSC_MODE_FREE_RUN);       // its mate, creeping too
+  doc.sound.advance(320);                              // 46 scans of six slots
+  REQUIRE(doc.sound.oscillator(3).accumulator < 8);    // restarted with oscillator 2
+  REQUIRE(doc.sound.oscillator(1).accumulator == 46);  // never touched
+}
+
+TEST_CASE("Ensoniq interrupts are reported first in, first out", "[iigs][sound]") {
+  // "If the flag is already set ... the flag is pushed onto a first-in,
+  // first-out buffer, and handled in that order" (Apple IIGS Hardware
+  // Reference). Oscillator 3 finishes before oscillator 1, so $E0 names 3
+  // first, though 1 is the lower number.
+  Doc doc;
+  doc.write(IIgsSound::DOC_OSCILLATOR_ENABLE, 4 * 2 - 2);
+  doc.voice(0, 0, IIgsSound::OSC_HALT);
+  doc.voice(2, 0, IIgsSound::OSC_HALT);
+  doc.voice(1, 0x2000, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_INTERRUPT_ENABLE);
+  doc.voice(3, 0x8000, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_INTERRUPT_ENABLE);
+  doc.sound.advance(320);
+  REQUIRE(doc.sound.interruptPending());
+  REQUIRE(doc.nextInterrupt() == 3);
+  REQUIRE(doc.sound.interruptPending());
+  REQUIRE(doc.nextInterrupt() == 1);
+  REQUIRE_FALSE(doc.sound.interruptPending());
+}
+
+TEST_CASE("An Ensoniq interrupt kept with the bit off arrives when it is turned on",
+          "[iigs][sound]") {
+  // "If the IE bit is a zero, then when the oscillator completes its cycle
+  // the oscillator status will be passed to the interrupt table, but will not
+  // be passed to the OIR. However if the IE bit is changed to a one then the
+  // interrupt will be sent to the OIR." (Ensoniq DOC ERS)
+  Doc doc;
+  doc.write(IIgsSound::DOC_OSCILLATOR_ENABLE, 2 * 2 - 2);
+  doc.voice(1, 0, IIgsSound::OSC_HALT);
+  doc.voice(0, 0x8000, IIgsSound::OSC_MODE_ONE_SHOT);
+  doc.sound.advance(320);
+  REQUIRE(doc.sound.oscillatorHalted(0));
+  REQUIRE_FALSE(doc.sound.interruptPending()); // finished, and kept
+
+  SECTION("turning the bit on delivers it") {
+    doc.write(IIgsSound::DOC_CONTROL, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_HALT |
+                                          IIgsSound::OSC_INTERRUPT_ENABLE);
+    REQUIRE(doc.sound.interruptPending());
+    REQUIRE(doc.nextInterrupt() == 0);
+    REQUIRE_FALSE(doc.sound.interruptPending());
+  }
+
+  SECTION("but a write that starts the oscillator again is a new run") {
+    doc.write(IIgsSound::DOC_CONTROL, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_INTERRUPT_ENABLE);
+    REQUIRE_FALSE(doc.sound.interruptPending());
+  }
+}
+
+TEST_CASE("A state keeps the Ensoniq's interrupt queue in its order", "[iigs][sound][state]") {
+  // The order is the queue's own, not the oscillators': 3 finished before 1.
+  // An oscillator that finished with its interrupt off is kept as well.
+  Doc doc;
+  doc.write(IIgsSound::DOC_OSCILLATOR_ENABLE, 4 * 2 - 2);
+  doc.voice(0, 0x8000, IIgsSound::OSC_MODE_ONE_SHOT);
+  doc.voice(2, 0, IIgsSound::OSC_HALT);
+  doc.voice(1, 0x2000, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_INTERRUPT_ENABLE);
+  doc.voice(3, 0x8000, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_INTERRUPT_ENABLE);
+  doc.sound.advance(320);
+
+  std::vector<uint8_t> bytes;
+  a2e::StateWriter w(bytes);
+  doc.sound.serialize(w);
+  doc.sound.serializeInterrupts(w);
+  Doc restored;
+  a2e::StateReader r(bytes.data(), bytes.size());
+  restored.sound.deserialize(r);
+  restored.sound.deserializeInterrupts(r);
+  REQUIRE_FALSE(r.failed());
+
+  REQUIRE(restored.nextInterrupt() == 3);
+  REQUIRE(restored.nextInterrupt() == 1);
+  REQUIRE_FALSE(restored.sound.interruptPending());
+  restored.write(IIgsSound::DOC_CONTROL, IIgsSound::OSC_MODE_ONE_SHOT | IIgsSound::OSC_HALT |
+                                             IIgsSound::OSC_INTERRUPT_ENABLE);
+  REQUIRE(restored.nextInterrupt() == 0);
 }

@@ -11,6 +11,7 @@
 #include "iigs_spec.hpp"
 #include "iigs_video.hpp"
 
+#include "../audio/peak_limiter.hpp"
 #include "../debug/machine_debug.hpp"
 #include "../input/joyport.hpp"
 #include "../disk-image/disk_converter.hpp"
@@ -543,6 +544,10 @@ private:
   std::vector<VolumeChange> volumeChanges_;
   float speakerGain_ = 0.0f;
   uint8_t speakerNibble_ = 0;
+  // The speaker, the Ensoniq and a Mockingboard add up past full scale: the
+  // Ensoniq alone can, up to IIgsSound::ENSONIQ_LEVEL times it. This turns
+  // the mix down while it would, rather than let the device clip it flat.
+  PeakLimiter limiter_;
   std::vector<uint8_t> frame_;
   std::vector<uint8_t> stateBuffer_;
 

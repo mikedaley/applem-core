@@ -24,6 +24,7 @@ void Audio::reset() {
   lastSampleCycle_ = 0;
   filterState_ = 0.0f;
   dcOffset_ = 0.0f;
+  limiter_.reset();
 }
 
 void Audio::toggleSpeaker(uint64_t cycleCount) {
@@ -140,8 +141,8 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
     mockingboard_->consumeStereoSamples(mbBuffer.data(), sampleCount);
   }
 
-  // Mix speaker (center) with Mockingboard stereo
-  // Scale both sources by 0.5 to prevent clipping when both are active
+  // Mix speaker (center) with Mockingboard stereo, each at half level, so
+  // either alone stays well inside full scale.
   constexpr float MIX_SCALE = 0.5f;
 
   for (int i = 0; i < sampleCount; i++) {
@@ -152,13 +153,13 @@ int Audio::generateStereoSamples(float *buffer, int sampleCount,
     float mbRight = mbBuffer[i * 2 + 1] * MIX_SCALE;
 
     // Mix: speaker goes to both channels
-    float left = speakerSample + mbLeft;
-    float right = speakerSample + mbRight;
-
-    // Clamp to valid range (should rarely clip now)
-    buffer[i * 2] = std::max(-1.0f, std::min(1.0f, left));
-    buffer[i * 2 + 1] = std::max(-1.0f, std::min(1.0f, right));
+    buffer[i * 2] = speakerSample + mbLeft;
+    buffer[i * 2 + 1] = speakerSample + mbRight;
   }
+
+  // Both at once can still pass full scale, and a clamp clipped that flat:
+  // the limiter turns it down instead, and leaves it alone below.
+  limiter_.process(buffer, sampleCount);
 
   return sampleCount;
 }

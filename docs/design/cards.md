@@ -91,6 +91,16 @@ state) mixes the two chips, half each, and plays the mix on both sides;
 off, PSG 1 is the left and PSG 2 the right, as on the card. Mono is applied
 after phase lock, so with the lock off a pair half a cycle apart cancels, as
 two real outputs wired together would.
+**A card's output is not clipped.** Each chip's three channels are summed
+and divided by three, so a chip runs from 0 to 1; the card's DC filter makes
+that bipolar, and where a held full level drops away it swings to about
+1.08 (the resampling filter's overshoot on top of the step). The 8-bit
+machines' `Audio` mixes the card and the speaker at half level each, so
+either alone stays inside full scale, but both together can pass it: that
+sum used to be clamped flat, and now goes through the same `PeakLimiter` as
+the IIgs's mix, which does nothing below its ceiling. On a IIgs the card is
+added at half level ahead of that machine's limiter. `test_audio.cpp` drives
+a loud card and speaker together and pins that nothing passes the ceiling.
 - `MouseCard` (`cards/mouse/`) - Apple Mouse Interface Card via MC6821 PIA command protocol (slot 4)
 - `ParallelCard` (`cards/parallel/`) - Centronics parallel port; drives Epson FX-80 and Apple DMP virtual printers (slots 1–2)
 - `SmartPortCard` (`cards/smartport/`) - SmartPort hard drive controller, 2 block devices, self-built ROM (user-configurable slot)

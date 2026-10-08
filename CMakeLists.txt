@@ -629,6 +629,11 @@ if(A2E_CORE_TESTS AND NOT EMSCRIPTEN)
         src/core/debug/debug_log.cpp
     )
 
+    # The limiter that keeps a mix under full scale (header only)
+    add_catch2_test(test_peak_limiter
+        tests/unit/test_peak_limiter.cpp
+    )
+
     # Keyboard (only keyboard.cpp)
     add_catch2_test(test_keyboard
         tests/unit/test_keyboard.cpp
