@@ -149,7 +149,7 @@ uint8_t IIgsADB::readMouseData() {
   // Seven bits of signed movement with a button in the top bit, X first.
   // The two top bits are two *different* buttons: the X byte's is button 1,
   // the second button a two-button mouse has, and the Y byte's is button 0,
-  // the one everybody presses — which is how GSSquared lays the report out.
+  // the one everybody presses.
   // Putting the same button in both, so the firmware would take whichever
   // it read, made every press two presses: the Finder opened a folder on a
   // single click. Button 1 is never pressed here, so its bit is always up.

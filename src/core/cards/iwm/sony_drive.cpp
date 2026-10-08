@@ -25,7 +25,8 @@ constexpr uint64_t SPIN_UP_CYCLES = 5000;
 constexpr uint64_t SPIN_DOWN_CYCLES = 511500; // half a second after deselection
 
 // The disk-switched bit, which the table has as 0 = "the user ejected a disk".
-// GSSquared reads it the other way round and its firmware is content.
+// It reads the other way round here, and the firmware boots with it; see
+// sony_drive.hpp.
 constexpr bool SWITCHED_READS_HIGH = true;
 
 // 2MG

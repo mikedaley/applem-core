@@ -82,7 +82,6 @@ public:
    * firmware validates that checksum before trusting the contents, and the
    * algorithm is not one this project has worked out — but it never needs to
    * be, as long as nothing here alters the bytes the firmware itself wrote.
-   * GSSquared keeps its battery RAM in a file the same way.
    */
   const uint8_t *batteryRamBytes() const { return batteryRam_.data(); }
   static constexpr size_t batteryRamSize() { return BATTERY_RAM_SIZE; }

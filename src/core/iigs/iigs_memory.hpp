@@ -152,7 +152,7 @@ public:
    * until the slow clock's next edge and then takes a whole slow cycle — so
    * the access costs the rest of the slow cycle in progress, and then one —
    * which is what makes a loop that polls a Mega II register slower than its
-   * cycle count says. GSSquared charges the same. At slow speed every cycle
+   * cycle count says. At slow speed every cycle
    * is already on that clock and there is nothing to wait for.
    */
   void slowAccess() {

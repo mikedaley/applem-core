@@ -308,8 +308,8 @@ TEST_CASE("$C022 colours the text rather than decoding it",
 TEST_CASE("The raster is the picture with the border a monitor sees around it",
           "[iigs][video][border]") {
   // What a IIgs sends is 53 cycles across by 240 lines: the picture, and 6
-  // cycles of border before it, 7 after, 19 lines above and 21 below — the
-  // cycles GSSquared's scanner flags as border. Super Hi-Res is 16 pixels a
+  // cycles of border before it, 7 after, 19 lines above and 21 below. Super
+  // Hi-Res is 16 pixels a
   // cycle, and the border drawn is the part a monitor shows — three cycles
   // either side, twelve lines above and below — so the raster is 736x448
   // with the picture at (48, 24).

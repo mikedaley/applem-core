@@ -259,7 +259,7 @@ void IIgsMemory::write(uint32_t address, uint8_t value) {
     // exactly as it waits for a soft switch: a shadowed write runs at 1MHz
     // whatever the speed register says. Charging it as a fast cycle made
     // anything that draws to a shadowed screen run up to a tenth faster than
-    // a real machine. GSSquared charges the same (megaiiWrite, a SYNC cycle).
+    // a real machine.
     if (shadowWrite(at, offset, value)) slowAccess();
     return;
   }
@@ -377,7 +377,7 @@ uint8_t IIgsMemory::readIO(uint16_t offset) {
     return adb_.readStatus();
   case REG_VERTICAL_COUNT:
   case REG_HORIZONTAL_COUNT:
-    // Reading either clears the scan-line interrupt, as GSSquared has it.
+    // Reading either clears the scan-line interrupt.
     scanLinePending_ = false;
     return offset == REG_VERTICAL_COUNT ? verticalCountRegister()
                                         : horizontalCountRegister();
@@ -798,7 +798,7 @@ uint8_t IIgsMemory::interruptStatusRegister() const {
   // looking (the diagnostic's does) must still find the flag — and only a
   // write to $C047 clears them. Bit 7 says whether anything is holding the
   // line down right now, which is enable and flag together, across every
-  // source. GSSquared reads the same.
+  // source.
   uint8_t value = 0;
   if (vblPending_) value |= INT_VBL;
   if (quarterSecondPending_) value |= INT_QUARTER_SECOND;
