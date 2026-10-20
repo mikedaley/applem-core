@@ -130,6 +130,7 @@ private:
   void drawSuperHiResLine(int line);
   void drawMegaIILine(int line);
   void fillRasterLine(int rasterLine, uint32_t colour);
+  void fillRasterSides(int rasterLine, uint32_t colour);
   void fillFrame(uint32_t colour);
   void drawLine320(int line, const uint8_t *pixels, const uint16_t *palette,
                    bool fillMode);

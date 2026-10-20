@@ -162,6 +162,7 @@ public:
     }
     slowCycles_++;
     slowAccesses_++;
+    fastConfirmed_ = false; // see isFastSpeed
   }
 
   uint64_t takeSlowAccesses() {
@@ -460,19 +461,34 @@ public:
    * is the right answer for a machine with nothing fitted.
    */
   uint8_t speedRegister() const { return speed_; }
-  void setSpeedRegister(uint8_t value) { speed_ = value; }
+  void setSpeedRegister(uint8_t value) {
+    speed_ = value;
+    fastConfirmed_ = false;
+  }
 
   using SlotMotorQuery = std::function<bool(int slot)>;
   void setSlotMotorQuery(SlotMotorQuery query) {
     slotMotorQuery_ = std::move(query);
+    fastConfirmed_ = false;
   }
 
+  /**
+   * Asked once an instruction, so a fast answer is kept rather than asking
+   * every watched slot again. It stays right until a slow access: a motor
+   * starts only when a program touches its drive's switches, and that touch
+   * is a slow access, which forgets it. A motor stopping cannot make a fast
+   * answer wrong. A slow answer is never kept, so a motor's spin-down is
+   * seen as soon as it happens.
+   */
   bool isFastSpeed() const {
     if ((speed_ & SPEED_FAST) == 0) return false;
-    if (!slotMotorQuery_) return true;
-    for (int slot = 4; slot <= 7; slot++) {
-      if ((speed_ & (1u << (slot - 4))) && slotMotorQuery_(slot)) return false;
+    if (fastConfirmed_) return true;
+    if (slotMotorQuery_) {
+      for (int slot = 4; slot <= 7; slot++) {
+        if ((speed_ & (1u << (slot - 4))) && slotMotorQuery_(slot)) return false;
+      }
     }
+    fastConfirmed_ = true;
     return true;
   }
 
@@ -696,6 +712,7 @@ private:
   double remainder_ = 0.0;
   uint8_t shadow_ = 0;
   uint8_t speed_ = 0;
+  mutable bool fastConfirmed_ = false; // see isFastSpeed
   uint8_t newVideo_ = 0;
   uint8_t slotSelect_ = 0;
   uint8_t diskSelect_ = 0;

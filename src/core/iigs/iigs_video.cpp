@@ -42,6 +42,16 @@ constexpr uint16_t VGC_COLOURS[16] = {
     0x0000, 0x0D03, 0x0009, 0x0D2D, 0x0072, 0x0555, 0x022F, 0x06AF,
     0x0852, 0x0F60, 0x0AAA, 0x0F98, 0x01D1, 0x0FF0, 0x04F9, 0x0FFF,
 };
+
+// `count` pixels of one colour. The pixel's four bytes are made once and
+// copied, rather than written a byte at a time: the border is most of what
+// is drawn on every line.
+void fillPixels(uint8_t *out, int count, uint32_t colour) {
+  const uint8_t rgba[4] = {static_cast<uint8_t>(colour >> 16),
+                           static_cast<uint8_t>(colour >> 8),
+                           static_cast<uint8_t>(colour), 0xFF};
+  for (int x = 0; x < count; x++) std::memcpy(out + static_cast<size_t>(x) * 4, rgba, 4);
+}
 } // namespace
 
 // The profile is the host's description of the frame and iigs_spec.hpp is
@@ -110,15 +120,7 @@ bool IIgsVideo::superHiResEnabled() const {
 }
 
 void IIgsVideo::fillFrame(uint32_t colour) {
-  const uint8_t red = static_cast<uint8_t>(colour >> 16);
-  const uint8_t green = static_cast<uint8_t>(colour >> 8);
-  const uint8_t blue = static_cast<uint8_t>(colour);
-  for (size_t at = 0; at < frame_.size(); at += 4) {
-    frame_[at + 0] = red;
-    frame_[at + 1] = green;
-    frame_[at + 2] = blue;
-    frame_[at + 3] = 0xFF;
-  }
+  fillPixels(frame_.data(), width_ * height_, colour);
 }
 
 uint8_t *IIgsVideo::scanline(int y) {
@@ -180,48 +182,60 @@ void IIgsVideo::drawFrameLine(int line) {
   } else {
     return; // blanking: nothing is sent
   }
-  // Border across the whole line, in the colour it is now; the picture, if
-  // this line has one, over the middle of it.
-  fillRasterLine(rasterLine, vgcColourARGB(memory_.borderColour()));
-  if (line >= SHR_LINES) return;
-  if (superHiResEnabled()) {
+  // Border in the colour it is now, and the picture, if this line has one,
+  // in the middle of it. The border goes only where the picture does not, so
+  // each pixel of the line is written once.
+  const uint32_t border = vgcColourARGB(memory_.borderColour());
+  if (line < SHR_LINES && superHiResEnabled()) {
+    fillRasterSides(rasterLine, border);
     drawSuperHiResLine(line);
-  } else {
+  } else if (line >= MEGAII_FIRST_LINE &&
+             line < MEGAII_FIRST_LINE + MEGAII_LINES) {
+    fillRasterSides(rasterLine, border);
     drawMegaIILine(line);
+  } else {
+    fillRasterLine(rasterLine, border);
   }
 }
 
 void IIgsVideo::fillRasterLine(int rasterLine, uint32_t colour) {
-  const uint8_t red = static_cast<uint8_t>(colour >> 16);
-  const uint8_t green = static_cast<uint8_t>(colour >> 8);
-  const uint8_t blue = static_cast<uint8_t>(colour);
+  for (int copy = 0; copy < RASTER_LINE_DOUBLING; copy++) {
+    fillPixels(scanline(rasterLine * RASTER_LINE_DOUBLING + copy), width_, colour);
+  }
+}
+
+// The border either side of the picture's 640 pixels.
+void IIgsVideo::fillRasterSides(int rasterLine, uint32_t colour) {
+  constexpr int PICTURE_RIGHT = PICTURE_LEFT + SHR_PIXELS_PER_LINE;
   for (int copy = 0; copy < RASTER_LINE_DOUBLING; copy++) {
     uint8_t *row = scanline(rasterLine * RASTER_LINE_DOUBLING + copy);
-    for (int x = 0; x < width_; x++) {
-      row[x * 4 + 0] = red;
-      row[x * 4 + 1] = green;
-      row[x * 4 + 2] = blue;
-      row[x * 4 + 3] = 0xFF;
-    }
+    fillPixels(row, PICTURE_LEFT, colour);
+    fillPixels(row + static_cast<size_t>(PICTURE_RIGHT) * 4, width_ - PICTURE_RIGHT, colour);
   }
 }
 
 namespace {
 // Eight pixels for every seven dots, linearly: a dot boundary that falls
 // inside a pixel is shared between its two dots, as a beam would draw it.
-// The weights repeat every eight pixels, so they are worked out once.
+// The weights repeat every eight pixels, so they are worked out once, and
+// every one is a whole number of eighths, so a pixel is a shift rather than a
+// division.
 constexpr int STRETCH_PIXELS = SHR_PIXELS_PER_LINE;
 constexpr int STRETCH_DOTS = 560;
+constexpr int STRETCH_EIGHTH = STRETCH_PIXELS / 8;
 static_assert(STRETCH_PIXELS * 7 == STRETCH_DOTS * 8);
-struct Tap { int dot; int weightA; int weightB; };
+static_assert(STRETCH_DOTS % STRETCH_EIGHTH == 0);
+// `next` is how far on the second dot's bytes are: the last pixel has no dot
+// after its own, and takes all of it.
+struct Tap { int dot; int next; int weightA; int weightB; };
 const std::array<Tap, STRETCH_PIXELS> &stretchTaps() {
   static const auto taps = [] {
     std::array<Tap, STRETCH_PIXELS> t{};
     for (int x = 0; x < STRETCH_PIXELS; x++) {
       const int numerator = x * STRETCH_DOTS;  // dot position, times PIXELS
       const int dot = numerator / STRETCH_PIXELS;
-      const int fraction = numerator % STRETCH_PIXELS;  // of PIXELS
-      t[x] = {dot, STRETCH_PIXELS - fraction, fraction};
+      const int eighths = (numerator % STRETCH_PIXELS) / STRETCH_EIGHTH;
+      t[x] = {dot, dot + 1 < STRETCH_DOTS ? 4 : 0, 8 - eighths, eighths};
     }
     return t;
   }();
@@ -237,10 +251,10 @@ void stretchMegaIIRow(const uint8_t *source, int row, uint8_t *out) {
   for (int x = 0; x < STRETCH_PIXELS; x++) {
     const Tap &tap = taps[x];
     const uint8_t *a = in + static_cast<size_t>(tap.dot) * 4;
-    const uint8_t *b = tap.dot + 1 < STRETCH_DOTS ? a + 4 : a;
+    const uint8_t *b = a + tap.next;
     for (int c = 0; c < 3; c++) {
       out[x * 4 + c] = static_cast<uint8_t>(
-          (a[c] * tap.weightA + b[c] * tap.weightB + STRETCH_PIXELS / 2) / STRETCH_PIXELS);
+          (a[c] * tap.weightA + b[c] * tap.weightB + 4) >> 3);
     }
     out[x * 4 + 3] = 0xFF;
   }
@@ -269,10 +283,14 @@ void IIgsVideo::renderMegaII() {
 void IIgsVideo::drawMegaIILine(int line) {
   const int y = line - MEGAII_FIRST_LINE;
   if (y < 0 || y >= MEGAII_LINES) return; // border, above and below the 192
-  const uint8_t *source = megaII_.frameInProgress();
-  for (int copy = 0; copy < RASTER_LINE_DOUBLING; copy++) {
-    const int row = y * RASTER_LINE_DOUBLING + copy;
-    stretchMegaIIRow(source, row, scanline(MEGAII_TOP + row));
+  // The Mega II draws each of its lines as identical rows (see
+  // Video::endScanline), so the first is stretched and the rest copied.
+  const int row = y * RASTER_LINE_DOUBLING;
+  stretchMegaIIRow(megaII_.frameInProgress(), row, scanline(MEGAII_TOP + row));
+  const uint8_t *stretched = pictureRow(line);
+  for (int copy = 1; copy < RASTER_LINE_DOUBLING; copy++) {
+    std::memcpy(scanline(MEGAII_TOP + row + copy) + static_cast<size_t>(PICTURE_LEFT) * 4,
+                stretched, static_cast<size_t>(SHR_PIXELS_PER_LINE) * 4);
   }
 }
 

@@ -121,7 +121,7 @@ void IIgsMemory::resetRegisters() {
   // Shadowing all on, slow clock: a IIgs comes up pretending to be a //e as
   // hard as it can, and the firmware turns things on from there.
   shadow_ = 0;
-  speed_ = 0;
+  setSpeedRegister(0);
   interruptEnable_ = 0;
   vgcInterrupt_ = 0;
   scc_.reset();
@@ -567,7 +567,7 @@ void IIgsMemory::writeIO(uint16_t offset, uint8_t value) {
     shadow_ = value;
     return;
   case REG_SPEED:
-    speed_ = value;
+    setSpeedRegister(value);
     return;
   case REG_STATE:
     setStateRegister(value);
@@ -1026,7 +1026,7 @@ bool IIgsMemory::deserialize(StateReader &r) {
   slowAccesses_ = r.u64();
   remainder_ = r.f64();
   shadow_ = r.u8();
-  speed_ = r.u8();
+  setSpeedRegister(r.u8());
   setNewVideoRegister(r.u8());
   slotSelect_ = r.u8();
   diskSelect_ = r.u8();

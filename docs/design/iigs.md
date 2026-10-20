@@ -136,7 +136,10 @@ switches VBL off before it looks and must still find the flag.
 setting.** They are slot motor detect, one each for slots 4 to 7, and a drive
 turning in an enabled slot drops the whole machine to 1.023MHz until it stops.
 `IIgsMemory::isFastSpeed()` asks a `SlotMotorQuery` the machine installs, so
-the memory needs to know nothing about drives. This is what makes a Disk II
+the memory needs to know nothing about drives. It is asked every instruction,
+so a fast answer is kept until the next slow access: a motor only starts when
+a program touches its drive's switches, which is a slow access, and a slow
+answer is never kept, so a spin-down is seen at once. This is what makes a Disk II
 readable at all: the controller holds a finished byte for about two bit cells,
 and at 2.8MHz the firmware's poll comes round three times per byte and reads
 half of them twice.

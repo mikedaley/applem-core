@@ -317,6 +317,14 @@ int IIgsMachine::step() {
   if (disk_) disk_->update(cycles);
   for (ExpansionCard *card : fittedCards_)
     card->update(static_cast<int>(slowElapsed));
+
+  // Everything below is counted in the slow clock, and at 2.8MHz many
+  // instructions finish inside one slow cycle. With no slow time gone by
+  // there is nothing for them to do: a chip register written or a soft
+  // switch moved would have been a slow access, and the clock would have
+  // moved with it.
+  if (slowElapsed == 0) return cycles;
+
   memory_->tickClocks();
   // The Ensoniq runs on the machine's clock, so its oscillators reach the ends
   // of their tables — and interrupt — when the machine says, not when the host
