@@ -216,10 +216,11 @@ private:
 
   // Say which palette entry a run of CELL dots carries. Only the SOLID mode
   // reads it: every other mode makes the colour from the dots. The emitters
-  // know the answer for nothing — a LORES cell is its nibble, a double lo-res
-  // cell or a double hi-res pixel is its value rotated one place to the left,
-  // which is the one dot of delay the 80-column path adds (DOUBLE_RES_DELAY)
-  // expressed as the colour it turns into.
+  // know the answer for nothing — a LORES cell or a double lo-res main cell is
+  // its nibble, a double lo-res aux cell or a double hi-res pixel is its value
+  // rotated one place to the left, which is the one dot of delay the
+  // 80-column path adds (DOUBLE_RES_DELAY) expressed as the colour it turns
+  // into.
   void setCell(int from, int to, uint8_t palette) {
     if (from < 0) from = 0;
     if (to > ntsc::VISIBLE_DOTS) to = ntsc::VISIBLE_DOTS;

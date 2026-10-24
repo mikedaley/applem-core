@@ -734,8 +734,18 @@ TEST_CASE("Pixel exact colours mixed-mode text but keeps its background black",
 
 namespace {
 
+// The aux memory value of a double lo-res colour: each nibble of the main
+// memory value rotated right by one bit, as Apple's double lo-res colour table
+// gives it (magenta is 1 in main and 8 in aux, dark blue 2 and 1).
+uint8_t dloresAux(uint8_t byte) {
+    const auto ror = [](int n) { return ((n >> 1) | (n << 3)) & 0x0F; };
+    return static_cast<uint8_t>(ror(byte & 0x0F) | (ror(byte >> 4) << 4));
+}
+
 // The colour a value shows as when it fills the screen, on the composite
-// decoder — the reference every other mode has to agree with.
+// decoder — the reference every other mode has to agree with. A double lo-res
+// fill is drawn as software draws one, the value in main and its aux form in
+// aux.
 uint32_t compositeFillColour(VideoTestFixture &f, bool doubleLores, uint8_t byte) {
     f.mmu.read(0xC050);
     f.mmu.read(0xC052);
@@ -749,7 +759,7 @@ uint32_t compositeFillColour(VideoTestFixture &f, bool doubleLores, uint8_t byte
     }
     for (int i = 0; i < 0x400; i++) {
         f.mmu.writeRAM(0x0400 + i, byte, false);
-        if (doubleLores) f.mmu.writeRAM(0x0400 + i, byte, true);
+        if (doubleLores) f.mmu.writeRAM(0x0400 + i, dloresAux(byte), true);
     }
     f.video->setColorMode(VideoColorMode::COMPOSITE);
     f.video->forceRenderFrame();
@@ -782,11 +792,12 @@ TEST_CASE("Solid: a lone double lo-res cell is one colour in every column",
         f.mmu.read(0xC054);
         f.mmu.write(0xC00D, 0);
         f.mmu.read(0xC05E);
-        // A cell of value v in every other screen column of row 0, so that
+        // A cell of colour v in every other screen column of row 0, so that
         // each has black either side of it, and both banks get their turn:
-        // aux in the even byte columns, main in the odd ones.
+        // aux in the even byte columns, main in the odd ones. Aux holds the
+        // colour's aux form.
         for (int col = 0; col < 40; col += 2) {
-            f.mmu.writeRAM(0x0400 + col, static_cast<uint8_t>(v), true);   // aux: screen column 2*col
+            f.mmu.writeRAM(0x0400 + col, dloresAux(static_cast<uint8_t>(v)), true);   // aux: screen column 2*col
         }
         for (int col = 1; col < 40; col += 2) {
             f.mmu.writeRAM(0x0400 + col, static_cast<uint8_t>(v), false);  // main: screen column 2*col+1
@@ -810,6 +821,27 @@ TEST_CASE("Solid: a lone double lo-res cell is one colour in every column",
                 INFO("value " << v << " column " << col << " black dot " << x);
                 REQUIRE(pixelAt(*f.video, x, 1) == 0xFF000000u);
             }
+        }
+    }
+}
+
+TEST_CASE("Double lo-res main is LORES and aux is rotated, so a fill is one colour",
+          "[video][signal][dlores]") {
+    // Apple's double lo-res colour table gives a main memory value equal to the
+    // LORES one and an aux memory value rotated right by one bit. A screen
+    // drawn that way is one colour across the line on the composite decoder,
+    // and the same colour as a LORES fill of the main value; rotating the main
+    // half too paints it in seven-dot stripes.
+    for (int v = 1; v < 15; v++) {
+        if (v == 5 || v == 10) continue; // the greys: no hue to get wrong
+        const uint8_t byte = static_cast<uint8_t>(v * 0x11);
+        VideoTestFixture lores;
+        const uint32_t want = compositeFillColour(lores, false, byte);
+        VideoTestFixture dlores;
+        compositeFillColour(dlores, true, byte);
+        for (int x = 40; x < 520; x++) {
+            INFO("value " << v << " dot " << x);
+            REQUIRE(maxChannelDelta(pixelAt(*dlores.video, x, 10), want) <= 3);
         }
     }
 }

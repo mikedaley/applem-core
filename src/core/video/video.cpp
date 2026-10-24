@@ -280,8 +280,9 @@ constexpr int DOUBLE_RES_DELAY = 1;
 
 // The colour a value carries once it has been through the double-resolution
 // path's extra dot of delay: dot x carries bit ((x - 1) & 3), which is the
-// value rotated one place to the left. This is what a steady double lo-res
-// nibble decodes to on every decoder in this file, and so what SOLID paints.
+// value rotated one place to the left. This is what a steady double hi-res
+// pattern, or a double lo-res aux nibble, decodes to on every decoder in this
+// file, and so what SOLID paints for them.
 constexpr uint8_t rotatedByDelay(uint8_t v) {
   return static_cast<uint8_t>(((v << 1) | (v >> 3)) & 0x0F);
 }
@@ -491,23 +492,30 @@ void Video::emitDoubleLoResScanline(int scanline, int startCol, int endCol,
     uint8_t mainNibble = (lineInRow < 4) ? (mainByte & 0x0F)
                                          : ((mainByte >> 4) & 0x0F);
 
-    // Same absolute-phase rule as LORES, plus the double-resolution path's one
-    // dot of extra delay (see DOUBLE_RES_DELAY). The aux half occupies the
-    // first seven dots of the cell, the main half the second seven.
+    // The two halves do not mean the same thing. Apple's double lo-res colour
+    // table (Apple IIe Technical Reference Manual and Apple IIc Technical
+    // Reference Manual) gives each colour two values: the main memory value is
+    // the LORES one, and the aux memory value is that rotated right by one bit
+    // (magenta is 1 in main and 8 in aux, dark blue 2 and 1, brown 8 and 4). So
+    // a main nibble is gated exactly as LORES gates it, dot x carrying bit
+    // (x mod 4), and an aux nibble one dot later (DOUBLE_RES_DELAY), which is
+    // the rotate left by one that the table undoes. The aux half occupies the
+    // first seven dots of the cell, the main half the second seven, both a dot
+    // late as the whole 80-column path is.
     int base = col * 14 + DOUBLE_RES_DELAY;
     setKind(col * 14, col * 14 + 14, ntsc::IdealKind::CELL);
     // The cells' colours, for SOLID, over the seven dots each cell owns —
     // counted from the delayed base, so that the colour sits on the dots
     // the cell actually lights rather than on the byte boundary.
     setCell(base, base + 7, rotatedByDelay(auxNibble));
-    setCell(base + 7, base + 14, rotatedByDelay(mainNibble));
+    setCell(base + 7, base + 14, mainNibble);
     for (int px = 0; px < 7; px++) {
       int x = base + px;
       setDot(x, (auxNibble >> ((x - DOUBLE_RES_DELAY) & 3)) & 1);
     }
     for (int px = 7; px < 14; px++) {
       int x = base + px;
-      setDot(x, (mainNibble >> ((x - DOUBLE_RES_DELAY) & 3)) & 1);
+      setDot(x, (mainNibble >> (x & 3)) & 1);
     }
   }
 }

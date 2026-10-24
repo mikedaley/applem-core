@@ -74,6 +74,14 @@ the fact the old `DLGR_COLORS` table encoded as a copy of `LORES_COLORS` with th
 nibble rotated left by one. Get it wrong and every DHGR picture is hue-rotated
 by 90 degrees — subtle enough to look plausible, so `test_video.cpp` pins it.
 
+**Double lo-res rotates only the aux half.** Apple's double lo-res colour
+table (the //e and //c Technical Reference Manuals) gives each colour a main
+memory value, which is the LORES one, and an aux memory value, which is that
+rotated right by one bit. So a main nibble is gated with the LORES phase, dot x
+carrying bit (x mod 4), and an aux nibble with the one-dot delay, which shows it
+rotated left by one. Rotating both halves turns every correctly drawn solid
+fill into seven-dot stripes, because software stores aux nibbles pre-rotated.
+
 **Colour burst is per scanline, but the colour killer is per field.**
 `burstForScanline()` models the machine: a //e inhibits burst in text mode,
 including the bottom four rows of a mixed screen. `chromaEnabled_` models the
